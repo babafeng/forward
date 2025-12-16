@@ -1,0 +1,135 @@
+package proxy
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"time"
+
+	"go-forward/core/utils"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+)
+
+// StartQUIC 启动 HTTP/3 (QUIC) 代理服务器
+func StartQUIC(addr string, forwardURLs []string, auth *utils.Auth) {
+	cert, err := utils.GetCertificate()
+	if err != nil {
+		utils.Error("Failed to generate certificate for QUIC: %v", err)
+		return
+	}
+
+	// 复用 ProxyHandler
+	handler := &ProxyHandler{
+		ForwardURLs: forwardURLs,
+		Auth:        auth,
+	}
+
+	server := &http3.Server{
+		Addr:    addr,
+		Handler: handler,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{*cert},
+			NextProtos:   []string{"h3"},
+		},
+	}
+
+	utils.Info("QUIC (HTTP/3) listening on %s", addr)
+	if err := server.ListenAndServe(); err != nil {
+		// UDP 端口可能被占用或者权限问题，不应该阻塞主流程，但记录错误
+		utils.Error("QUIC server error: %v", err)
+	}
+}
+
+// quicConnect 建立 QUIC 连接并执行 HTTP/3 CONNECT
+func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.Conn, error) {
+	// 1. 建立 QUIC 连接
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{http3.NextProtoH3},
+	}
+
+	// 确保 proxyAddr 包含端口
+	if _, _, err := net.SplitHostPort(proxyAddr); err != nil {
+		proxyAddr = net.JoinHostPort(proxyAddr, "443") // 默认端口
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	qConn, err := quic.DialAddr(ctx, proxyAddr, tlsConf, nil)
+	if err != nil {
+		return nil, fmt.Errorf("quic dial failed: %v", err)
+	}
+
+	// 2. 创建 HTTP/3 ClientConn
+	tr := &http3.Transport{}
+	cc := tr.NewClientConn(qConn)
+
+	// 3. 打开请求流
+	str, err := cc.OpenRequestStream(ctx)
+	if err != nil {
+		qConn.CloseWithError(0, "")
+		return nil, fmt.Errorf("open stream failed: %v", err)
+	}
+	utils.Logging("QUIC stream opened")
+
+	// 4. 发送 CONNECT 请求
+	reqURL := fmt.Sprintf("https://%s", proxyAddr)
+	req, err := http.NewRequest(http.MethodConnect, reqURL, nil)
+	if err != nil {
+		str.Close()
+		return nil, err
+	}
+	req.Host = targetAddr
+
+	if user != nil {
+		password, _ := user.Password()
+		auth := user.Username() + ":" + password
+		basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
+		req.Header.Set("Proxy-Authorization", basicAuth)
+	}
+
+	if err := str.SendRequestHeader(req); err != nil {
+		str.Close()
+		return nil, fmt.Errorf("send header failed: %v", err)
+	}
+	utils.Logging("QUIC request header sent")
+
+	// 5. 读取响应
+	resp, err := str.ReadResponse()
+	if err != nil {
+		str.Close()
+		return nil, fmt.Errorf("read response failed: %v", err)
+	}
+	utils.Logging("QUIC response received: %s", resp.Status)
+
+	if resp.StatusCode != 200 {
+		str.Close()
+		return nil, fmt.Errorf("proxy responded with status: %s", resp.Status)
+	}
+
+	// 6. 返回封装的连接
+	return &quicStreamConn{
+		RequestStream: str,
+		local:         qConn.LocalAddr(),
+		remote:        qConn.RemoteAddr(),
+	}, nil
+}
+
+// quicStreamConn 适配器
+type quicStreamConn struct {
+	*http3.RequestStream
+	local  net.Addr
+	remote net.Addr
+}
+
+func (c *quicStreamConn) LocalAddr() net.Addr  { return c.local }
+func (c *quicStreamConn) RemoteAddr() net.Addr { return c.remote }
+
+func (c *quicStreamConn) SetWriteDeadline(t time.Time) error { return nil }
