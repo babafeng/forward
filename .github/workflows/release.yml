@@ -23,12 +23,10 @@ jobs:
           go-version: '1.25.5'
 
       - name: Build and Release
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v6  # 最新是 v6.4.0，可直接用 v6
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          goarch: ${{ matrix.goarch }}
-          project_path: "./cmd/forward"
-          binary_name: "forward"
-          extra_files: "README.md"
-          ldflags: "-s -w"
+          distribution: goreleaser  # 默认，可省略
+          version: '~> v2'          # 默认，可省略（会用最新 v2.x）
+          args: release --clean     # 关键：这里指定 release 命令
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
