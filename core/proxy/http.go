@@ -34,6 +34,8 @@ type ProxyHandler struct {
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	utils.Debug("[Proxy] [Handler] Request received: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
+
 	// 1. 鉴权
 	if h.Auth != nil {
 		authHeader := r.Header.Get("Proxy-Authorization")
