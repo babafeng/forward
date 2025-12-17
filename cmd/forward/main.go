@@ -2,8 +2,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -29,12 +31,20 @@ var (
 	listenFlags  StringArray
 	forwardFlags StringArray
 	logLevel     string
+	printVersion bool
 )
 
 func main() {
 	flag.Var(&listenFlags, "L", "Listen address (e.g., tls://:443, socks5://:1080)")
 	flag.Var(&forwardFlags, "F", "Forward address (e.g., tls://server:1080)")
+	flag.BoolVar(&printVersion, "V", false, "print version")
 	flag.Parse()
+
+	if printVersion {
+		fmt.Fprintf(os.Stdout, "forward %s (%s %s/%s)\n",
+			version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		os.Exit(0)
+	}
 
 	logLevel = "info"
 	// 配置日志级别

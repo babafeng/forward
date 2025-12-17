@@ -15,6 +15,20 @@ forward is a lightweight and high-performance port forwarding and proxy tool wri
 go build -o forward ./cmd/forward
 ```
 
+```bash
+go build -o forward ./cmd/forward
+```
+
+```bash
+# 安装最新版本
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh) --install
+```
+
+```bash
+# 选择要安装的版本
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh)
+```
+
 ## Usage
 
 ### 1. Port Forwarding

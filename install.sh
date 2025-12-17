@@ -52,12 +52,12 @@ install_forward() {
     curl -fsSL -o forward.tar.gz $download_url
 
     # Extract and install the binary
-    echo "Installing forward..."
+    echo "Installing forward version $version..."
     tar -xzf forward.tar.gz
     chmod +x forward
     mv forward /usr/local/bin/forward
 
-    echo "forward installation completed!"
+    echo "forward installation completed: /usr/local/bin/forward version $version"
 }
 
 # Retrieve available versions from GitHub API
