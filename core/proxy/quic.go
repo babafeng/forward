@@ -46,15 +46,12 @@ func StartQUIC(addr string, forwardURLs []string, auth *utils.Auth) {
 	}
 }
 
-// quicConnect 建立 QUIC 连接并执行 HTTP/3 CONNECT
 func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.Conn, error) {
-	// 1. 建立 QUIC 连接
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{http3.NextProtoH3},
 	}
 
-	// 确保 proxyAddr 包含端口
 	if _, _, err := net.SplitHostPort(proxyAddr); err != nil {
 		proxyAddr = net.JoinHostPort(proxyAddr, "443") // 默认端口
 	}
@@ -67,19 +64,15 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		return nil, fmt.Errorf("quic dial failed: %v", err)
 	}
 
-	// 2. 创建 HTTP/3 ClientConn
 	tr := &http3.Transport{}
 	cc := tr.NewClientConn(qConn)
 
-	// 3. 打开请求流
 	str, err := cc.OpenRequestStream(ctx)
 	if err != nil {
 		qConn.CloseWithError(0, "")
 		return nil, fmt.Errorf("open stream failed: %v", err)
 	}
-	utils.Logging("[Proxy] [QUIC] Stream opened")
 
-	// 4. 发送 CONNECT 请求
 	reqURL := fmt.Sprintf("https://%s", proxyAddr)
 	req, err := http.NewRequest(http.MethodConnect, reqURL, nil)
 	if err != nil {
@@ -99,22 +92,20 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		str.Close()
 		return nil, fmt.Errorf("send header failed: %v", err)
 	}
-	utils.Logging("QUIC request header sent")
 
-	// 5. 读取响应
 	resp, err := str.ReadResponse()
 	if err != nil {
 		str.Close()
 		return nil, fmt.Errorf("read response failed: %v", err)
 	}
-	utils.Logging("QUIC response received: %s", resp.Status)
+	utils.Info("[Proxy] [QUIC] response received: %s | %s --> %s %d bytes | took %v",
+		resp.Status, qConn.LocalAddr(), qConn.RemoteAddr(), resp.ContentLength, time.Since(time.Now()))
 
 	if resp.StatusCode != 200 {
 		str.Close()
 		return nil, fmt.Errorf("proxy responded with status: %s", resp.Status)
 	}
 
-	// 6. 返回封装的连接
 	return &quicStreamConn{
 		RequestStream: str,
 		local:         qConn.LocalAddr(),

@@ -34,7 +34,7 @@ type ProxyHandler struct {
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	utils.Debug("[Proxy] [Handler] Request received: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
+	utils.Logging("[Proxy] [Handler] Request received: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
 
 	// 1. 鉴权
 	if h.Auth != nil {
@@ -75,7 +75,8 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
-	utils.Info("[Proxy] [HTTP] CONNECT %s", r.Host)
+	utils.Info("[Proxy] [HTTP] CONNECT %s --> %s", r.RemoteAddr, r.Host)
+
 	destConn, err := Dial("tcp", r.Host, h.ForwardURLs)
 	if err != nil {
 		utils.Error("[Proxy] [HTTP] Dial error: %v", err)
