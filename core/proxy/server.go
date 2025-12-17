@@ -20,17 +20,17 @@ func Start(listenURL string, forwardURLs []string) {
 
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		utils.Error("Proxy Listen error: %v", err)
+		utils.Error("[Proxy] [Server] Listen error: %v", err)
 		return
 	}
 	defer l.Close()
 
-	utils.Info("Proxy listening on %s (%s)", addr, scheme)
+	utils.Info("[Proxy] [Server] Listening on %s (%s)", addr, scheme)
 
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			utils.Error("Accept error: %v", err)
+			utils.Error("[Proxy] [Server] Accept error: %v", err)
 			continue
 		}
 		go HandleConnection(conn, forwardURLs, auth, scheme)
@@ -38,7 +38,7 @@ func Start(listenURL string, forwardURLs []string) {
 }
 
 func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string) {
-	utils.Info("Accepted connection from %s", conn.RemoteAddr())
+	utils.Info("[Proxy] [Server] Accepted connection from %s", conn.RemoteAddr())
 
 	// 嗅探协议类型
 	br := bufio.NewReader(conn)
@@ -54,19 +54,19 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 		switch scheme {
 		case "tls":
 			if peek[0] != 0x16 {
-				utils.Logging("Expected TLS (0x16) but got 0x%02x", peek[0])
+				utils.Logging("[Proxy] [Server] Expected TLS (0x16) but got 0x%02x", peek[0])
 				conn.Close()
 				return
 			}
 		case "socks5":
 			if peek[0] != 0x05 {
-				utils.Logging("Expected SOCKS5 (0x05) but got 0x%02x", peek[0])
+				utils.Logging("[Proxy] [Server] Expected SOCKS5 (0x05) but got 0x%02x", peek[0])
 				conn.Close()
 				return
 			}
 		case "ssh":
 			if peek[0] != 'S' {
-				utils.Logging("Expected SSH ('S') but got 0x%02x", peek[0])
+				utils.Logging("[Proxy] [Server] Expected SSH ('S') but got 0x%02x", peek[0])
 				conn.Close()
 				return
 			}

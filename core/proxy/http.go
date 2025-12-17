@@ -73,8 +73,10 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
+	utils.Info("[Proxy] [HTTP] CONNECT %s", r.Host)
 	destConn, err := Dial("tcp", r.Host, h.ForwardURLs)
 	if err != nil {
+		utils.Error("[Proxy] [HTTP] Dial error: %v", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -84,6 +86,7 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if hijacker, ok := w.(http.Hijacker); ok {
 		clientConn, _, err := hijacker.Hijack()
 		if err != nil {
+			utils.Error("[Proxy] [HTTP] Hijack error: %v", err)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
@@ -129,6 +132,7 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	utils.Info("[Proxy] [HTTP] %s %s", r.Method, r.URL)
 	// 移除 Hop-by-hop headers
 	delHopHeaders(r.Header)
 

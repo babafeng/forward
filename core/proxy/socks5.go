@@ -9,6 +9,7 @@ import (
 
 // HandleSocks5 处理 SOCKS5 代理请求
 func HandleSocks5(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
+	utils.Info("[Proxy] [SOCKS5] Accepted connection from %s", conn.RemoteAddr())
 	defer conn.Close()
 
 	// 握手
@@ -71,10 +72,12 @@ func HandleSocks5(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 		}
 
 		if !auth.Validate(string(uname), string(passwd)) {
+			utils.Logging("[Proxy] [SOCKS5] Auth failed for user: %s", uname)
 			conn.Write([]byte{0x01, 0x01}) // 失败
 			return
 		}
 
+		utils.Info("[Proxy] [SOCKS5] Auth success for user: %s", uname)
 		conn.Write([]byte{0x01, 0x00}) // 成功
 
 	} else {
@@ -94,12 +97,16 @@ func HandleSocks5(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 
 	targetAddr, err := utils.ReadSocks5Addr(conn, header[3])
 	if err != nil {
+		utils.Error("[Proxy] [SOCKS5] Failed to read target address: %v", err)
 		return
 	}
+
+	utils.Info("[Proxy] [SOCKS5] Connecting to %s", targetAddr)
 
 	// 连接目标
 	targetConn, err := Dial("tcp", targetAddr, forwardURLs)
 	if err != nil {
+		utils.Error("[Proxy] [SOCKS5] Dial failed to %s: %v", targetAddr, err)
 		conn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}

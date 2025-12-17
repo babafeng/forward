@@ -85,7 +85,7 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 				return nil, err
 			}
 			// TLS 握手成功后，默认使用 SOCKS5 协议继续连接下一跳
-			utils.Debug("TLS Handshake success to %s %s %s", u.Host, nextAddr, u.User)
+			utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s %s %s", u.Host, nextAddr, u.User)
 			conn, err = socks5Connect(conn, nextAddr, u.User)
 
 		default:

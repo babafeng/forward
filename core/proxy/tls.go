@@ -24,9 +24,11 @@ func HandleTLS(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 
 	// 握手
 	if err := tlsConn.Handshake(); err != nil {
+		utils.Error("[Proxy] [TLS] Handshake failed: %v", err)
 		tlsConn.Close()
 		return
 	}
+	utils.Info("[Proxy] [TLS] Handshake success from %s", conn.RemoteAddr())
 
 	// 现在我们有了解密流。
 	// 我们应该递归调用 handleConnection 来嗅探 TLS 内部的协议。

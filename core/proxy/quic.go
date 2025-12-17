@@ -20,7 +20,7 @@ import (
 func StartQUIC(addr string, forwardURLs []string, auth *utils.Auth) {
 	cert, err := utils.GetCertificate()
 	if err != nil {
-		utils.Error("Failed to generate certificate for QUIC: %v", err)
+		utils.Error("[Proxy] [QUIC] Failed to generate certificate: %v", err)
 		return
 	}
 
@@ -39,10 +39,10 @@ func StartQUIC(addr string, forwardURLs []string, auth *utils.Auth) {
 		},
 	}
 
-	utils.Info("QUIC (HTTP/3) listening on %s", addr)
+	utils.Info("[Proxy] [QUIC] Listening on %s", addr)
 	if err := server.ListenAndServe(); err != nil {
 		// UDP 端口可能被占用或者权限问题，不应该阻塞主流程，但记录错误
-		utils.Error("QUIC server error: %v", err)
+		utils.Error("[Proxy] [QUIC] Server error: %v", err)
 	}
 }
 
@@ -77,7 +77,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		qConn.CloseWithError(0, "")
 		return nil, fmt.Errorf("open stream failed: %v", err)
 	}
-	utils.Logging("QUIC stream opened")
+	utils.Logging("[Proxy] [QUIC] Stream opened")
 
 	// 4. 发送 CONNECT 请求
 	reqURL := fmt.Sprintf("https://%s", proxyAddr)

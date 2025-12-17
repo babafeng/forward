@@ -34,7 +34,7 @@ func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 	// 生成临时的 Host Key
 	key, err := getHostKey()
 	if err != nil {
-		utils.Error("Failed to generate SSH host key: %v", err)
+		utils.Error("[Proxy] [SSH] Failed to generate SSH host key: %v", err)
 		conn.Close()
 		return
 	}
@@ -42,9 +42,10 @@ func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
-		utils.Error("SSH Handshake failed: %v", err)
+		utils.Error("[Proxy] [SSH] Handshake failed: %v", err)
 		return
 	}
+	utils.Info("[Proxy] [SSH] Handshake success from %s", conn.RemoteAddr())
 	defer sshConn.Close()
 
 	// 处理全局请求
@@ -75,6 +76,7 @@ func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 		}
 
 		targetAddr := fmt.Sprintf("%s:%d", d.DestAddr, d.DestPort)
+		utils.Info("[Proxy] [SSH] Channel request to %s", targetAddr)
 		go handleSSHChannel(channel, requests, targetAddr, forwardURLs, conn)
 	}
 }

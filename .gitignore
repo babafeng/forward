@@ -9,6 +9,8 @@ test.sh
 test.py
 tests/
 github_webhook_api.py
+http3_test.py
+http3_proxy_test.py
 
 # Folders
 _obj
