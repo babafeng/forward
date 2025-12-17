@@ -41,7 +41,6 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 	// 嗅探协议类型
 	br := bufio.NewReader(conn)
 	peek, _ := br.Peek(1)
-	utils.Logging("Scheme: [%s] [%v]", scheme, peek[0])
 
 	if len(peek) == 0 {
 		conn.Close()
@@ -50,7 +49,6 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 
 	// 如果指定了 scheme 则强制检查，避免指定监听 SSH，也能使用 TLS
 	if scheme != "" && scheme != "tcp" {
-		utils.Logging("Enforcing scheme %s", scheme)
 		switch scheme {
 		case "tls":
 			if peek[0] != 0x16 {

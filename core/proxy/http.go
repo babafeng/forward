@@ -20,11 +20,8 @@ func HandleHTTP(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 			ForwardURLs: forwardURLs,
 			Auth:        auth,
 		},
-		// 禁用 HTTP/2 的 Cleartext 支持 (H2C)，因为浏览器通常不支持
-		// 但是如果前置是 TLS，http.Server 会自动支持 H2
 	}
 
-	// 使用 SingleConnListener 将单个连接适配为 Listener
 	l := &SingleConnListener{conn: conn, ch: make(chan net.Conn, 1)}
 	l.ch <- conn
 
