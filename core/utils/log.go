@@ -44,9 +44,7 @@ func formatLog(level string, msg string) string {
 		file = "???"
 		line = 0
 	} else {
-		if relFile, err := filepath.Rel(wd, file); err == nil {
-			file = relFile
-		}
+		file = filepath.Base(file)
 	}
 	return fmt.Sprintf("%s [%s] %s:%d %s", now, level, file, line, msg)
 }

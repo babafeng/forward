@@ -46,21 +46,6 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 			return nil, err
 		}
 
-		// 如果只有一跳，或者 QUIC 已经连接到了下一跳，我们需要跳过循环的第一次迭代吗？
-		// quicConnect 已经完成了 "连接到 Proxy1" 和 "Proxy1 连接到 NextAddr"
-		// 所以 conn 现在是到 NextAddr 的隧道。
-		// 循环应该从 i=1 开始处理后续的代理？
-		// 现有的循环逻辑是：
-		// i=0: 处理 forwardURLs[0]。conn 是到 forwardURLs[0] 的连接。
-		// 我们执行 handshake(conn, nextAddr)。
-		// 结果 conn 变为到 nextAddr 的隧道。
-
-		// 对于 QUIC，quicConnect 已经做了同样的事情：
-		// 它连接到 forwardURLs[0] (u.Host)，并执行 CONNECT nextAddr。
-		// 返回的 conn 是到 nextAddr 的隧道。
-		// 所以这完全符合循环一次迭代后的状态。
-		// 我们只需要跳过循环的第一次迭代 (i=0)。
-
 	} else {
 		conn, err = net.DialTimeout("tcp", u.Host, 10*time.Second)
 		if err != nil {

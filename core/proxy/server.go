@@ -38,6 +38,8 @@ func Start(listenURL string, forwardURLs []string) {
 }
 
 func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string) {
+	utils.Info("Accepted connection from %s", conn.RemoteAddr())
+
 	// 嗅探协议类型
 	br := bufio.NewReader(conn)
 	peek, _ := br.Peek(1)
