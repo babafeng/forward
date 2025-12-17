@@ -38,8 +38,6 @@ func Start(listenURL string, forwardURLs []string) {
 }
 
 func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string) {
-	utils.Info("[Proxy] [Server] Accepted connection from %s", conn.RemoteAddr())
-
 	// 嗅探协议类型
 	br := bufio.NewReader(conn)
 	peek, _ := br.Peek(1)
@@ -99,7 +97,6 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 	HandleHTTP(newBufferedConn(conn, br), forwardURLs, auth)
 }
 
-// BufferedConn 包装 net.Conn 和 bufio.Reader 以支持读取已 peek 的数据
 type BufferedConn struct {
 	net.Conn
 	r *bufio.Reader
@@ -113,8 +110,6 @@ func (b *BufferedConn) Read(p []byte) (int, error) {
 	return b.r.Read(p)
 }
 
-// ConnectionState implements the tls.ConnectionState interface
-// This allows http.Server to detect that this is a TLS connection and enable HTTP/2
 func (b *BufferedConn) ConnectionState() tls.ConnectionState {
 	if tc, ok := b.Conn.(*tls.Conn); ok {
 		return tc.ConnectionState()

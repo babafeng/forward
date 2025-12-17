@@ -196,13 +196,6 @@ func httpConnect(conn net.Conn, targetAddr string, user *url.Userinfo) (net.Conn
 		return nil, err
 	}
 
-	// 读取响应
-	// 简单读取直到 \r\n\r\n
-	// 注意：这里可能读取过多，导致读取了后续的数据。
-	// 严格来说应该使用 bufio.Reader，但是 conn 是 net.Conn。
-	// 如果我们用 bufio 包装，我们需要返回包装后的 conn (BufferedConn)，否则后续读取会丢失 buffer 中的数据。
-	// 这里为了简单，逐字节读取直到 header 结束。
-
 	headerBuf := make([]byte, 0)
 	b := make([]byte, 1)
 	for {

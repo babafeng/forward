@@ -34,7 +34,7 @@ type ProxyHandler struct {
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	utils.Logging("[Proxy] [Handler] Request received: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
+	utils.Logging("[Proxy] [Handler] Request received: %s %s --> %s", r.Method, r.RemoteAddr, r.URL)
 
 	// 1. 鉴权
 	if h.Auth != nil {
@@ -75,8 +75,6 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
-	utils.Info("[Proxy] [HTTP] CONNECT %s --> %s", r.RemoteAddr, r.Host)
-
 	destConn, err := Dial("tcp", r.Host, h.ForwardURLs)
 	if err != nil {
 		utils.Error("[Proxy] [HTTP] Dial error: %v", err)
@@ -135,8 +133,7 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	utils.Info("[Proxy] [HTTP] %s %s", r.Method, r.URL)
-	// 移除 Hop-by-hop headers
+	utils.Info("[Proxy] [HTTP] %s %s --> %s", r.Method, r.RemoteAddr, r.URL)
 	delHopHeaders(r.Header)
 
 	transport := &http.Transport{
@@ -170,7 +167,6 @@ func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// Hop-by-hop headers. These are removed when sent to the backend.
 // http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
 var hopHeaders = []string{
 	"Connection",
