@@ -8,27 +8,20 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  goreleaser:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, windows, darwin]  # 目标系统：linux、windows、macOS
-        goarch: [amd64, arm64]          # 目标架构：amd64、arm64
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.25.5'
-
-      - name: Build and Release
-        uses: wangyoucao577/go-release-action@v1.50
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          goarch: ${{ matrix.goarch }}
-          project_path: "./cmd/forward"
-          binary_name: "forward"
-          extra_files: "README.md"
-          ldflags: "-s -w"
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
