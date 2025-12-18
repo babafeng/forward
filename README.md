@@ -1,4 +1,4 @@
-# Go-Forward
+# forward
 
 forward is a lightweight and high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, SSH, TLS) with protocol sniffing on the same port.
 
@@ -12,12 +12,11 @@ forward is a lightweight and high-performance port forwarding and proxy tool wri
 ## Installation
 
 ```bash
-go build -o forward ./cmd/forward
-```
-
-```bash
-go build -o forward ./cmd/forward
-```
+# From source code
+git clone https://github.com/babafeng/forward.git
+cd forward
+go build -o forward ./cmd/forward && chmod +x forward
+    ```
 
 ```bash
 # 安装最新版本
