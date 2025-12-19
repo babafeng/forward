@@ -16,7 +16,7 @@ forward is a lightweight and high-performance port forwarding and proxy tool wri
 git clone https://github.com/babafeng/forward.git
 cd forward
 go build -o forward ./cmd/forward && chmod +x forward
-    ```
+```
 
 ```bash
 # 安装最新版本

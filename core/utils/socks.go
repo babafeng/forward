@@ -5,14 +5,28 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 )
 
-// ReadSocks5Addr reads the address and port from a SOCKS5 request/response
-// It assumes the caller has already read the first 3 bytes (VER, CMD, RSV) and the 4th byte (ATYP) is passed as argument
-// Or we can design it to read ATYP as well?
-// Let's design it to take the reader and the ATYP that was already read, OR just the reader if we assume we are at the ATYP byte?
-// In both existing cases, the caller reads 4 bytes (VER, CMD, RSV, ATYP).
-// So the reader is positioned at the address.
+func GetSocks5ReplyCode(err error) byte {
+	if err == nil {
+		return 0x00 // Succeeded
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "network is unreachable") {
+		return 0x03 // Network unreachable
+	} else if strings.Contains(msg, "connection refused") {
+		return 0x05 // Connection refused
+	} else if strings.Contains(msg, "no route to host") {
+		return 0x03 // Network unreachable
+	} else if strings.Contains(msg, "502 Bad Gateway") {
+		return 0x03 // Network unreachable (Upstream proxy failed)
+	} else if strings.Contains(msg, "i/o timeout") {
+		return 0x04 // Host unreachable (Timeout)
+	}
+	return 0x04 // Host unreachable (Default)
+}
+
 func ReadSocks5Addr(r io.Reader, atyp byte) (string, error) {
 	var addr string
 	switch atyp {

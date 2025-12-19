@@ -106,7 +106,8 @@ func HandleSocks5(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 	targetConn, err := Dial("tcp", targetAddr, forwardURLs)
 	if err != nil {
 		utils.Error("[Proxy] [SOCKS5] Dial failed to %s: %v", targetAddr, err)
-		conn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		rep := utils.GetSocks5ReplyCode(err)
+		conn.Write([]byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
 	defer targetConn.Close()
