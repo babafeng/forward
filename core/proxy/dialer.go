@@ -30,6 +30,33 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 	}
 
 	if len(forwardURLs) == 0 {
+		// 如果目标地址是域名，且解析出 IPv6，但本地不支持 IPv6，则尝试强制使用 IPv4
+		host, port, err := net.SplitHostPort(addr)
+		if err == nil {
+			ip := net.ParseIP(host)
+			if ip == nil {
+				// 是域名，尝试解析
+				ips, err := net.LookupIP(host)
+				if err == nil {
+					var ipv4 net.IP
+					var ipv6 net.IP
+					for _, i := range ips {
+						if i.To4() != nil {
+							ipv4 = i
+						} else {
+							ipv6 = i
+						}
+					}
+					// 如果有 IPv4，优先使用 IPv4 (为了解决部分环境 IPv6 不通的问题)
+					// 这里可以做一个简单的检测，或者直接优先 IPv4
+					if ipv4 != nil {
+						addr = net.JoinHostPort(ipv4.String(), port)
+					} else if ipv6 != nil {
+						addr = net.JoinHostPort(ipv6.String(), port)
+					}
+				}
+			}
+		}
 		return net.DialTimeout(network, addr, 10*time.Second)
 	}
 

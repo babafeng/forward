@@ -24,7 +24,7 @@ func GetSocks5ReplyCode(err error) byte {
 	} else if strings.Contains(msg, "i/o timeout") {
 		return 0x04 // Host unreachable (Timeout)
 	}
-	return 0x04 // Host unreachable (Default)
+	return 0x01 // General SOCKS server failure
 }
 
 func ReadSocks5Addr(r io.Reader, atyp byte) (string, error) {
