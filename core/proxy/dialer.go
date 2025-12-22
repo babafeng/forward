@@ -69,7 +69,7 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 	var conn net.Conn
 
 	// 特殊处理 QUIC 协议作为第一跳
-	if u.Scheme == "quic" {
+	if u.Scheme == "quic" || u.Scheme == "http3" {
 		// 确定下一跳地址
 		var nextAddr string
 		if len(forwardURLs) == 1 {
@@ -93,7 +93,7 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 	}
 
 	startIdx := 0
-	if u.Scheme == "quic" {
+	if u.Scheme == "quic" || u.Scheme == "http3" {
 		startIdx = 1
 	}
 
@@ -139,7 +139,7 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 
 		default:
 			conn.Close()
-			return nil, fmt.Errorf("unknown proxy scheme: %s", u.Scheme)
+			return nil, fmt.Errorf("Not supported scheme: %s", u.Scheme)
 		}
 
 		if err != nil {

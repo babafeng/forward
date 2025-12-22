@@ -5,8 +5,10 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"sync"
 	"time"
 )
@@ -36,10 +38,16 @@ func GenerateCert() (tls.Certificate, error) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Forward"},
+			CommonName:   "Forward",
+		},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(time.Hour * 365),
 		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:     []string{"localhost"},
 	}
 	derBytes, _ := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})

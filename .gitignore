@@ -46,3 +46,5 @@ snap
 *.pem
 *.txt
 dist/
+cert.cer
+private.key

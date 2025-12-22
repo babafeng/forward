@@ -36,23 +36,29 @@ var (
 )
 
 var allSchemes = map[string]struct{}{
-	"socks5": {},
-	"http":   {},
-	"https":  {},
-	"tls":    {},
-	"ssh":    {},
-	"tcp":    {},
-	"udp":    {},
-	"quic":   {},
+	"socks5":   {},
+	"http":     {},
+	"http2":    {},
+	"http3":    {},
+	"https":    {},
+	"http1.1":  {},
+	"tls":      {},
+	"ssh":      {},
+	"tcp":      {},
+	"udp":      {},
+	"quic":     {},
 }
 
 var proxySchemes = map[string]struct{}{
-	"socks5": {},
-	"http":   {},
-	"https":  {},
-	"tls":    {},
-	"ssh":    {},
-	"quic":   {},
+	"socks5":  {},
+	"http":    {},
+	"http2":   {},
+	"http1.1": {},
+	"http3":   {},
+	"https":   {},
+	"tls":     {},
+	"ssh":     {},
+	"quic":    {},
 }
 
 func main() {
@@ -100,7 +106,7 @@ func main() {
 }
 
 func startListener(listenURL string, forwardURLs []string) {
-	utils.Info("Initializing listener: %s", listenURL)
+	utils.Info("Initializing listener: %s", utils.RedactURL(listenURL))
 
 	scheme, _, _ := utils.URLParse(listenURL)
 	if scheme != "" {
@@ -111,26 +117,32 @@ func startListener(listenURL string, forwardURLs []string) {
 		}
 	}
 
+	// Redact forward URLs for logging
+	redactedForwardURLs := make([]string, len(forwardURLs))
+	for i, u := range forwardURLs {
+		redactedForwardURLs[i] = utils.RedactURL(u)
+	}
+
 	if strings.Contains(listenURL, "bind=true") {
-		utils.Logging("Forward enabled reverse server mode for %s", listenURL)
+		utils.Logging("Forward enabled reverse server mode for %s", utils.RedactURL(listenURL))
 		go reverse.StartServer(listenURL)
 
 	} else if len(forwardURLs) > 0 && (strings.HasPrefix(listenURL, "tcp://") || strings.HasPrefix(listenURL, "udp://")) {
 		if isReverseClient(listenURL, forwardURLs) {
-			utils.Logging("Forward starting reverse client for %s", listenURL)
+			utils.Logging("Forward starting reverse client for %s", utils.RedactURL(listenURL))
 			go reverse.StartClient(listenURL, forwardURLs)
 
 		} else if isPortForward(listenURL) {
-			utils.Logging("Forward starting port forward for %s via %v", listenURL, forwardURLs)
+			utils.Logging("Forward starting port forward for %s via %v", utils.RedactURL(listenURL), redactedForwardURLs)
 			go forward.Start(listenURL, forwardURLs)
 
 		} else {
-			utils.Logging("Forward proxy for %s", listenURL)
+			utils.Logging("Forward proxy for %s", utils.RedactURL(listenURL))
 			go proxy.Start(listenURL, forwardURLs)
 
 		}
 	} else if isPortForward(listenURL) {
-		utils.Logging("Forward starting port forward for %s via %v", listenURL, forwardURLs)
+		utils.Logging("Forward starting port forward for %s via %v", utils.RedactURL(listenURL), redactedForwardURLs)
 		go forward.Start(listenURL, forwardURLs)
 
 	} else {
@@ -148,7 +160,7 @@ func startListener(listenURL string, forwardURLs []string) {
 			os.Exit(0)
 		}
 
-		utils.Logging("Forward proxy for %s", listenURL)
+		utils.Logging("Forward proxy for %s", utils.RedactURL(listenURL))
 		go proxy.Start(listenURL, forwardURLs)
 	}
 }

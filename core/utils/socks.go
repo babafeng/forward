@@ -65,8 +65,6 @@ func ReadSocks5Addr(r io.Reader, atyp byte) (string, error) {
 	return net.JoinHostPort(addr, strconv.Itoa(port)), nil
 }
 
-// WriteSocks5Addr writes a SOCKS5 address and port to the writer
-// It handles IPv4, IPv6, and Domain names
 func WriteSocks5Addr(w io.Writer, addr string) error {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {

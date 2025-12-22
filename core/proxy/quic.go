@@ -97,12 +97,12 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		str.Close()
 		return nil, fmt.Errorf("read response failed: %v", err)
 	}
-	utils.Info("[Proxy] [QUIC] response received: %s | %s --> %s %d bytes | took %v",
+	utils.Info("[Proxy] [QUIC] response received: %s %s --> %s %d bytes %v",
 		resp.Status, qConn.LocalAddr(), qConn.RemoteAddr(), resp.ContentLength, time.Since(time.Now()))
 
 	if resp.StatusCode != 200 {
 		str.Close()
-		return nil, fmt.Errorf("proxy responded with status: %s", resp.Status)
+		return nil, fmt.Errorf("responded with status: %s", resp.Status)
 	}
 
 	return &quicStreamConn{

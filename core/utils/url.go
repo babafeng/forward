@@ -32,3 +32,17 @@ func URLParse(listenURL string) (string, *Auth, string) {
 
 	return scheme, auth, addr
 }
+
+func RedactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if u.User != nil {
+		if _, ok := u.User.Password(); ok {
+			u.User = url.UserPassword(u.User.Username(), "*")
+			return strings.Replace(u.String(), ":%2A", ":*****", -1)
+		}
+	}
+	return u.String()
+}

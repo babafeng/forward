@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"crypto/subtle"
 	"errors"
 	"strings"
 )
@@ -25,5 +26,7 @@ func NewAuth(authStr string) (*Auth, error) {
 
 // Validate checks if the provided user and pass match the configured auth
 func (a *Auth) Validate(user, pass string) bool {
-	return a.User == user && a.Pass == pass
+	userMatch := subtle.ConstantTimeCompare([]byte(a.User), []byte(user)) == 1
+	passMatch := subtle.ConstantTimeCompare([]byte(a.Pass), []byte(pass)) == 1
+	return userMatch && passMatch
 }

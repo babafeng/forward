@@ -12,29 +12,30 @@ import (
 	"go-forward/core/utils"
 )
 
-// HandleHTTP 处理 HTTP 代理请求
-func HandleHTTP(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
-	// 使用 http.Server 来处理 HTTP/1.1 和 HTTP/2 请求
-	server := &http.Server{
-		Handler: &ProxyHandler{
-			ForwardURLs: forwardURLs,
-			Auth:        auth,
-		},
-	}
-
-	l := &SingleConnListener{conn: conn, ch: make(chan net.Conn, 1)}
-	l.ch <- conn
-
-	server.Serve(l)
-}
-
 type ProxyHandler struct {
 	ForwardURLs []string
 	Auth        *utils.Auth
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	utils.Logging("[Proxy] [Handler] Request received: %s %s --> %s", r.Method, r.RemoteAddr, r.URL)
+	var forwardInfo string
+	if len(h.ForwardURLs) > 0 {
+		forwardInfo = utils.RedactURL(h.ForwardURLs[0])
+	} else {
+		forwardInfo = "Direct"
+	}
+	utils.Logging("[Proxy] [Handler] Request received: %s %s --> %s via %v", r.Method, r.RemoteAddr, r.URL, forwardInfo)
+	if r.Method != http.MethodConnect && !r.URL.IsAbs() && r.Host == "" {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Hello World!"))
+		return
+	}
+
+	if r.Method != http.MethodConnect && r.URL.Scheme == "" && strings.HasPrefix(r.RequestURI, "/") {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Hello World!"))
+		return
+	}
 
 	if h.Auth != nil {
 		authHeader := r.Header.Get("Proxy-Authorization")
@@ -119,7 +120,13 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	utils.Info("[Proxy] [HTTP] %s %s --> %s", r.Method, r.RemoteAddr, r.URL)
+	var forwardInfo string
+	if len(h.ForwardURLs) > 0 {
+		forwardInfo = utils.RedactURL(h.ForwardURLs[0])
+	} else {
+		forwardInfo = "Direct"
+	}
+	utils.Info("[Proxy] [HTTP] %s %s --> %s via %v", r.Method, r.RemoteAddr, r.URL, forwardInfo)
 	delHopHeaders(r.Header)
 
 	transport := &http.Transport{
