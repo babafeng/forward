@@ -126,7 +126,8 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 			var signer ssh.Signer
 			keyFile := u.Query().Get("key")
 			if keyFile != "" {
-				signer, err = utils.LoadSSHPrivateKey(keyFile)
+				password := u.Query().Get("password")
+				signer, err = utils.LoadSSHPrivateKey(keyFile, password)
 				if err != nil {
 					conn.Close()
 					return nil, fmt.Errorf("failed to load SSH private key: %v", err)

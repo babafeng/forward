@@ -43,7 +43,17 @@ You can set cert for tls category service.
 
 ```bash
 # support tls / quic / http2 / http1 / http3
-forward -F "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
+forward -L "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
+
+# And client, If self-signed cert, set ca option
+forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer"
+```
+
+You can set cert for ssh category service.
+
+```bash
+forward -L "ssh://user:pass@your.server.com:2333?pub=/path/to/authorized_keys"
+forward -L http://:1080 -F "ssh://user:pass@your.server.com:2333?key=/path/to/private.key"
 ```
 
 ## Usage

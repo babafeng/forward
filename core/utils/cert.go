@@ -83,10 +83,13 @@ func GenerateSSHKey() (ed25519.PrivateKey, error) {
 	return priv, err
 }
 
-func LoadSSHPrivateKey(keyFile string) (ssh.Signer, error) {
+func LoadSSHPrivateKey(keyFile, password string) (ssh.Signer, error) {
 	keyBytes, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, err
+	}
+	if password != "" {
+		return ssh.ParsePrivateKeyWithPassphrase(keyBytes, []byte(password))
 	}
 	return ssh.ParsePrivateKey(keyBytes)
 }
