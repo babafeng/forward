@@ -17,7 +17,8 @@ import (
 
 // Dial 通过代理鏈连接到目标地址
 func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
-	// Fix unbracketed IPv6 address: host:port -> [host]:port
+	forwardURLs = utils.FixURLScheme(forwardURLs)
+
 	if strings.Count(addr, ":") > 1 && !strings.Contains(addr, "[") && !strings.Contains(addr, "]") {
 		lastColon := strings.LastIndex(addr, ":")
 		if lastColon != -1 {
@@ -30,33 +31,6 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 	}
 
 	if len(forwardURLs) == 0 {
-		// 如果目标地址是域名，且解析出 IPv6，但本地不支持 IPv6，则尝试强制使用 IPv4
-		host, port, err := net.SplitHostPort(addr)
-		if err == nil {
-			ip := net.ParseIP(host)
-			if ip == nil {
-				// 是域名，尝试解析
-				ips, err := net.LookupIP(host)
-				if err == nil {
-					var ipv4 net.IP
-					var ipv6 net.IP
-					for _, i := range ips {
-						if i.To4() != nil {
-							ipv4 = i
-						} else {
-							ipv6 = i
-						}
-					}
-					// 如果有 IPv4，优先使用 IPv4 (为了解决部分环境 IPv6 不通的问题)
-					// 这里可以做一个简单的检测，或者直接优先 IPv4
-					if ipv4 != nil {
-						addr = net.JoinHostPort(ipv4.String(), port)
-					} else if ipv6 != nil {
-						addr = net.JoinHostPort(ipv6.String(), port)
-					}
-				}
-			}
-		}
 		return net.DialTimeout(network, addr, 10*time.Second)
 	}
 
@@ -110,6 +84,26 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 			nextAddr = nextU.Host
 		}
 
+		// 解析 CA 证书参数
+		var tlsConfig *tls.Config
+		caFile := u.Query().Get("ca")
+		if caFile != "" {
+			pool, err := utils.LoadCA(caFile)
+			if err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("failed to load CA: %v", err)
+			}
+			tlsConfig = &tls.Config{
+				RootCAs:    pool,
+				ServerName: u.Hostname(),
+			}
+		} else {
+			tlsConfig = &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         u.Hostname(),
+			}
+		}
+
 		switch u.Scheme {
 		case "socks5":
 			if network == "udp" && i == len(forwardURLs)-1 {
@@ -120,10 +114,18 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 			}
 		case "http":
 			conn, err = httpConnect(conn, nextAddr, u.User)
+		case "https":
+			conn, err = tlsHandshake(conn, tlsConfig)
+			if err != nil {
+				conn.Close()
+				return nil, err
+			}
+			utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s", u.Host)
+			conn, err = httpConnect(conn, nextAddr, u.User)
 		case "ssh":
 			conn, err = sshConnect(conn, u.Host, nextAddr, u.User)
 		case "tls":
-			conn, err = tlsHandshake(conn, u.Hostname())
+			conn, err = tlsHandshake(conn, tlsConfig)
 			if err != nil {
 				conn.Close()
 				return nil, err
@@ -468,11 +470,7 @@ func (s *sshClientConn) Close() error {
 	return err
 }
 
-func tlsHandshake(conn net.Conn, serverName string) (net.Conn, error) {
-	cfg := &tls.Config{
-		InsecureSkipVerify: true,
-		ServerName:         serverName,
-	}
+func tlsHandshake(conn net.Conn, cfg *tls.Config) (net.Conn, error) {
 	tlsConn := tls.Client(conn, cfg)
 	if err := tlsConn.Handshake(); err != nil {
 		return nil, err

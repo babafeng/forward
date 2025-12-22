@@ -93,7 +93,7 @@ forward -L :1080  # http socks5 http1 http2 https quic tls ssh
 Start a reverse proxy server listening on port 2333.
 
 ```bash
-# support all proxy sechemes, but recommend using secure ones below: tls / ssh / quic
+# support all proxy schemes, but recommend using secure ones below: tls / ssh / quic
 forward -L tls://user:passwd@:2333?bind=true
 ```
 

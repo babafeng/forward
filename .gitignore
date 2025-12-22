@@ -48,3 +48,6 @@ snap
 dist/
 cert.cer
 private.key
+self-cert.cer
+self-private.key
+self-rootca.cer

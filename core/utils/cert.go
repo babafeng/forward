@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -39,6 +40,16 @@ func LoadCertificate(certFile, keyFile string) (*tls.Certificate, error) {
 		return nil, err
 	}
 	return &cert, nil
+}
+
+func LoadCA(caFile string) (*x509.CertPool, error) {
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, err
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+	return caCertPool, nil
 }
 
 func GenerateCert() (tls.Certificate, error) {

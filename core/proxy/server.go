@@ -66,7 +66,7 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 		HandleSSH(conn, forwardURLs, auth)
 		return
 	case "http", "http1.1":
-		HandleHTTP1(conn, forwardURLs, auth)
+		HandleHTTP1(conn, forwardURLs, auth, tlsConfig)
 		return
 	case "http2", "https":
 		HandleHTTP2(conn, forwardURLs, auth, tlsConfig)
@@ -112,7 +112,7 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 	}
 
 	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP
-	HandleHTTP1(newBufferedConn(conn, br), forwardURLs, auth)
+	HandleHTTP1(newBufferedConn(conn, br), forwardURLs, auth, nil)
 }
 
 type BufferedConn struct {
