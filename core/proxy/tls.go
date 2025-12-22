@@ -33,5 +33,5 @@ func HandleTLS(conn net.Conn, forwardURLs []string, auth *utils.Auth, tlsConfig 
 	}
 	utils.Info("[Proxy] [TLS] Handshake success from %s", conn.RemoteAddr())
 
-	HandleConnection(tlsConn, forwardURLs, auth, "", nil)
+	HandleConnection(tlsConn, forwardURLs, auth, "", nil, nil)
 }

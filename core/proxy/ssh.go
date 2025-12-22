@@ -1,8 +1,7 @@
 package proxy
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
+	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -20,7 +19,7 @@ var (
 	hostKeyOnce sync.Once
 )
 
-func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
+func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
 	config := &ssh.ServerConfig{
 		ServerVersion: "SSH-2.0-OpenSSH_10.2p1 Debian13",
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
@@ -30,6 +29,17 @@ func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 				}
 			}
 			return nil, nil
+		},
+		PublicKeyCallback: func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+			if len(authorizedKeys) == 0 {
+				return nil, fmt.Errorf("no authorized keys configured")
+			}
+			for _, k := range authorizedKeys {
+				if bytes.Equal(k.Marshal(), pubKey.Marshal()) {
+					return nil, nil
+				}
+			}
+			return nil, fmt.Errorf("unknown public key for %q", c.User())
 		},
 	}
 
@@ -195,9 +205,9 @@ func getHostKey() (ssh.Signer, error) {
 }
 
 func generateSSHKey() (ssh.Signer, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	priv, err := utils.GenerateSSHKey()
 	if err != nil {
 		return nil, err
 	}
-	return ssh.NewSignerFromKey(key)
+	return ssh.NewSignerFromKey(priv)
 }

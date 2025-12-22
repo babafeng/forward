@@ -183,11 +183,7 @@ func handleSSH(conn net.Conn, auth *utils.Auth) {
 		}
 	}
 
-	key, err := utils.GenerateSSHKey()
-	if err != nil {
-		conn.Close()
-		return
-	}
+	key, _ := utils.GenerateSSHKey()
 	signer, _ := ssh.NewSignerFromKey(key)
 	config.AddHostKey(signer)
 

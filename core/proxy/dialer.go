@@ -123,7 +123,16 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 			utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s", u.Host)
 			conn, err = httpConnect(conn, nextAddr, u.User)
 		case "ssh":
-			conn, err = sshConnect(conn, u.Host, nextAddr, u.User)
+			var signer ssh.Signer
+			keyFile := u.Query().Get("key")
+			if keyFile != "" {
+				signer, err = utils.LoadSSHPrivateKey(keyFile)
+				if err != nil {
+					conn.Close()
+					return nil, fmt.Errorf("failed to load SSH private key: %v", err)
+				}
+			}
+			conn, err = sshConnect(conn, u.Host, nextAddr, u.User, signer)
 		case "tls":
 			conn, err = tlsHandshake(conn, tlsConfig)
 			if err != nil {
@@ -425,7 +434,7 @@ func httpConnect(conn net.Conn, targetAddr string, user *url.Userinfo) (net.Conn
 	return conn, nil
 }
 
-func sshConnect(conn net.Conn, sshServerAddr, targetAddr string, user *url.Userinfo) (net.Conn, error) {
+func sshConnect(conn net.Conn, sshServerAddr, targetAddr string, user *url.Userinfo, signer ssh.Signer) (net.Conn, error) {
 	username := "root"
 	var authMethods []ssh.AuthMethod
 
@@ -434,6 +443,10 @@ func sshConnect(conn net.Conn, sshServerAddr, targetAddr string, user *url.Useri
 		if p, ok := user.Password(); ok {
 			authMethods = append(authMethods, ssh.Password(p))
 		}
+	}
+
+	if signer != nil {
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
 	}
 
 	config := &ssh.ClientConfig{

@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -12,6 +13,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 var (
@@ -75,6 +78,34 @@ func GenerateCert() (tls.Certificate, error) {
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
-func GenerateSSHKey() (*rsa.PrivateKey, error) {
-	return rsa.GenerateKey(rand.Reader, 2048)
+func GenerateSSHKey() (ed25519.PrivateKey, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	return priv, err
+}
+
+func LoadSSHPrivateKey(keyFile string) (ssh.Signer, error) {
+	keyBytes, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, err
+	}
+	return ssh.ParsePrivateKey(keyBytes)
+}
+
+func LoadSSHAuthorizedKeys(pubFile string) ([]ssh.PublicKey, error) {
+	pubBytes, err := os.ReadFile(pubFile)
+	if err != nil {
+		return nil, err
+	}
+	var keys []ssh.PublicKey
+	for len(pubBytes) > 0 {
+		pubKey, _, _, rest, err := ssh.ParseAuthorizedKey(pubBytes)
+		if err != nil {
+			break
+		}
+		if pubKey != nil {
+			keys = append(keys, pubKey)
+		}
+		pubBytes = rest
+	}
+	return keys, nil
 }

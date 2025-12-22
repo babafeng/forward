@@ -6,6 +6,8 @@ import (
 	"net"
 
 	"go-forward/core/utils"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // Start 启动代理服务器
@@ -14,6 +16,7 @@ func Start(listenURL string, forwardURLs []string) {
 
 	// 解析证书参数
 	var tlsConfig *tls.Config
+	var authorizedKeys []ssh.PublicKey
 	params := utils.ParseURLParams(listenURL)
 	if params != nil {
 		certFile := params.Get("cert")
@@ -29,6 +32,17 @@ func Start(listenURL string, forwardURLs []string) {
 				NextProtos:   []string{"h2", "http/1.1"},
 			}
 			utils.Info("[Proxy] [Server] Loaded certificate from %s and %s", certFile, keyFile)
+		}
+
+		pubFile := params.Get("pub")
+		if pubFile != "" {
+			keys, err := utils.LoadSSHAuthorizedKeys(pubFile)
+			if err != nil {
+				utils.Error("[Proxy] [Server] Failed to load authorized keys: %v", err)
+				return
+			}
+			authorizedKeys = keys
+			utils.Info("[Proxy] [Server] Loaded %d authorized keys from %s", len(keys), pubFile)
 		}
 	}
 
@@ -53,17 +67,17 @@ func Start(listenURL string, forwardURLs []string) {
 			utils.Error("[Proxy] [Server] Accept error: %v", err)
 			continue
 		}
-		go HandleConnection(conn, forwardURLs, auth, scheme, tlsConfig)
+		go HandleConnection(conn, forwardURLs, auth, scheme, tlsConfig, authorizedKeys)
 	}
 }
 
-func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string, tlsConfig *tls.Config) {
+func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string, tlsConfig *tls.Config, authorizedKeys []ssh.PublicKey) {
 	// 1. 如果明确指定了协议，直接处理，不进行嗅探
 	// 这样可以避免 bufio.NewReader 预读导致的数据丢失问题，
 	// 也可以避免 SSH 服务端先发数据时的死锁问题。
 	switch scheme {
 	case "ssh":
-		HandleSSH(conn, forwardURLs, auth)
+		HandleSSH(conn, forwardURLs, auth, authorizedKeys)
 		return
 	case "http", "http1.1":
 		HandleHTTP1(conn, forwardURLs, auth, tlsConfig)
@@ -106,7 +120,7 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 	if peek[0] == 'S' {
 		peek3, _ := br.Peek(3)
 		if string(peek3) == "SSH" {
-			HandleSSH(newBufferedConn(conn, br), forwardURLs, auth)
+			HandleSSH(newBufferedConn(conn, br), forwardURLs, auth, authorizedKeys)
 			return
 		}
 	}
