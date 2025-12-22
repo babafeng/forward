@@ -1,6 +1,6 @@
 # forward
 
-forward is a lightweight and high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, SSH, TLS) with protocol sniffing on the same port.
+forward is a security & lightweight & high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, SSH, TLS) with protocol sniffing on the same port.
 
 ## Features
 
@@ -28,9 +28,27 @@ bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh) --ins
 bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh)
 ```
 
+## Auth
+
+You can set username and password for authentication in proxy URLs.
+
+```bash
+forward -L socks5://user:pass@:1080
+forward -F tls://user:pass@your.server.com:2333
+```
+
+## Cert
+
+You can set cert for tls category service.
+
+```bash
+# support tls / quic / http2 / http1 / http3
+forward -F "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
+```
+
 ## Usage
 
-### 1. Port Forwarding
+### Port Forwarding
 
 Forward local port to remote host.
 
@@ -58,7 +76,7 @@ forward -L tcp://:8080//1.2.3.4:80 -F tls://proxy.com:1080
 
 8080 --> proxy.com:1080(tls) --> 1.2.3.4:80
 
-### 2. Proxy Server
+### Proxy Server
 
 Start a proxy server supporting http / socks5 / https / quic / tls / ssh
 
@@ -68,16 +86,15 @@ forward -L http://:1080
 forward -L :1080  # http socks5 http1 http2 https quic tls ssh
 ```
 
-### 3. Intranet Reverse Proxy
+### Intranet Reverse Proxy
 
 **Server Side (Public IP):**
 
 Start a reverse proxy server listening on port 2333.
 
 ```bash
+# support all proxy sechemes, but recommend using secure ones below: tls / ssh / quic
 forward -L tls://user:passwd@:2333?bind=true
-forward -L ssh://user:passwd@:2333?bind=true
-forward -L quic://user:passwd@:2333?bind=true
 ```
 
 **Client Side (Intranet):**
@@ -91,7 +108,7 @@ forward -L tcp://11080//127.0.0.1:1080 -F tls://your.server.com:2333
 
 Now, accessing `your.server.com:11080` will reach the intranet machine's `127.0.0.1:1080`.
 
-### 4. Proxy Chaining
+### Proxy Chaining
 
 Forward traffic through a proxy chain.
 
@@ -99,19 +116,10 @@ Forward traffic through a proxy chain.
 forward -L http://127.0.0.1:1080 -F tls://proxy.com:1080
 ```
 
-### 5. Multiple Listeners
+### Multiple Listeners
 
 You can start multiple services at once.
 
 ```bash
 forward -L tcp://:8080//1.2.3.4:80 -L socks5://:1080
-```
-
-## Auth
-
-You can set username and password for authentication in proxy URLs.
-
-```bash
-forward -L socks5://user:pass@:1080
-forward -F tls://user:pass@your.server.com:2333
 ```

@@ -33,6 +33,14 @@ func GetCertificate() (*tls.Certificate, error) {
 	return cachedCert, nil
 }
 
+func LoadCertificate(certFile, keyFile string) (*tls.Certificate, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+	return &cert, nil
+}
+
 func GenerateCert() (tls.Certificate, error) {
 	// 生成自签名证书用于测试
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)

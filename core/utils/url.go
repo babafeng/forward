@@ -46,3 +46,13 @@ func RedactURL(rawURL string) string {
 	}
 	return u.String()
 }
+
+func ParseURLParams(listenURL string) url.Values {
+	if strings.Contains(listenURL, "://") {
+		u, err := url.Parse(listenURL)
+		if err == nil {
+			return u.Query()
+		}
+	}
+	return nil
+}

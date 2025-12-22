@@ -12,9 +12,29 @@ import (
 func Start(listenURL string, forwardURLs []string) {
 	scheme, auth, addr := utils.URLParse(listenURL)
 
+	// 解析证书参数
+	var tlsConfig *tls.Config
+	params := utils.ParseURLParams(listenURL)
+	if params != nil {
+		certFile := params.Get("cert")
+		keyFile := params.Get("key")
+		if certFile != "" && keyFile != "" {
+			cert, err := utils.LoadCertificate(certFile, keyFile)
+			if err != nil {
+				utils.Error("[Proxy] [Server] Failed to load certificate: %v", err)
+				return
+			}
+			tlsConfig = &tls.Config{
+				Certificates: []tls.Certificate{*cert},
+				NextProtos:   []string{"h2", "http/1.1"},
+			}
+			utils.Info("[Proxy] [Server] Loaded certificate from %s and %s", certFile, keyFile)
+		}
+	}
+
 	// 如果指定了 quic 协议，则只启动 QUIC (UDP) 监听
 	if scheme == "quic" || scheme == "http3" {
-		StartQUIC(addr, forwardURLs, auth)
+		StartQUIC(addr, forwardURLs, auth, tlsConfig)
 		return
 	}
 
@@ -33,11 +53,11 @@ func Start(listenURL string, forwardURLs []string) {
 			utils.Error("[Proxy] [Server] Accept error: %v", err)
 			continue
 		}
-		go HandleConnection(conn, forwardURLs, auth, scheme)
+		go HandleConnection(conn, forwardURLs, auth, scheme, tlsConfig)
 	}
 }
 
-func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string) {
+func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string, tlsConfig *tls.Config) {
 	// 1. 如果明确指定了协议，直接处理，不进行嗅探
 	// 这样可以避免 bufio.NewReader 预读导致的数据丢失问题，
 	// 也可以避免 SSH 服务端先发数据时的死锁问题。
@@ -49,13 +69,13 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 		HandleHTTP1(conn, forwardURLs, auth)
 		return
 	case "http2", "https":
-		HandleHTTP2(conn, forwardURLs, auth)
+		HandleHTTP2(conn, forwardURLs, auth, tlsConfig)
 		return
 	case "socks5":
 		HandleSocks5(conn, forwardURLs, auth)
 		return
 	case "tls":
-		HandleTLS(conn, forwardURLs, auth)
+		HandleTLS(conn, forwardURLs, auth, tlsConfig)
 		return
 	}
 
@@ -78,7 +98,7 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 
 	// https / tls
 	if peek[0] == 0x16 {
-		HandleTLS(newBufferedConn(conn, br), forwardURLs, auth)
+		HandleTLS(newBufferedConn(conn, br), forwardURLs, auth, tlsConfig)
 		return
 	}
 
