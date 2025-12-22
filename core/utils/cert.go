@@ -112,3 +112,7 @@ func LoadSSHAuthorizedKeys(pubFile string) ([]ssh.PublicKey, error) {
 	}
 	return keys, nil
 }
+
+func SSHKeysEqual(k1, k2 ssh.PublicKey) bool {
+	return string(k1.Marshal()) == string(k2.Marshal())
+}

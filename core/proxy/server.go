@@ -11,7 +11,7 @@ import (
 )
 
 // Start 启动代理服务器
-func Start(listenURL string, forwardURLs []string) {
+func Start(listenURL string, forwardURL string) {
 	scheme, auth, addr := utils.URLParse(listenURL)
 
 	// 解析证书参数
@@ -48,7 +48,7 @@ func Start(listenURL string, forwardURLs []string) {
 
 	// 如果指定了 quic 协议，则只启动 QUIC (UDP) 监听
 	if scheme == "quic" || scheme == "http3" {
-		StartQUIC(addr, forwardURLs, auth, tlsConfig)
+		StartQUIC(addr, forwardURL, auth, tlsConfig)
 		return
 	}
 
@@ -67,29 +67,29 @@ func Start(listenURL string, forwardURLs []string) {
 			utils.Error("[Proxy] [Server] Accept error: %v", err)
 			continue
 		}
-		go HandleConnection(conn, forwardURLs, auth, scheme, tlsConfig, authorizedKeys)
+		go HandleConnection(conn, forwardURL, auth, scheme, tlsConfig, authorizedKeys)
 	}
 }
 
-func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, scheme string, tlsConfig *tls.Config, authorizedKeys []ssh.PublicKey) {
+func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme string, tlsConfig *tls.Config, authorizedKeys []ssh.PublicKey) {
 	// 1. 如果明确指定了协议，直接处理，不进行嗅探
 	// 这样可以避免 bufio.NewReader 预读导致的数据丢失问题，
 	// 也可以避免 SSH 服务端先发数据时的死锁问题。
 	switch scheme {
 	case "ssh":
-		HandleSSH(conn, forwardURLs, auth, authorizedKeys)
+		HandleSSH(conn, forwardURL, auth, authorizedKeys)
 		return
 	case "http", "http1.1":
-		HandleHTTP1(conn, forwardURLs, auth, tlsConfig)
+		HandleHTTP1(conn, forwardURL, auth, tlsConfig)
 		return
 	case "http2", "https":
-		HandleHTTP2(conn, forwardURLs, auth, tlsConfig)
+		HandleHTTP2(conn, forwardURL, auth, tlsConfig)
 		return
 	case "socks5":
-		HandleSocks5(conn, forwardURLs, auth)
+		HandleSocks5(conn, forwardURL, auth)
 		return
 	case "tls":
-		HandleTLS(conn, forwardURLs, auth, tlsConfig)
+		HandleTLS(conn, forwardURL, auth, tlsConfig)
 		return
 	}
 
@@ -106,13 +106,13 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 
 	// socks5
 	if peek[0] == 0x05 {
-		HandleSocks5(newBufferedConn(conn, br), forwardURLs, auth)
+		HandleSocks5(newBufferedConn(conn, br), forwardURL, auth)
 		return
 	}
 
 	// https / tls
 	if peek[0] == 0x16 {
-		HandleTLS(newBufferedConn(conn, br), forwardURLs, auth, tlsConfig)
+		HandleTLS(newBufferedConn(conn, br), forwardURL, auth, tlsConfig)
 		return
 	}
 
@@ -120,13 +120,13 @@ func HandleConnection(conn net.Conn, forwardURLs []string, auth *utils.Auth, sch
 	if peek[0] == 'S' {
 		peek3, _ := br.Peek(3)
 		if string(peek3) == "SSH" {
-			HandleSSH(newBufferedConn(conn, br), forwardURLs, auth, authorizedKeys)
+			HandleSSH(newBufferedConn(conn, br), forwardURL, auth, authorizedKeys)
 			return
 		}
 	}
 
 	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP
-	HandleHTTP1(newBufferedConn(conn, br), forwardURLs, auth, nil)
+	HandleHTTP1(newBufferedConn(conn, br), forwardURL, auth, nil)
 }
 
 type BufferedConn struct {

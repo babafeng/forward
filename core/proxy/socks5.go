@@ -9,7 +9,7 @@ import (
 	"go-forward/core/utils"
 )
 
-func HandleSocks5(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
+func HandleSocks5(conn net.Conn, forwardURL string, auth *utils.Auth) {
 	defer conn.Close()
 
 	buf := make([]byte, 2)
@@ -103,7 +103,7 @@ func HandleSocks5(conn net.Conn, forwardURLs []string, auth *utils.Auth) {
 		return
 	}
 
-	targetConn, err := Dial("tcp", targetAddr, forwardURLs)
+	targetConn, err := Dial("tcp", targetAddr, forwardURL)
 	if err != nil {
 		rep := utils.GetSocks5ReplyCode(err)
 		utils.Error("[Proxy] [SOCKS5] Dial failed to %s: %v (Rep: 0x%02x)", targetAddr, err, rep)

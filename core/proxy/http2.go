@@ -9,7 +9,7 @@ import (
 )
 
 // HandleHTTP2 处理 HTTP/2 代理请求
-func HandleHTTP2(conn net.Conn, forwardURLs []string, auth *utils.Auth, tlsConfig *tls.Config) {
+func HandleHTTP2(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
 	if tlsConfig == nil {
 		cert, err := utils.GetCertificate()
 		if err != nil {
@@ -28,8 +28,8 @@ func HandleHTTP2(conn net.Conn, forwardURLs []string, auth *utils.Auth, tlsConfi
 
 	server := &http.Server{
 		Handler: &ProxyHandler{
-			ForwardURLs: forwardURLs,
-			Auth:        auth,
+			ForwardURL: forwardURL,
+			Auth:       auth,
 		},
 	}
 

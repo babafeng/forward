@@ -26,8 +26,23 @@ func StartServer(listenURL string) {
 		scheme = "quic"
 	}
 
+	// 解析 authorized keys
+	var authorizedKeys []ssh.PublicKey
+	params := utils.ParseURLParams(listenURL)
+	if params != nil {
+		pubFile := params.Get("pub")
+		if pubFile != "" {
+			keys, err := utils.LoadSSHAuthorizedKeys(pubFile)
+			if err != nil {
+				utils.Error("[Reverse] [Server] Failed to load authorized keys: %v", err)
+				return
+			}
+			authorizedKeys = keys
+			utils.Info("[Reverse] [Server] Loaded %d authorized keys from %s", len(keys), pubFile)
+		}
+	}
+
 	s := strings.ToLower(scheme)
-	// 检查是否为已知的代理协议
 	proxySchemes := map[string]struct{}{
 		"tls:":  {},
 		"ssh:":  {},
@@ -59,7 +74,7 @@ func StartServer(listenURL string) {
 			utils.Error("Accept error: %v", err)
 			continue
 		}
-		go handleConnection(conn, scheme, auth)
+		go handleConnection(conn, scheme, auth, authorizedKeys)
 	}
 }
 
@@ -98,7 +113,7 @@ func handleQUICConnection(conn *quic.Conn, auth *utils.Auth) {
 		return
 	}
 	// QUIC 建立后，内部流传输的是 SOCKS5 协议
-	handleConnection(&quicStreamConn{Stream: stream, local: conn.LocalAddr(), remote: conn.RemoteAddr()}, "socks5", auth)
+	handleConnection(&quicStreamConn{Stream: stream, local: conn.LocalAddr(), remote: conn.RemoteAddr()}, "socks5", auth, nil)
 }
 
 type quicStreamConn struct {
@@ -110,7 +125,7 @@ type quicStreamConn struct {
 func (c *quicStreamConn) LocalAddr() net.Addr  { return c.local }
 func (c *quicStreamConn) RemoteAddr() net.Addr { return c.remote }
 
-func handleConnection(conn net.Conn, scheme string, auth *utils.Auth) {
+func handleConnection(conn net.Conn, scheme string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
 	// 嗅探协议
 	br := bufio.NewReader(conn)
 	peek, _ := br.Peek(1)
@@ -140,7 +155,7 @@ func handleConnection(conn net.Conn, scheme string, auth *utils.Auth) {
 
 	// SSH ('S')
 	if peek[0] == 'S' {
-		handleSSH(utils.NewBufferedConn(conn, br), auth)
+		handleSSH(utils.NewBufferedConn(conn, br), auth, authorizedKeys)
 		return
 	}
 
@@ -166,21 +181,39 @@ func handleTLS(conn net.Conn, auth *utils.Auth) {
 	}
 
 	// TLS 握手成功后，继续处理内部协议 (SOCKS5)
-	handleConnection(tlsConn, "socks5", auth)
+	handleConnection(tlsConn, "socks5", auth, nil)
 }
 
-func handleSSH(conn net.Conn, auth *utils.Auth) {
+func handleSSH(conn net.Conn, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
 	config := &ssh.ServerConfig{
-		NoClientAuth: auth == nil,
-	}
-
-	if auth != nil {
-		config.PasswordCallback = func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if auth.Validate(c.User(), string(pass)) {
-				return nil, nil
+		NoClientAuth: auth == nil && len(authorizedKeys) == 0,
+		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if auth != nil {
+				if auth.Validate(c.User(), string(pass)) {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("password rejected for %q", c.User())
 			}
-			return nil, fmt.Errorf("password rejected for %q", c.User())
-		}
+			// 如果没有配置 auth，但配置了 authorizedKeys，则禁止密码登录
+			if len(authorizedKeys) > 0 {
+				return nil, fmt.Errorf("password auth disabled when public keys are configured and no user/pass set")
+			}
+			return nil, nil
+		},
+		PublicKeyCallback: func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+			if auth != nil && auth.User != "" && auth.User != c.User() {
+				return nil, fmt.Errorf("unknown user %q", c.User())
+			}
+			if len(authorizedKeys) == 0 {
+				return nil, fmt.Errorf("no authorized keys configured")
+			}
+			for _, k := range authorizedKeys {
+				if utils.SSHKeysEqual(k, pubKey) {
+					return nil, nil
+				}
+			}
+			return nil, fmt.Errorf("unknown public key for %q", c.User())
+		},
 	}
 
 	key, _ := utils.GenerateSSHKey()
@@ -207,7 +240,7 @@ func handleSSH(conn net.Conn, auth *utils.Auth) {
 	go ssh.DiscardRequests(requests)
 
 	// SSH 建立后，内部通道传输的是 SOCKS5 协议
-	handleConnection(&sshChannelConn{Channel: channel, conn: conn}, "socks5", auth)
+	handleConnection(&sshChannelConn{Channel: channel, conn: conn}, "socks5", auth, nil)
 }
 
 type sshChannelConn struct {

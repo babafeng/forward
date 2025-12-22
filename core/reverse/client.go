@@ -24,7 +24,7 @@ var (
 	reverseHost   string
 )
 
-func StartClient(listenURL string, forwardURLs []string) {
+func StartClient(listenURL string, forwardURL string) {
 	// 打删协议前缀
 	if strings.HasPrefix(listenURL, "tcp://") {
 		listenURL = strings.TrimPrefix(listenURL, "tcp://")
@@ -41,7 +41,7 @@ func StartClient(listenURL string, forwardURLs []string) {
 	remotePortStr := strings.TrimPrefix(parts[0], ":")
 	remotePort, _ := strconv.Atoi(remotePortStr)
 	localTarget := parts[1]
-	serverURL := forwardURLs[0]
+	serverURL := forwardURL
 
 	reverseScheme, _, reverseAddr = utils.URLParse(serverURL)
 	reverseHost = strings.Split(reverseAddr, ":")[0]

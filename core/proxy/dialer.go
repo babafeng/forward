@@ -15,9 +15,9 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// Dial 通过代理鏈连接到目标地址
-func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
-	forwardURLs = utils.FixURLScheme(forwardURLs)
+// Dial 通过代理连接到目标地址
+func Dial(network, addr string, forwardURL string) (net.Conn, error) {
+	forwardURL = utils.FixURLScheme(forwardURL)
 
 	if strings.Count(addr, ":") > 1 && !strings.Contains(addr, "[") && !strings.Contains(addr, "]") {
 		lastColon := strings.LastIndex(addr, ":")
@@ -30,136 +30,107 @@ func Dial(network, addr string, forwardURLs []string) (net.Conn, error) {
 		}
 	}
 
-	if len(forwardURLs) == 0 {
+	if forwardURL == "" {
 		return net.DialTimeout(network, addr, 10*time.Second)
 	}
 
-	firstURL := forwardURLs[0]
-	u, err := url.Parse(firstURL)
+	forward, err := url.Parse(forwardURL)
 	if err != nil {
 		return nil, err
 	}
 
 	var conn net.Conn
 
-	// 特殊处理 QUIC 协议作为第一跳
-	if u.Scheme == "quic" || u.Scheme == "http3" {
-		// 确定下一跳地址
-		var nextAddr string
-		if len(forwardURLs) == 1 {
-			nextAddr = addr
-		} else {
-			nextU, _ := url.Parse(forwardURLs[1])
-			nextAddr = nextU.Host
-		}
-
-		// 建立 QUIC 连接并执行 CONNECT
-		conn, err = quicConnect(u.Host, nextAddr, u.User)
+	// 特殊处理 QUIC 协议
+	if forward.Scheme == "quic" || forward.Scheme == "http3" {
+		// QUIC 连接并执行 CONNECT
+		conn, err = quicConnect(forward.Host, addr, forward.User)
 		if err != nil {
 			return nil, err
 		}
-
 	} else {
-		conn, err = net.DialTimeout("tcp", u.Host, 10*time.Second)
+		conn, err = net.DialTimeout("tcp", forward.Host, 10*time.Second)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	startIdx := 0
-	if u.Scheme == "quic" || u.Scheme == "http3" {
-		startIdx = 1
-	}
-
-	for i := startIdx; i < len(forwardURLs); i++ {
-		currentURL := forwardURLs[i]
-		u, _ := url.Parse(currentURL)
-
-		// 确定下一跳地址：如果是最后一个节点，则下一跳是目标地址；否则是下一个代理节点的地址
-		var nextAddr string
-		if i == len(forwardURLs)-1 {
-			nextAddr = addr
-		} else {
-			nextU, _ := url.Parse(forwardURLs[i+1])
-			nextAddr = nextU.Host
-		}
-
-		// 解析 CA 证书参数
-		var tlsConfig *tls.Config
-		caFile := u.Query().Get("ca")
-		if caFile != "" {
-			pool, err := utils.LoadCA(caFile)
-			if err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("failed to load CA: %v", err)
-			}
-			tlsConfig = &tls.Config{
-				RootCAs:    pool,
-				ServerName: u.Hostname(),
-			}
-		} else {
-			tlsConfig = &tls.Config{
-				InsecureSkipVerify: true,
-				ServerName:         u.Hostname(),
-			}
-		}
-
-		switch u.Scheme {
-		case "socks5":
-			if network == "udp" && i == len(forwardURLs)-1 {
-				// 最后一跳如果是 UDP 且是 SOCKS5，使用 UDP Associate
-				conn, err = socks5UDPAssociate(conn, nextAddr, u.User)
-			} else {
-				conn, err = socks5Connect(conn, nextAddr, u.User)
-			}
-		case "http":
-			conn, err = httpConnect(conn, nextAddr, u.User)
-		case "https":
-			conn, err = tlsHandshake(conn, tlsConfig)
-			if err != nil {
-				conn.Close()
-				return nil, err
-			}
-			utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s", u.Host)
-			conn, err = httpConnect(conn, nextAddr, u.User)
-		case "ssh":
-			var signer ssh.Signer
-			keyFile := u.Query().Get("key")
-			if keyFile != "" {
-				password := u.Query().Get("password")
-				signer, err = utils.LoadSSHPrivateKey(keyFile, password)
-				if err != nil {
-					conn.Close()
-					return nil, fmt.Errorf("failed to load SSH private key: %v", err)
-				}
-			}
-			conn, err = sshConnect(conn, u.Host, nextAddr, u.User, signer)
-		case "tls":
-			conn, err = tlsHandshake(conn, tlsConfig)
-			if err != nil {
-				conn.Close()
-				return nil, err
-			}
-			// TLS 握手成功后，默认使用 SOCKS5 协议继续连接下一跳
-			utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s %s %s", u.Host, nextAddr, u.User)
-
-			if network == "udp" && i == len(forwardURLs)-1 {
-				conn, err = socks5UDPAssociate(conn, nextAddr, u.User)
-			} else {
-				conn, err = socks5Connect(conn, nextAddr, u.User)
-			}
-
-		default:
+	// 解析 CA 证书参数
+	var tlsConfig *tls.Config
+	caFile := forward.Query().Get("ca")
+	if caFile != "" {
+		pool, err := utils.LoadCA(caFile)
+		if err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("Not supported scheme: %s", u.Scheme)
+			return nil, fmt.Errorf("failed to load CA: %v", err)
 		}
+		tlsConfig = &tls.Config{
+			RootCAs:    pool,
+			ServerName: forward.Hostname(),
+		}
+	} else {
+		tlsConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         forward.Hostname(),
+		}
+	}
 
+	switch forward.Scheme {
+	case "socks5":
+		if network == "udp" {
+			// 如果是 UDP 且是 SOCKS5，使用 UDP Associate
+			conn, err = socks5UDPAssociate(conn, addr, forward.User)
+		} else {
+			conn, err = socks5Connect(conn, addr, forward.User)
+		}
+	case "http":
+		conn, err = httpConnect(conn, addr, forward.User)
+	case "https":
+		conn, err = tlsHandshake(conn, tlsConfig)
 		if err != nil {
-			if conn != nil {
-				conn.Close()
-			}
+			conn.Close()
 			return nil, err
 		}
+		utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s", forward.Host)
+		conn, err = httpConnect(conn, addr, forward.User)
+	case "ssh":
+		var signer ssh.Signer
+		keyFile := forward.Query().Get("key")
+		if keyFile != "" {
+			password := forward.Query().Get("password")
+			signer, err = utils.LoadSSHPrivateKey(keyFile, password)
+			if err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("failed to load SSH private key: %v", err)
+			}
+		}
+		conn, err = sshConnect(conn, forward.Host, addr, forward.User, signer)
+	case "tls":
+		conn, err = tlsHandshake(conn, tlsConfig)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		// TLS 握手成功后，默认使用 SOCKS5 协议继续连接下一跳
+		utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s %s %s", forward.Host, addr, forward.User)
+
+		if network == "udp" {
+			conn, err = socks5UDPAssociate(conn, addr, forward.User)
+		} else {
+			conn, err = socks5Connect(conn, addr, forward.User)
+		}
+	case "quic", "http3":
+		// Already handled above
+	default:
+		conn.Close()
+		return nil, fmt.Errorf("Not supported scheme: %s", forward.Scheme)
+	}
+
+	if err != nil {
+		if conn != nil {
+			conn.Close()
+		}
+		return nil, err
 	}
 
 	return conn, nil

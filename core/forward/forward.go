@@ -13,7 +13,7 @@ import (
 // Start 启动端口转发服务
 // 格式: [protocol://]local//remote
 // 例如: :8080//1.2.3.4:80 或 tcp://:8080//1.2.3.4:80
-func Start(listenURL string, forwardURLs []string) {
+func Start(listenURL string, forwardURL string) {
 	var protocol, local, remote string
 	if strings.HasPrefix(listenURL, "tcp://") {
 		protocol = "tcp"
@@ -27,8 +27,8 @@ func Start(listenURL string, forwardURLs []string) {
 	}
 
 	var scheme, _, forwardAddr string
-	if len(forwardURLs) > 0 {
-		scheme, _, forwardAddr = utils.URLParse(forwardURLs[0])
+	if forwardURL != "" {
+		scheme, _, forwardAddr = utils.URLParse(forwardURL)
 	}
 
 	parts := strings.Split(listenURL, "//")
@@ -48,13 +48,13 @@ func Start(listenURL string, forwardURLs []string) {
 	utils.Info("Forwarding %s %s --> %s via [%s %v]", protocol, local, remote, scheme, forwardAddr)
 
 	if protocol == "udp" {
-		startUDP(local, remote, forwardURLs)
+		startUDP(local, remote, forwardURL)
 	} else {
-		startTCP(local, remote, forwardURLs)
+		startTCP(local, remote, forwardURL)
 	}
 }
 
-func startTCP(local, remote string, forwardURLs []string) {
+func startTCP(local, remote string, forwardURL string) {
 	l, err := net.Listen("tcp", local)
 	if err != nil {
 		utils.Error("TCP Listen error: %v", err)
@@ -68,14 +68,14 @@ func startTCP(local, remote string, forwardURLs []string) {
 			utils.Error("TCP Accept error: %v", err)
 			continue
 		}
-		go handleTCP(conn, remote, forwardURLs)
+		go handleTCP(conn, remote, forwardURL)
 	}
 }
 
-func handleTCP(conn net.Conn, remote string, forwardURLs []string) {
+func handleTCP(conn net.Conn, remote string, forwardURL string) {
 	defer conn.Close()
 
-	rConn, err := proxy.Dial("tcp", remote, forwardURLs)
+	rConn, err := proxy.Dial("tcp", remote, forwardURL)
 	if err != nil {
 		utils.Error("Dial error: %v", err)
 		return
@@ -85,15 +85,15 @@ func handleTCP(conn net.Conn, remote string, forwardURLs []string) {
 	utils.Transfer(conn, rConn, remote, "Forward", "TCP")
 }
 
-func startUDP(local, remote string, forwardURLs []string) {
+func startUDP(local, remote string, forwardURL string) {
 	addr, err := net.ResolveUDPAddr("udp", local)
 	if err != nil {
 		utils.Error("UDP Resolve error: %v", err)
 		return
 	}
 	var scheme, _, forwardAddr string
-	if len(forwardURLs) > 0 {
-		scheme, _, forwardAddr = utils.URLParse(forwardURLs[0])
+	if forwardURL != "" {
+		scheme, _, forwardAddr = utils.URLParse(forwardURL)
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
@@ -123,7 +123,7 @@ func startUDP(local, remote string, forwardURLs []string) {
 
 		if !ok {
 			utils.Info("Forwarding UDP %s -> %s --> %s via [%s %v]", key, local, remote, scheme, forwardAddr)
-			remoteConn, err = proxy.Dial("udp", remote, forwardURLs)
+			remoteConn, err = proxy.Dial("udp", remote, forwardURL)
 			if err != nil {
 				utils.Error("UDP Dial error: %v", err)
 				continue

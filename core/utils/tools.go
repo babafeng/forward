@@ -2,14 +2,9 @@ package utils
 
 import "strings"
 
-
-
-
-func FixURLScheme(forwardURLs []string) []string {
-	for i, url := range forwardURLs {
-		if strings.HasPrefix(url, "http2") {
-			forwardURLs[i] = "https" + strings.TrimPrefix(url, "http2")
-		}
+func FixURLScheme(forwardURL string) string {
+	if strings.HasPrefix(forwardURL, "http2") {
+		return "https" + strings.TrimPrefix(forwardURL, "http2")
 	}
-	return forwardURLs
+	return forwardURL
 }

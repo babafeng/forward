@@ -17,7 +17,7 @@ import (
 )
 
 // StartQUIC 启动 HTTP/3 (QUIC) 代理服务器
-func StartQUIC(addr string, forwardURLs []string, auth *utils.Auth, tlsConfig *tls.Config) {
+func StartQUIC(addr string, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
 	if tlsConfig == nil {
 		cert, err := utils.GetCertificate()
 		if err != nil {
@@ -43,8 +43,8 @@ func StartQUIC(addr string, forwardURLs []string, auth *utils.Auth, tlsConfig *t
 	}
 
 	handler := &ProxyHandler{
-		ForwardURLs: forwardURLs,
-		Auth:        auth,
+		ForwardURL: forwardURL,
+		Auth:       auth,
 	}
 
 	server := &http3.Server{

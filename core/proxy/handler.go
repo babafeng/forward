@@ -13,14 +13,14 @@ import (
 )
 
 type ProxyHandler struct {
-	ForwardURLs []string
-	Auth        *utils.Auth
+	ForwardURL string
+	Auth       *utils.Auth
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var forwardInfo string
-	if len(h.ForwardURLs) > 0 {
-		forwardInfo = utils.RedactURL(h.ForwardURLs[0])
+	if h.ForwardURL != "" {
+		forwardInfo = utils.RedactURL(h.ForwardURL)
 	} else {
 		forwardInfo = "Direct"
 	}
@@ -77,7 +77,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
-	destConn, err := Dial("tcp", r.Host, h.ForwardURLs)
+	destConn, err := Dial("tcp", r.Host, h.ForwardURL)
 	if err != nil {
 		utils.Error("[Proxy] [HTTP] Dial error: %v", err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -125,8 +125,8 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	var forwardInfo string
-	if len(h.ForwardURLs) > 0 {
-		forwardInfo = utils.RedactURL(h.ForwardURLs[0])
+	if h.ForwardURL != "" {
+		forwardInfo = utils.RedactURL(h.ForwardURL)
 	} else {
 		forwardInfo = "Direct"
 	}
@@ -135,7 +135,7 @@ func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return Dial(network, addr, h.ForwardURLs)
+			return Dial(network, addr, h.ForwardURL)
 		},
 	}
 

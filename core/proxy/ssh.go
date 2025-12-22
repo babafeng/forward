@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"strconv"
@@ -19,7 +18,7 @@ var (
 	hostKeyOnce sync.Once
 )
 
-func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
+func HandleSSH(conn net.Conn, forwardURL string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
 	config := &ssh.ServerConfig{
 		ServerVersion: "SSH-2.0-OpenSSH_10.2p1 Debian13",
 		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
@@ -27,15 +26,22 @@ func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth, authorized
 				if !auth.Validate(c.User(), string(pass)) {
 					return nil, fmt.Errorf("password rejected for %q", c.User())
 				}
+				return nil, nil
+			}
+			if len(authorizedKeys) > 0 {
+				return nil, fmt.Errorf("password auth disabled when public keys are configured and no user/pass set")
 			}
 			return nil, nil
 		},
 		PublicKeyCallback: func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+			if auth != nil && auth.User != "" && auth.User != c.User() {
+				return nil, fmt.Errorf("unknown user %q", c.User())
+			}
 			if len(authorizedKeys) == 0 {
 				return nil, fmt.Errorf("no authorized keys configured")
 			}
 			for _, k := range authorizedKeys {
-				if bytes.Equal(k.Marshal(), pubKey.Marshal()) {
+				if utils.SSHKeysEqual(k, pubKey) {
 					return nil, nil
 				}
 			}
@@ -97,7 +103,7 @@ func HandleSSH(conn net.Conn, forwardURLs []string, auth *utils.Auth, authorized
 
 		targetAddr := net.JoinHostPort(d.DestAddr, strconv.Itoa(int(d.DestPort)))
 		utils.Info("[Proxy] [SSH] Channel request to %s", targetAddr)
-		go handleSSHChannel(channel, requests, targetAddr, forwardURLs, conn)
+		go handleSSHChannel(channel, requests, targetAddr, forwardURL, conn)
 	}
 }
 
@@ -157,11 +163,11 @@ Last login: %s from %s
 	time.Sleep(time.Second)
 }
 
-func handleSSHChannel(channel ssh.Channel, requests <-chan *ssh.Request, targetAddr string, forwardURLs []string, originConn net.Conn) {
+func handleSSHChannel(channel ssh.Channel, requests <-chan *ssh.Request, targetAddr string, forwardURL string, originConn net.Conn) {
 	defer channel.Close()
 	go ssh.DiscardRequests(requests)
 
-	targetConn, err := Dial("tcp", targetAddr, forwardURLs)
+	targetConn, err := Dial("tcp", targetAddr, forwardURL)
 	if err != nil {
 		return
 	}

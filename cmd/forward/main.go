@@ -30,7 +30,7 @@ func (s *StringArray) Set(value string) error {
 
 var (
 	listenFlags  StringArray
-	forwardFlags StringArray
+	forwardFlag string
 	logLevel     string
 	printVersion bool
 )
@@ -63,7 +63,7 @@ var proxySchemes = map[string]struct{}{
 
 func main() {
 	flag.Var(&listenFlags, "L", "Listen address (e.g., tls://:443, socks5://:1080)")
-	flag.Var(&forwardFlags, "F", "Forward address (e.g., tls://server:1080)")
+	flag.StringVar(&forwardFlag, "F", "", "Forward address (e.g., tls://server:1080)")
 	flag.BoolVar(&printVersion, "V", false, "print version")
 	flag.Parse()
 
@@ -95,7 +95,7 @@ func main() {
 
 	// 启动所有监听器
 	for _, listen := range listenFlags {
-		go startListener(listen, forwardFlags)
+		go startListener(listen, forwardFlag)
 	}
 
 	// 等待退出信号
@@ -105,7 +105,7 @@ func main() {
 	utils.Info("Shutting down...")
 }
 
-func startListener(listenURL string, forwardURLs []string) {
+func startListener(listenURL string, forwardURL string) {
 	utils.Info("Initializing listener: %s", utils.RedactURL(listenURL))
 
 	scheme, _, _ := utils.URLParse(listenURL)
@@ -118,32 +118,32 @@ func startListener(listenURL string, forwardURLs []string) {
 	}
 
 	// Redact forward URLs for logging
-	redactedForwardURLs := make([]string, len(forwardURLs))
-	for i, u := range forwardURLs {
-		redactedForwardURLs[i] = utils.RedactURL(u)
+	var redactedForwardURL string
+	if forwardURL != "" {
+		redactedForwardURL = utils.RedactURL(forwardURL)
 	}
 
 	if strings.Contains(listenURL, "bind=true") {
 		utils.Logging("Forward enabled reverse server mode for %s", utils.RedactURL(listenURL))
 		go reverse.StartServer(listenURL)
 
-	} else if len(forwardURLs) > 0 && (strings.HasPrefix(listenURL, "tcp://") || strings.HasPrefix(listenURL, "udp://")) {
-		if isReverseClient(listenURL, forwardURLs) {
+	} else if forwardURL != "" && (strings.HasPrefix(listenURL, "tcp://") || strings.HasPrefix(listenURL, "udp://")) {
+		if isReverseClient(listenURL, forwardURL) {
 			utils.Logging("Forward starting reverse client for %s", utils.RedactURL(listenURL))
-			go reverse.StartClient(listenURL, forwardURLs)
+			go reverse.StartClient(listenURL, forwardURL)
 
 		} else if isPortForward(listenURL) {
-			utils.Logging("Forward starting port forward for %s via %v", utils.RedactURL(listenURL), redactedForwardURLs)
-			go forward.Start(listenURL, forwardURLs)
+			utils.Logging("Forward starting port forward for %s via %s", utils.RedactURL(listenURL), redactedForwardURL)
+			go forward.Start(listenURL, forwardURL)
 
 		} else {
 			utils.Logging("Forward proxy for %s", utils.RedactURL(listenURL))
-			go proxy.Start(listenURL, forwardURLs)
+			go proxy.Start(listenURL, forwardURL)
 
 		}
 	} else if isPortForward(listenURL) {
-		utils.Logging("Forward starting port forward for %s via %v", utils.RedactURL(listenURL), redactedForwardURLs)
-		go forward.Start(listenURL, forwardURLs)
+		utils.Logging("Forward starting port forward for %s via %s", utils.RedactURL(listenURL), redactedForwardURL)
+		go forward.Start(listenURL, forwardURL)
 
 	} else {
 		if scheme != "" {
@@ -161,11 +161,11 @@ func startListener(listenURL string, forwardURLs []string) {
 		}
 
 		utils.Logging("Forward proxy for %s", utils.RedactURL(listenURL))
-		go proxy.Start(listenURL, forwardURLs)
+		go proxy.Start(listenURL, forwardURL)
 	}
 }
 
-func isReverseClient(listenURL string, forwardURLs []string) bool {
+func isReverseClient(listenURL string, forwardURL string) bool {
 	// 内网穿透（如 tcp://8080//1.2.3.4:80）少了一个冒号
 
 	parts := strings.Split(listenURL, "//")
@@ -179,7 +179,7 @@ func isReverseClient(listenURL string, forwardURLs []string) bool {
 		return false
 	}
 
-	if len(forwardURLs) == 0 {
+	if forwardURL == "" {
 		return false
 	}
 
