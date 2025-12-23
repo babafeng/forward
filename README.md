@@ -19,12 +19,12 @@ go build -o forward ./cmd/forward && chmod +x forward
 ```
 
 ```bash
-# 安装最新版本
+# install latest version
 bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh) --install
 ```
 
 ```bash
-# 选择要安装的版本
+# install specific version
 bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh)
 ```
 

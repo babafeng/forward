@@ -79,8 +79,8 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	destConn, err := Dial("tcp", r.Host, h.ForwardURL)
 	if err != nil {
-		utils.Error("[Proxy] [HTTP] Dial error: %v", err)
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		utils.Error("[Proxy] [HTTP] Dial error connecting to %s from %s: %v", r.Host, r.RemoteAddr, err)
+		http.Error(w, "502 Bad Gateway", http.StatusBadGateway)
 		return
 	}
 	defer destConn.Close()
@@ -89,7 +89,7 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		clientConn, _, err := hijacker.Hijack()
 		if err != nil {
 			utils.Error("[Proxy] [HTTP] Hijack error: %v", err)
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			http.Error(w, "503 Service Unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		defer clientConn.Close()

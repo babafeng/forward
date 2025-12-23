@@ -88,7 +88,6 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 	case "https":
 		conn, err = tlsHandshake(conn, tlsConfig)
 		if err != nil {
-			conn.Close()
 			return nil, err
 		}
 		utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s", forward.Host)
@@ -108,7 +107,6 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 	case "tls":
 		conn, err = tlsHandshake(conn, tlsConfig)
 		if err != nil {
-			conn.Close()
 			return nil, err
 		}
 		// TLS 握手成功后，默认使用 SOCKS5 协议继续连接下一跳
@@ -374,7 +372,7 @@ func httpConnect(conn net.Conn, targetAddr string, user *url.Userinfo) (net.Conn
 
 	_, err := conn.Write([]byte(req))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to write http connect request: %w", err)
 	}
 
 	headerBuf := make([]byte, 0)
@@ -382,7 +380,7 @@ func httpConnect(conn net.Conn, targetAddr string, user *url.Userinfo) (net.Conn
 	for {
 		_, err := conn.Read(b)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read http connect response: %w", err)
 		}
 		headerBuf = append(headerBuf, b[0])
 		if strings.HasSuffix(string(headerBuf), "\r\n\r\n") {
@@ -458,7 +456,7 @@ func (s *sshClientConn) Close() error {
 func tlsHandshake(conn net.Conn, cfg *tls.Config) (net.Conn, error) {
 	tlsConn := tls.Client(conn, cfg)
 	if err := tlsConn.Handshake(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tls handshake failed: %w", err)
 	}
 	return tlsConn, nil
 }
