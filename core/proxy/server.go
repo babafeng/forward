@@ -125,7 +125,7 @@ func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme
 		}
 	}
 
-	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP
+	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP/1.1
 	HandleHTTP1(newBufferedConn(conn, br), forwardURL, auth, nil)
 }
 
