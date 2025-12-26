@@ -25,7 +25,7 @@ var (
 )
 
 func StartClient(listenURL string, forwardURL string) {
-	// 打删协议前缀
+	// 去掉协议前缀
 	if strings.HasPrefix(listenURL, "tcp://") {
 		listenURL = strings.TrimPrefix(listenURL, "tcp://")
 	} else if strings.HasPrefix(listenURL, "udp://") {
