@@ -432,16 +432,6 @@ func sshConnect(conn net.Conn, sshServerAddr, targetAddr string, user *url.Useri
 	}
 
 	if !utils.GetInsecure() {
-		// TODO: Support known_hosts verification
-		// For now, we have to allow insecure host key if user didn't provide a way to verify it,
-		// OR we strictly fail. Given the requirement is about "certificate verification" (TLS),
-		// and SSH host key verification is a separate topic, we might want to be careful.
-		// However, "InsecureIgnoreHostKey" is definitely insecure.
-		// Let's warn or fail?
-		// To be safe for production, we should fail if we can't verify.
-		// But since we don't support known_hosts yet, failing means SSH is unusable without --insecure.
-		// Let's keep it as is but maybe log a warning?
-		// Or better, let's strictly follow the "insecure" flag.
 		return nil, fmt.Errorf("SSH host key verification is required but not configured. Use --insecure to skip verification")
 	}
 
