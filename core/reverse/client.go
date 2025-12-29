@@ -25,7 +25,7 @@ var (
 )
 
 func StartClient(listenURL string, forwardURL string) {
-	// 去掉协议前缀
+	// 打删协议前缀
 	if strings.HasPrefix(listenURL, "tcp://") {
 		listenURL = strings.TrimPrefix(listenURL, "tcp://")
 	} else if strings.HasPrefix(listenURL, "udp://") {
@@ -46,11 +46,19 @@ func StartClient(listenURL string, forwardURL string) {
 	reverseScheme, _, reverseAddr = utils.URLParse(serverURL)
 	reverseHost = strings.Split(reverseAddr, ":")[0]
 	utils.Info("[Reverse] %s:%d <--> %s via [%s %v]", reverseHost, remotePort, localTarget, reverseScheme, reverseAddr)
+
+	backoff := 3 * time.Second
 	for {
 		err := connectAndServe(serverURL, remotePort, localTarget)
 		if err != nil {
 			utils.Error("Reverse connection error: %v. Retrying...", err)
-			time.Sleep(3 * time.Second)
+			time.Sleep(backoff)
+			if backoff < time.Minute {
+				backoff *= 2
+				if backoff > time.Minute {
+					backoff = time.Minute
+				}
+			}
 		}
 	}
 }
@@ -197,7 +205,7 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 
 func dialQUIC(u *url.URL) (net.Conn, error) {
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: utils.GetInsecure(),
 		NextProtos:         []string{"reverse-quic"},
 	}
 
@@ -219,7 +227,7 @@ func dialQUIC(u *url.URL) (net.Conn, error) {
 }
 
 func dialTLS(u *url.URL) (net.Conn, error) {
-	return tls.Dial("tcp", u.Host, &tls.Config{InsecureSkipVerify: true})
+	return tls.Dial("tcp", u.Host, &tls.Config{InsecureSkipVerify: utils.GetInsecure()})
 }
 
 func dialSSH(u *url.URL) (net.Conn, error) {
@@ -236,6 +244,10 @@ func dialSSH(u *url.URL) (net.Conn, error) {
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
+	}
+
+	if !utils.GetInsecure() {
+		return nil, fmt.Errorf("SSH host key verification is required but not configured. Use --insecure to skip verification")
 	}
 
 	conn, err := net.DialTimeout("tcp", u.Host, 10*time.Second)

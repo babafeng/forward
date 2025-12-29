@@ -102,8 +102,6 @@ func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme
 		return
 	}
 
-	// utils.Logging("[Proxy] [Server] peek: 0x%02x", peek[0])
-
 	// socks5
 	if peek[0] == 0x05 {
 		HandleSocks5(newBufferedConn(conn, br), forwardURL, auth)
@@ -125,7 +123,7 @@ func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme
 		}
 	}
 
-	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP/1.1
+	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP
 	HandleHTTP1(newBufferedConn(conn, br), forwardURL, auth, nil)
 }
 

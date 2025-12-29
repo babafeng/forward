@@ -42,7 +42,13 @@ func StartServer(listenURL string) {
 		}
 	}
 
-	if !isSupportedReverseScheme(scheme) {
+	s := strings.ToLower(scheme)
+	proxySchemes := map[string]struct{}{
+		"tls:":  {},
+		"ssh:":  {},
+		"quic:": {},
+	}
+	if _, exists := proxySchemes[s]; exists {
 		utils.Info("Reverse Server only supports proxy protocols (tls, ssh, quic). Given: %s", scheme)
 		return
 	}
@@ -430,13 +436,4 @@ func generateSessionID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
-}
-
-func isSupportedReverseScheme(scheme string) bool {
-	switch strings.ToLower(scheme) {
-	case "tls", "ssh", "quic":
-		return true
-	default:
-		return false
-	}
 }

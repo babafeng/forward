@@ -4,6 +4,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go-forward/core/proxy"
@@ -107,8 +108,24 @@ func startUDP(local, remote string, forwardURL string) {
 
 	// UDP 会话表: srcAddr -> net.Conn
 	var sessions sync.Map
+	cleanupTicker := time.NewTicker(2 * time.Minute)
+	defer cleanupTicker.Stop()
+	go func() {
+		for range cleanupTicker.C {
+			now := time.Now()
+			sessions.Range(func(key, val any) bool {
+				s := val.(*udpSession)
+				if now.Sub(time.Unix(0, s.lastActive.Load())) > 2*time.Minute {
+					s.conn.Close()
+					sessions.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
 
-	buf := make([]byte, 65535)
+	buf := utils.GetPacketBuffer()
+	defer utils.PutPacketBuffer(buf)
 	for {
 		n, srcAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -119,44 +136,55 @@ func startUDP(local, remote string, forwardURL string) {
 		// 获取或创建会话
 		key := srcAddr.String()
 		val, ok := sessions.Load(key)
-		var remoteConn net.Conn
+		var session *udpSession
 
 		if !ok {
 			utils.Info("Forwarding UDP %s -> %s --> %s via [%s %v]", key, local, remote, scheme, forwardAddr)
-			remoteConn, err = proxy.Dial("udp", remote, forwardURL)
+			remoteConn, err := proxy.Dial("udp", remote, forwardURL)
 			if err != nil {
 				utils.Error("UDP Dial error: %v", err)
 				continue
 			}
 
-			sessions.Store(key, remoteConn)
+			session = &udpSession{conn: remoteConn}
+			session.lastActive.Store(time.Now().UnixNano())
+			sessions.Store(key, session)
 
-			go func(rc net.Conn, clientAddr *net.UDPAddr, k string) {
-				defer rc.Close()
+			go func(s *udpSession, clientAddr *net.UDPAddr, k string) {
+				defer s.conn.Close()
 				defer sessions.Delete(k)
 
-				rbuf := make([]byte, 65535)
+				rbuf := utils.GetPacketBuffer()
+				defer utils.PutPacketBuffer(rbuf)
 				for {
-					rc.SetReadDeadline(time.Now().Add(60 * time.Second))
-					rn, err := rc.Read(rbuf)
+					s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+					rn, err := s.conn.Read(rbuf)
 					if err != nil {
 						return
 					}
+					s.lastActive.Store(time.Now().UnixNano())
 					_, err = conn.WriteToUDP(rbuf[:rn], clientAddr)
 					if err != nil {
 						return
 					}
 				}
-			}(remoteConn, srcAddr, key)
+			}(session, srcAddr, key)
 		} else {
-			remoteConn = val.(net.Conn)
+			session = val.(*udpSession)
 		}
 
-		remoteConn.SetWriteDeadline(time.Now().Add(60 * time.Second))
-		_, err = remoteConn.Write(buf[:n])
+		session.conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
+		_, err = session.conn.Write(buf[:n])
 		if err != nil {
 			sessions.Delete(key)
-			remoteConn.Close()
+			session.conn.Close()
+			continue
 		}
+		session.lastActive.Store(time.Now().UnixNano())
 	}
+}
+
+type udpSession struct {
+	conn       net.Conn
+	lastActive atomic.Int64
 }
