@@ -5,6 +5,8 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"go-forward/core/utils"
 )
@@ -174,17 +176,41 @@ func handleUDP(conn net.Conn, clientAddr string) {
 		}
 	}()
 
-	buf := make([]byte, 65535)
+	buf := utils.GetPacketBuffer()
+	defer utils.PutPacketBuffer(buf)
 
-	targetConns := make(map[string]*net.UDPConn)
+	targetConns := make(map[string]*udpTargetConn)
 	var mu sync.Mutex
 
 	var clientUDPAddr *net.UDPAddr
 
+	stopCleanup := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCleanup:
+				return
+			case <-ticker.C:
+				now := time.Now()
+				mu.Lock()
+				for addr, c := range targetConns {
+					if now.Sub(time.Unix(0, c.lastUsed.Load())) > 2*time.Minute {
+						c.conn.Close()
+						delete(targetConns, addr)
+					}
+				}
+				mu.Unlock()
+			}
+		}
+	}()
+
 	defer func() {
+		close(stopCleanup)
 		mu.Lock()
 		for _, c := range targetConns {
-			c.Close()
+			c.conn.Close()
 		}
 		mu.Unlock()
 	}()
@@ -250,7 +276,7 @@ func handleUDP(conn net.Conn, clientAddr string) {
 		targetAddrStr := net.JoinHostPort(targetIP.String(), strconv.Itoa(targetPort))
 
 		mu.Lock()
-		conn, ok := targetConns[targetAddrStr]
+		entry, ok := targetConns[targetAddrStr]
 		if !ok {
 			// 创建新的 UDP 连接
 			rAddr, err := net.ResolveUDPAddr("udp", targetAddrStr)
@@ -260,18 +286,21 @@ func handleUDP(conn net.Conn, clientAddr string) {
 				continue
 			}
 
-			conn, err = net.DialUDP("udp", nil, rAddr)
+			conn, err := net.DialUDP("udp", nil, rAddr)
 			if err != nil {
 				utils.Error("[Proxy] [SOCKS5] Dial UDP target %s failed: %v", targetAddrStr, err)
 				mu.Unlock()
 				continue
 			}
-			targetConns[targetAddrStr] = conn
+			entry = &udpTargetConn{conn: conn}
+			entry.lastUsed.Store(time.Now().UnixNano())
+			targetConns[targetAddrStr] = entry
 
 			// 启动接收协程
 			go func(c *net.UDPConn, tAddr string) {
 				defer c.Close()
-				b := make([]byte, 65535)
+				b := utils.GetPacketBuffer()
+				defer utils.PutPacketBuffer(b)
 				for {
 					rn, _, err := c.ReadFromUDP(b)
 					if err != nil {
@@ -305,16 +334,25 @@ func handleUDP(conn net.Conn, clientAddr string) {
 
 					mu.Lock()
 					addr := clientUDPAddr
+					if entry, ok := targetConns[tAddr]; ok {
+						entry.lastUsed.Store(time.Now().UnixNano())
+					}
 					mu.Unlock()
 
 					if addr != nil {
 						l.WriteToUDP(resp, addr)
 					}
 				}
-			}(conn, targetAddrStr)
+			}(entry.conn, targetAddrStr)
 		}
 		mu.Unlock()
 
-		conn.Write(data)
+		entry.lastUsed.Store(time.Now().UnixNano())
+		entry.conn.Write(data)
 	}
+}
+
+type udpTargetConn struct {
+	conn     *net.UDPConn
+	lastUsed atomic.Int64
 }

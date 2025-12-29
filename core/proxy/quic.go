@@ -55,14 +55,13 @@ func StartQUIC(addr string, forwardURL string, auth *utils.Auth, tlsConfig *tls.
 
 	utils.Info("[Proxy] [QUIC] Listening on %s", addr)
 	if err := server.ListenAndServe(); err != nil {
-		// UDP 端口可能被占用或者权限问题，不应该阻塞主流程，但记录错误
 		utils.Error("[Proxy] [QUIC] Server error: %v", err)
 	}
 }
 
 func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.Conn, error) {
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: utils.GetInsecure(),
 		NextProtos:         []string{http3.NextProtoH3},
 	}
 

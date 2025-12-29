@@ -51,3 +51,7 @@ private.key
 self-cert.cer
 self-private.key
 self-rootca.cer
+.github/agents/
+.github/prompts/
+.specify/
+

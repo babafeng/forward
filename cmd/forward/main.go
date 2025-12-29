@@ -30,23 +30,24 @@ func (s *StringArray) Set(value string) error {
 
 var (
 	listenFlags  StringArray
-	forwardFlag string
+	forwardFlag  string
 	logLevel     string
 	printVersion bool
+	insecureFlag bool
 )
 
 var allSchemes = map[string]struct{}{
-	"socks5":   {},
-	"http":     {},
-	"http2":    {},
-	"http3":    {},
-	"https":    {},
-	"http1.1":  {},
-	"tls":      {},
-	"ssh":      {},
-	"tcp":      {},
-	"udp":      {},
-	"quic":     {},
+	"socks5":  {},
+	"http":    {},
+	"http2":   {},
+	"http3":   {},
+	"https":   {},
+	"http1.1": {},
+	"tls":     {},
+	"ssh":     {},
+	"tcp":     {},
+	"udp":     {},
+	"quic":    {},
 }
 
 var proxySchemes = map[string]struct{}{
@@ -65,11 +66,11 @@ func main() {
 	flag.Var(&listenFlags, "L", "Listen address (e.g., tls://:443, socks5://:1080)")
 	flag.StringVar(&forwardFlag, "F", "", "Forward address (e.g., tls://server:1080)")
 	flag.BoolVar(&printVersion, "V", false, "print version")
+	flag.BoolVar(&insecureFlag, "insecure", false, "Allow insecure SSL/TLS connections")
 	flag.Parse()
 
 	if printVersion {
-		fmt.Fprintf(os.Stdout, "forward %s (%s %s/%s)\n",
-			version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintf(os.Stdout, "forward %s (%s %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 		os.Exit(0)
 	}
 
@@ -86,12 +87,15 @@ func main() {
 		utils.SetLevel(utils.LevelInfo)
 	}
 
+	utils.SetInsecure(insecureFlag)
+
 	if len(listenFlags) == 0 {
 		flag.Usage()
 		return
 	}
 
 	utils.Info("Starting forward...")
+	fmt.Fprintf(os.Stdout, "forward %s (%s %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 
 	// 启动所有监听器
 	for _, listen := range listenFlags {

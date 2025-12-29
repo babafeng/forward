@@ -7,14 +7,17 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"go-forward/core/utils"
 )
 
 type ProxyHandler struct {
-	ForwardURL string
-	Auth       *utils.Auth
+	ForwardURL    string
+	Auth          *utils.Auth
+	transportOnce sync.Once
+	transport     *http.Transport
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -133,12 +136,6 @@ func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	utils.Info("[Proxy] [HTTP] %s %s --> %s via %v", r.Method, r.RemoteAddr, r.URL, forwardInfo)
 	delHopHeaders(r.Header)
 
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return Dial(network, addr, h.ForwardURL)
-		},
-	}
-
 	r.RequestURI = ""
 
 	if r.URL.Scheme == "" {
@@ -148,7 +145,7 @@ func (h *ProxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.Host = r.Host
 	}
 
-	resp, err := transport.RoundTrip(r)
+	resp, err := h.getTransport().RoundTrip(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -184,6 +181,23 @@ func copyHeader(dst, src http.Header) {
 			dst.Add(k, v)
 		}
 	}
+}
+
+func (h *ProxyHandler) getTransport() *http.Transport {
+	h.transportOnce.Do(func() {
+		h.transport = &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return Dial(network, addr, h.ForwardURL)
+			},
+			MaxIdleConns:        256,
+			MaxIdleConnsPerHost: 64,
+			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  false,
+			ForceAttemptHTTP2:   false,
+		}
+	})
+	return h.transport
 }
 
 type SingleConnListener struct {
