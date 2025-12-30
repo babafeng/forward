@@ -3,6 +3,8 @@ package proxy
 import (
 	"bufio"
 	"crypto/tls"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -66,7 +68,6 @@ func Start(listenURL string, forwardURL string) {
 func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher) {
 	auth := baseOpts.Auth
 	scheme := baseOpts.Scheme
-	tlsConfig := baseOpts.TLSConfig
 	authorizedKeys := baseOpts.AuthorizedKeys
 
 	switch scheme {
@@ -74,10 +75,10 @@ func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOp
 		HandleSSH(conn, forwardURL, auth, authorizedKeys)
 		return
 	case "http", "http1.1":
-		HandleHTTP1(conn, forwardURL, auth, tlsConfig)
+		HandleHTTP1(conn, forwardURL, baseOpts)
 		return
 	case "http2", "https":
-		HandleHTTP2(conn, forwardURL, auth, tlsConfig)
+		HandleHTTP2(conn, forwardURL, baseOpts)
 		return
 	case "socks5":
 		HandleSocks5(conn, forwardURL, auth)
@@ -119,7 +120,7 @@ func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOp
 
 	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP
 	if dispatcher == nil {
-		HandleHTTP1(newBufferedConn(conn, br), forwardURL, auth, nil)
+		HandleHTTP1(newBufferedConn(conn, br), forwardURL, baseOpts)
 		return
 	}
 	dispatcher.ServeConn(newBufferedConn(conn, br))
@@ -150,7 +151,10 @@ func serveHTTPListener(l net.Listener, forwardURL string, baseOpts *utils.Server
 		ForwardURL: forwardURL,
 		Auth:       baseOpts.Auth,
 	}
-	server := &http.Server{Handler: handler}
+	server := &http.Server{
+		Handler:  handler,
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
 
 	if baseOpts.TLSConfig != nil {
 		tlsListener := tls.NewListener(l, baseOpts.TLSConfig)
@@ -178,8 +182,11 @@ func newSniffDispatcher(addr net.Addr, forwardURL string, auth *utils.Auth) *Sni
 		Auth:       auth,
 	}
 	return &SniffDispatcher{
-		server: &http.Server{Handler: handler},
-		l:      newChanListener(addr),
+		server: &http.Server{
+			Handler:  handler,
+			ErrorLog: log.New(io.Discard, "", 0),
+		},
+		l: newChanListener(addr),
 	}
 }
 

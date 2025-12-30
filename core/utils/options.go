@@ -17,8 +17,27 @@ type ServerOptions struct {
 	AuthorizedKeys []ssh.PublicKey
 }
 
+var tlsSchemes = map[string]struct{}{
+	"http2":   {},
+	"http3":   {},
+	"https":   {},
+	"http1.1": {},
+	"tls":     {},
+	"ssh":     {},
+	"quic":    {},
+}
+
 func BuildServerOptions(listenURL string, defaultNextProtos []string) (*ServerOptions, error) {
 	scheme, auth, addr := URLParse(listenURL)
+
+	if _, ok := tlsSchemes[scheme]; !ok {
+		return &ServerOptions{
+			Auth:   auth,
+			Addr:   addr,
+			Scheme: scheme,
+		}, nil
+	}
+
 	opts := &ServerOptions{}
 	opts.Auth = auth
 	opts.Addr = addr

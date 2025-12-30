@@ -16,7 +16,6 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
-// StartQUIC 启动 HTTP/3 (QUIC) 代理服务器
 func StartQUIC(addr string, forwardURL string, baseOpts *utils.ServerOptions) {
 	tlsConfig := baseOpts.TLSConfig
 	auth := baseOpts.Auth

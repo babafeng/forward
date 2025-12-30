@@ -2,26 +2,17 @@ package proxy
 
 import (
 	"crypto/tls"
+	"io"
+	"log"
 	"net"
 	"net/http"
 
 	"go-forward/core/utils"
 )
 
-func HandleHTTP2(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
-	if tlsConfig == nil {
-		cert, err := utils.GetCertificate()
-		if err != nil {
-			utils.Error("Failed to generate cert: %v", err)
-			conn.Close()
-			return
-		}
-
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			NextProtos:   []string{"h2", "http/1.1"},
-		}
-	}
+func HandleHTTP2(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions) {
+	auth := baseOpts.Auth
+	tlsConfig := baseOpts.TLSConfig
 
 	tlsConn := tls.Server(conn, tlsConfig)
 
@@ -30,6 +21,7 @@ func HandleHTTP2(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *
 			ForwardURL: forwardURL,
 			Auth:       auth,
 		},
+		ErrorLog: log.New(io.Discard, "", 0),
 	}
 
 	l := &SingleConnListener{conn: tlsConn, ch: make(chan net.Conn, 1)}

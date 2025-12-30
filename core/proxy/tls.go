@@ -10,25 +10,9 @@ import (
 // HandleTLS 处理 TLS 代理请求
 func HandleTLS(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher) {
 	tlsConfig := baseOpts.TLSConfig
-
-	if tlsConfig == nil {
-		// 生成自签名证书
-		cert, err := utils.GetCertificate()
-		if err != nil {
-			conn.Close()
-			utils.Error("[Proxy] [TLS] Failed to generate certificate: %v", err)
-			return
-		}
-
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			NextProtos:   []string{"h2", "http/1.1"},
-		}
-	}
-
+	tlsConfig.NextProtos = []string{"h2", "http/1.1"}
 	tlsConn := tls.Server(conn, tlsConfig)
 
-	// 握手
 	if err := tlsConn.Handshake(); err != nil {
 		utils.Error("[Proxy] [TLS] Handshake failed: %v", err)
 		tlsConn.Close()
