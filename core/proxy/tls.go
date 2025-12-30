@@ -8,24 +8,11 @@ import (
 )
 
 // HandleTLS 处理 TLS 代理请求
-func HandleTLS(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
-	if tlsConfig == nil {
-		// 生成自签名证书
-		cert, err := utils.GetCertificate()
-		if err != nil {
-			conn.Close()
-			return
-		}
-
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			NextProtos:   []string{"h2", "http/1.1"},
-		}
-	}
-
+func HandleTLS(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher) {
+	tlsConfig := baseOpts.TLSConfig
+	tlsConfig.NextProtos = []string{"h2", "http/1.1"}
 	tlsConn := tls.Server(conn, tlsConfig)
 
-	// 握手
 	if err := tlsConn.Handshake(); err != nil {
 		utils.Error("[Proxy] [TLS] Handshake failed: %v", err)
 		tlsConn.Close()
@@ -33,5 +20,6 @@ func HandleTLS(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tl
 	}
 	utils.Info("[Proxy] [TLS] Handshake success from %s", conn.RemoteAddr())
 
-	HandleConnection(tlsConn, forwardURL, auth, "", nil, nil)
+	// Handshake is complete; continue with protocol sniffing without re-wrapping TLS.
+	dispatchBySniff(tlsConn, forwardURL, baseOpts, dispatcher, false)
 }

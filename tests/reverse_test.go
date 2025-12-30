@@ -12,18 +12,22 @@ import (
 	"go-forward/core/utils"
 )
 
-func TestReverseTCP(t *testing.T) {
+func TestReversetls(t *testing.T) {
 	targetAddr, stopTarget := startMockTCPServer(t)
 	defer stopTarget()
 
+	orig := utils.GetInsecure()
+	defer utils.SetInsecure(orig)
+	utils.SetInsecure(true)
+
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", getFreePort(t))
-	go reverse.StartServer(fmt.Sprintf("tcp://%s?bind=true", serverAddr))
+	go reverse.StartServer(fmt.Sprintf("tls://%s?bind=true", serverAddr))
 	if err := waitForTCP(serverAddr, 2*time.Second); err != nil {
 		t.Fatalf("Reverse server not ready: %v", err)
 	}
 
 	remotePort := getFreePort(t)
-	go reverse.StartClient(fmt.Sprintf("tcp://:%d//%s", remotePort, targetAddr), fmt.Sprintf("tcp://%s", serverAddr))
+	go reverse.StartClient(fmt.Sprintf("tcp://%d//%s", remotePort, targetAddr), fmt.Sprintf("tls://%s", serverAddr))
 	time.Sleep(500 * time.Millisecond)
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", remotePort))
@@ -58,7 +62,7 @@ func TestReverseQUIC(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 
 	remotePort := getFreePort(t)
-	go reverse.StartClient(fmt.Sprintf("tcp://:%d//%s", remotePort, targetAddr), fmt.Sprintf("quic://%s", serverAddr))
+	go reverse.StartClient(fmt.Sprintf("tcp://%d//%s", remotePort, targetAddr), fmt.Sprintf("quic://%s", serverAddr))
 	time.Sleep(700 * time.Millisecond)
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", remotePort))
@@ -80,18 +84,22 @@ func TestReverseQUIC(t *testing.T) {
 	}
 }
 
-func TestReverseStress(t *testing.T) {
+func TestReverseSSH(t *testing.T) {
 	targetAddr, stopTarget := startMockTCPServer(t)
 	defer stopTarget()
 
+	orig := utils.GetInsecure()
+	defer utils.SetInsecure(orig)
+	utils.SetInsecure(true)
+
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", getFreePort(t))
-	go reverse.StartServer(fmt.Sprintf("tcp://%s?bind=true", serverAddr))
+	go reverse.StartServer(fmt.Sprintf("ssh://user:pass@%s?bind=true", serverAddr))
 	if err := waitForTCP(serverAddr, 2*time.Second); err != nil {
 		t.Fatalf("Reverse server not ready: %v", err)
 	}
 
 	remotePort := getFreePort(t)
-	go reverse.StartClient(fmt.Sprintf("tcp://:%d//%s", remotePort, targetAddr), fmt.Sprintf("tcp://%s", serverAddr))
+	go reverse.StartClient(fmt.Sprintf("tcp://%d//%s", remotePort, targetAddr), fmt.Sprintf("ssh://user:pass@%s", serverAddr))
 	time.Sleep(500 * time.Millisecond)
 
 	var wg sync.WaitGroup

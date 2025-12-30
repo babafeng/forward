@@ -3,52 +3,31 @@ package proxy
 import (
 	"bufio"
 	"crypto/tls"
+	"io"
+	"log"
 	"net"
+	"net/http"
+	"sync"
 
 	"go-forward/core/utils"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // Start 启动代理服务器
 func Start(listenURL string, forwardURL string) {
 	scheme, auth, addr := utils.URLParse(listenURL)
+	baseOpts, err := utils.BuildServerOptions(listenURL, []string{"h2", "http/1.1"})
+	if err != nil {
+		utils.Error("[Proxy] [Server] option error: %v", err)
+		return
+	}
 
-	// 解析证书参数
-	var tlsConfig *tls.Config
-	var authorizedKeys []ssh.PublicKey
-	params := utils.ParseURLParams(listenURL)
-	if params != nil {
-		certFile := params.Get("cert")
-		keyFile := params.Get("key")
-		if certFile != "" && keyFile != "" {
-			cert, err := utils.LoadCertificate(certFile, keyFile)
-			if err != nil {
-				utils.Error("[Proxy] [Server] Failed to load certificate: %v", err)
-				return
-			}
-			tlsConfig = &tls.Config{
-				Certificates: []tls.Certificate{*cert},
-				NextProtos:   []string{"h2", "http/1.1"},
-			}
-			utils.Info("[Proxy] [Server] Loaded certificate from %s and %s", certFile, keyFile)
-		}
-
-		pubFile := params.Get("pub")
-		if pubFile != "" {
-			keys, err := utils.LoadSSHAuthorizedKeys(pubFile)
-			if err != nil {
-				utils.Error("[Proxy] [Server] Failed to load authorized keys: %v", err)
-				return
-			}
-			authorizedKeys = keys
-			utils.Info("[Proxy] [Server] Loaded %d authorized keys from %s", len(keys), pubFile)
-		}
+	if scheme == "tls" {
+		baseOpts.TLSConfig.NextProtos = []string{"h2", "http/1.1"}
 	}
 
 	// 如果指定了 quic 协议，则只启动 QUIC (UDP) 监听
 	if scheme == "quic" || scheme == "http3" {
-		StartQUIC(addr, forwardURL, auth, tlsConfig)
+		StartQUIC(addr, forwardURL, baseOpts)
 		return
 	}
 
@@ -61,37 +40,57 @@ func Start(listenURL string, forwardURL string) {
 
 	utils.Info("[Proxy] [Server] Listening on %s (%s)", addr, scheme)
 
+	if scheme == "http" || scheme == "http1.1" {
+		serveHTTPListener(l, forwardURL, baseOpts)
+		return
+	}
+
+	if scheme == "http2" || scheme == "https" {
+		baseOpts.TLSConfig.NextProtos = []string{"h2", "http/1.1"}
+
+		serveHTTPListener(l, forwardURL, baseOpts)
+		return
+	}
+
+	dispatcher := newSniffDispatcher(l.Addr(), forwardURL, auth)
+	dispatcher.Start()
+
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			utils.Error("[Proxy] [Server] Accept error: %v", err)
 			continue
 		}
-		go HandleConnection(conn, forwardURL, auth, scheme, tlsConfig, authorizedKeys)
+		go HandleConnection(conn, forwardURL, baseOpts, dispatcher)
 	}
 }
 
-func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme string, tlsConfig *tls.Config, authorizedKeys []ssh.PublicKey) {
-	// 1. 如果明确指定了协议，直接处理，不进行嗅探
-	// 这样可以避免 bufio.NewReader 预读导致的数据丢失问题，
-	// 也可以避免 SSH 服务端先发数据时的死锁问题。
+func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher) {
+	scheme := baseOpts.Scheme
+
 	switch scheme {
 	case "ssh":
-		HandleSSH(conn, forwardURL, auth, authorizedKeys)
+		HandleSSH(conn, forwardURL, baseOpts)
 		return
 	case "http", "http1.1":
-		HandleHTTP1(conn, forwardURL, auth, tlsConfig)
+		HandleHTTP1(conn, forwardURL, baseOpts)
 		return
 	case "http2", "https":
-		HandleHTTP2(conn, forwardURL, auth, tlsConfig)
+		HandleHTTP2(conn, forwardURL, baseOpts)
 		return
 	case "socks5":
-		HandleSocks5(conn, forwardURL, auth)
+		HandleSocks5(conn, forwardURL, baseOpts.Auth)
 		return
 	case "tls":
-		HandleTLS(conn, forwardURL, auth, tlsConfig)
+		HandleTLS(conn, forwardURL, baseOpts, dispatcher)
 		return
 	}
+
+	dispatchBySniff(conn, forwardURL, baseOpts, dispatcher, true)
+}
+
+func dispatchBySniff(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher, allowTLS bool) {
+	auth := baseOpts.Auth
 
 	// 2. 嗅探协议类型 (用于自动检测或 scheme 为空/tcp 的情况)
 	br := bufio.NewReader(conn)
@@ -109,8 +108,8 @@ func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme
 	}
 
 	// https / tls
-	if peek[0] == 0x16 {
-		HandleTLS(newBufferedConn(conn, br), forwardURL, auth, tlsConfig)
+	if allowTLS && peek[0] == 0x16 {
+		HandleTLS(newBufferedConn(conn, br), forwardURL, baseOpts, dispatcher)
 		return
 	}
 
@@ -118,13 +117,17 @@ func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme
 	if peek[0] == 'S' {
 		peek3, _ := br.Peek(3)
 		if string(peek3) == "SSH" {
-			HandleSSH(newBufferedConn(conn, br), forwardURL, auth, authorizedKeys)
+			HandleSSH(newBufferedConn(conn, br), forwardURL, baseOpts)
 			return
 		}
 	}
 
 	// 如果不是 socks5 / ssh / tls / https 默认使用 HTTP
-	HandleHTTP1(newBufferedConn(conn, br), forwardURL, auth, nil)
+	if dispatcher == nil {
+		HandleHTTP1(newBufferedConn(conn, br), forwardURL, baseOpts)
+		return
+	}
+	dispatcher.ServeConn(newBufferedConn(conn, br))
 }
 
 type BufferedConn struct {
@@ -145,4 +148,119 @@ func (b *BufferedConn) ConnectionState() tls.ConnectionState {
 		return tc.ConnectionState()
 	}
 	return tls.ConnectionState{}
+}
+
+func serveHTTPListener(l net.Listener, forwardURL string, baseOpts *utils.ServerOptions) {
+	handler := &ProxyHandler{
+		ForwardURL: forwardURL,
+		Auth:       baseOpts.Auth,
+	}
+	server := &http.Server{
+		Handler:  handler,
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
+
+	if baseOpts.TLSConfig != nil {
+		tlsListener := tls.NewListener(l, baseOpts.TLSConfig)
+		if err := server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
+			utils.Error("[Proxy] [Server] HTTP server error: %v", err)
+		}
+		return
+	}
+
+	if err := server.Serve(l); err != nil && err != http.ErrServerClosed {
+		utils.Error("[Proxy] [Server] HTTP server error: %v", err)
+	}
+}
+
+type SniffDispatcher struct {
+	server *http.Server
+	l      *chanListener
+	once   sync.Once
+}
+
+func newSniffDispatcher(addr net.Addr, forwardURL string, auth *utils.Auth) *SniffDispatcher {
+	utils.Info("[Proxy] [Server] Starting HTTP sniff dispatcher on %s", addr.String())
+	handler := &ProxyHandler{
+		ForwardURL: forwardURL,
+		Auth:       auth,
+	}
+	return &SniffDispatcher{
+		server: &http.Server{
+			Handler:  handler,
+			ErrorLog: log.New(io.Discard, "", 0),
+		},
+		l: newChanListener(addr),
+	}
+}
+
+func (d *SniffDispatcher) Start() {
+	d.once.Do(func() {
+		go func() {
+			if err := d.server.Serve(d.l); err != nil && err != http.ErrServerClosed && err != net.ErrClosed {
+				utils.Error("[Proxy] [Server] HTTP sniff error: %v", err)
+			}
+		}()
+	})
+}
+
+func (d *SniffDispatcher) ServeConn(conn net.Conn) {
+	d.Start()
+	if err := d.l.Push(conn); err != nil {
+		conn.Close()
+	}
+}
+
+type chanListener struct {
+	addr      net.Addr
+	ch        chan net.Conn
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newChanListener(addr net.Addr) *chanListener {
+	return &chanListener{
+		addr:   addr,
+		ch:     make(chan net.Conn, 128),
+		closed: make(chan struct{}),
+	}
+}
+
+func (l *chanListener) Accept() (net.Conn, error) {
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	case conn, ok := <-l.ch:
+		if !ok {
+			return nil, net.ErrClosed
+		}
+		return conn, nil
+	}
+}
+
+func (l *chanListener) Close() error {
+	l.closeOnce.Do(func() {
+		close(l.closed)
+		close(l.ch)
+	})
+	return nil
+}
+
+func (l *chanListener) Addr() net.Addr {
+	return l.addr
+}
+
+func (l *chanListener) Push(conn net.Conn) error {
+	select {
+	case <-l.closed:
+		return net.ErrClosed
+	default:
+	}
+
+	select {
+	case l.ch <- conn:
+		return nil
+	case <-l.closed:
+		return net.ErrClosed
+	}
 }

@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"io"
+	"net"
 	"testing"
 	"time"
 
@@ -197,5 +198,74 @@ func TestProxyStress(t *testing.T) {
 		if err := <-errCh; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestSocks5UDP(t *testing.T) {
+	// Start a UDP echo server
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to listen packet: %v", err)
+	}
+	defer pc.Close()
+	targetAddr := pc.LocalAddr().String()
+
+	received := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			pc.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			payload := make([]byte, n)
+			copy(payload, buf[:n])
+			select {
+			case received <- payload:
+			default:
+			}
+			pc.WriteTo(buf[:n], addr)
+		}
+	}()
+
+	// Start SOCKS5 proxy
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", getFreePort(t))
+	listenURL := fmt.Sprintf("socks5://%s", proxyAddr)
+	go proxy.Start(listenURL, "")
+	waitForProxyStart(t, "socks5", proxyAddr)
+
+	// Test UDP via proxy
+	conn, err := proxy.Dial("udp", targetAddr, listenURL)
+	if err != nil {
+		t.Fatalf("Proxy dial udp failed: %v", err)
+	}
+	defer conn.Close()
+
+	msg := "hello-socks5-udp"
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	t.Logf("UDP client sending %q to %s via SOCKS5 %s", msg, targetAddr, listenURL)
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	select {
+	case got := <-received:
+		t.Logf("UDP target received %q", string(got))
+		if string(got) != msg {
+			t.Fatalf("UDP target expected %q, got %q", msg, string(got))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Timed out waiting for UDP target to receive data")
+	}
+
+	buf := make([]byte, len(msg))
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	t.Logf("UDP client received %q", string(buf[:n]))
+	if string(buf[:n]) != msg {
+		t.Fatalf("Expected %q, got %q", msg, string(buf[:n]))
 	}
 }

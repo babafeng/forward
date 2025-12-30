@@ -1,10 +1,8 @@
 package proxy
 
 import (
-	"fmt"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,35 +16,13 @@ var (
 	hostKeyOnce sync.Once
 )
 
-func HandleSSH(conn net.Conn, forwardURL string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
+func HandleSSH(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions) {
+	authenticator := utils.NewSSHAuthenticator(baseOpts.Auth, baseOpts.AuthorizedKeys)
 	config := &ssh.ServerConfig{
-		ServerVersion: "SSH-2.0-OpenSSH_10.2p1 Debian13",
-		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if auth != nil {
-				if !auth.Validate(c.User(), string(pass)) {
-					return nil, fmt.Errorf("password rejected for %q", c.User())
-				}
-				return nil, nil
-			}
-			if len(authorizedKeys) > 0 {
-				return nil, fmt.Errorf("password auth disabled when public keys are configured and no user/pass set")
-			}
-			return nil, nil
-		},
-		PublicKeyCallback: func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
-			if auth != nil && auth.User != "" && auth.User != c.User() {
-				return nil, fmt.Errorf("unknown user %q", c.User())
-			}
-			if len(authorizedKeys) == 0 {
-				return nil, fmt.Errorf("no authorized keys configured")
-			}
-			for _, k := range authorizedKeys {
-				if utils.SSHKeysEqual(k, pubKey) {
-					return nil, nil
-				}
-			}
-			return nil, fmt.Errorf("unknown public key for %q", c.User())
-		},
+		ServerVersion:     "SSH-2.0-OpenSSH_10.2p1 Debian13",
+		NoClientAuth:      !authenticator.HasPassword() && !authenticator.HasAuthorizedKeys(),
+		PasswordCallback:  authenticator.PasswordCallback,
+		PublicKeyCallback: authenticator.PublicKeyCallback,
 	}
 
 	key, err := getHostKey()
@@ -75,7 +51,7 @@ func HandleSSH(conn net.Conn, forwardURL string, auth *utils.Auth, authorizedKey
 			if err != nil {
 				continue
 			}
-			go handleSSHSession(channel, requests, conn)
+			go utils.ConfuseSSH(channel, requests, conn)
 			continue
 		}
 
@@ -105,62 +81,6 @@ func HandleSSH(conn net.Conn, forwardURL string, auth *utils.Auth, authorizedKey
 		utils.Info("[Proxy] [SSH] Channel request to %s", targetAddr)
 		go handleSSHChannel(channel, requests, targetAddr, forwardURL, conn)
 	}
-}
-
-func handleSSHSession(channel ssh.Channel, requests <-chan *ssh.Request, conn net.Conn) {
-	defer channel.Close()
-
-	go func() {
-		for req := range requests {
-			switch req.Type {
-			case "shell", "pty-req", "env":
-				req.Reply(true, nil)
-			default:
-				req.Reply(false, nil)
-			}
-		}
-	}()
-
-	remoteAddr := conn.RemoteAddr().String()
-	host, _, _ := net.SplitHostPort(remoteAddr)
-	now := time.Now().UTC()
-	timeStr1 := now.Format("Mon Jan 02 15:04:05 MST 2006")
-	timeStr2 := now.Format("Mon Jan 02 15:04:05 2006")
-
-	msg := fmt.Sprintf(`Welcome to Ubuntu 24.04.2 LTS (GNU/Linux 6.14.0-1016-aws x86_64)
-
- * Documentation:  https://help.ubuntu.com
- * Management:     https://landscape.canonical.com
- * Support:        https://ubuntu.com/pro
-
- System information as of %s
-
-  System load:  3.03                Temperature:           -273.1 C
-  Usage of /:   65.3%% of 192.69GB   Processes:             188
-  Memory usage: 46%%                 Users logged in:       0
-  Swap usage:   0%%                  IPv4 address for ens5: 172.30.20.10
-
- * Ubuntu Pro delivers the most comprehensive open source security and
-   compliance features.
-
-   https://ubuntu.com/aws/pro
-
-Expanded Security Maintenance for Applications is not enabled.
-
-79 updates can be applied immediately.
-To see these additional updates run: apt list --upgradable
-
-Enable ESM Apps to receive additional future security updates.
-See https://ubuntu.com/esm or run: sudo pro status
-
-
-*** System restart required ***
-Last login: %s from %s
--bash: warning: setlocale: LC_ALL: cannot change locale (zh_CN.UTF-8)
-`, timeStr1, timeStr2, host)
-
-	channel.Write([]byte(strings.ReplaceAll(msg, "\n", "\r\n")))
-	time.Sleep(time.Second)
 }
 
 func handleSSHChannel(channel ssh.Channel, requests <-chan *ssh.Request, targetAddr string, forwardURL string, originConn net.Conn) {

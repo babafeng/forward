@@ -19,6 +19,13 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+type serverOptions struct {
+	Auth           *utils.Auth
+	TLSConfig      *tls.Config
+	AuthorizedKeys []ssh.PublicKey
+	SSHConfig      *ssh.ServerConfig
+}
+
 // StartServer 启动反向代理服务端（被客户端连接）
 func StartServer(listenURL string) {
 	scheme, auth, addr := utils.URLParse(listenURL)
@@ -26,39 +33,34 @@ func StartServer(listenURL string) {
 		scheme = "quic"
 	}
 
-	// 解析 authorized keys
-	var authorizedKeys []ssh.PublicKey
-	params := utils.ParseURLParams(listenURL)
-	if params != nil {
-		pubFile := params.Get("pub")
-		if pubFile != "" {
-			keys, err := utils.LoadSSHAuthorizedKeys(pubFile)
-			if err != nil {
-				utils.Error("[Reverse] [Server] Failed to load authorized keys: %v", err)
-				return
-			}
-			authorizedKeys = keys
-			utils.Info("[Reverse] [Server] Loaded %d authorized keys from %s", len(keys), pubFile)
-		}
+	baseOpts, err := utils.BuildServerOptions(listenURL, []string{"h2", "http/1.1"})
+	if err != nil {
+		utils.Error("[Reverse] [Server] option error: %v", err)
+		return
+	}
+	opts := &serverOptions{
+		Auth:           auth,
+		TLSConfig:      baseOpts.TLSConfig,
+		AuthorizedKeys: baseOpts.AuthorizedKeys,
 	}
 
 	s := strings.ToLower(scheme)
 	proxySchemes := map[string]struct{}{
-		"tls:":  {},
-		"ssh:":  {},
-		"quic:": {},
+		"tls":  {},
+		"ssh":  {},
+		"quic": {},
 	}
-	if _, exists := proxySchemes[s]; exists {
-		utils.Info("Reverse Server only supports proxy protocols (tls, ssh, quic). Given: %s", scheme)
+	if _, exists := proxySchemes[s]; !exists {
+		utils.Error("[Reverse] [Server] only supports proxy protocols (tls, ssh, quic). Given: %s, %s", scheme, s)
 		return
 	}
 
 	if scheme == "quic" {
-		utils.Info("Reverse Server listening on %s %s (UDP Only)", scheme, addr)
-		startQUICServer(addr, auth)
+		utils.Info("[Reverse] [Server] listening on %s %s (UDP Only)", scheme, addr)
+		startQUICServer(addr, opts)
 		return
 	} else {
-		utils.Info("Reverse Server listening on %s %s (TCP Only)", scheme, addr)
+		utils.Info("[Reverse] [Server] listening on %s %s (TCP Only)", scheme, addr)
 	}
 
 	l, err := net.Listen("tcp", addr)
@@ -74,23 +76,16 @@ func StartServer(listenURL string) {
 			utils.Error("Accept error: %v", err)
 			continue
 		}
-		go handleConnection(conn, scheme, auth, authorizedKeys)
+		go handleConnection(conn, scheme, opts)
 	}
 }
 
-func startQUICServer(addr string, auth *utils.Auth) {
-	cert, err := utils.GetCertificate()
-	if err != nil {
-		utils.Error("Failed to generate certificate for QUIC: %v", err)
-		return
-	}
+func startQUICServer(addr string, opts *serverOptions) {
+	utils.Info("[Reverse] [QUIC] Incoming QUIC connection on %s", addr)
+	tlsConfig := opts.TLSConfig
+	tlsConfig.NextProtos = []string{"reverse-quic", "h3"}
 
-	tlsConf := &tls.Config{
-		Certificates: []tls.Certificate{*cert},
-		NextProtos:   []string{"reverse-quic"},
-	}
-
-	listener, err := quic.ListenAddr(addr, tlsConf, nil)
+	listener, err := quic.ListenAddr(addr, tlsConfig, nil)
 	if err != nil {
 		utils.Error("QUIC Listen error: %v", err)
 		return
@@ -102,18 +97,19 @@ func startQUICServer(addr string, auth *utils.Auth) {
 			utils.Error("QUIC Accept error: %v", err)
 			continue
 		}
-		go handleQUICConnection(conn, auth)
+		go handleQUICConnection(conn, opts)
 	}
 }
 
-func handleQUICConnection(conn *quic.Conn, auth *utils.Auth) {
+func handleQUICConnection(conn *quic.Conn, opts *serverOptions) {
 	// 接受一个流作为控制连接
 	stream, err := conn.AcceptStream(context.Background())
 	if err != nil {
+		utils.Error("[Reverse] [QUIC] Accept stream error: %v", err)
 		return
 	}
 	// QUIC 建立后，内部流传输的是 SOCKS5 协议
-	handleConnection(&quicStreamConn{Stream: stream, local: conn.LocalAddr(), remote: conn.RemoteAddr()}, "socks5", auth, nil)
+	handleConnection(&quicStreamConn{Stream: stream, local: conn.LocalAddr(), remote: conn.RemoteAddr()}, "socks5", opts)
 }
 
 type quicStreamConn struct {
@@ -125,8 +121,9 @@ type quicStreamConn struct {
 func (c *quicStreamConn) LocalAddr() net.Addr  { return c.local }
 func (c *quicStreamConn) RemoteAddr() net.Addr { return c.remote }
 
-func handleConnection(conn net.Conn, scheme string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
-	// 嗅探协议
+func handleConnection(conn net.Conn, scheme string, opts *serverOptions) {
+	utils.Debug("[Reverse] [Server] New connection from %s for scheme %s", conn.RemoteAddr(), scheme)
+
 	br := bufio.NewReader(conn)
 	peek, _ := br.Peek(1)
 
@@ -137,43 +134,40 @@ func handleConnection(conn net.Conn, scheme string, auth *utils.Auth, authorized
 
 	// Strict Protocol Enforcement
 	if scheme == "tls" && peek[0] != 0x16 {
-		utils.Error("Protocol mismatch: expected TLS (0x16), got 0x%02x", peek[0])
-		conn.Close()
+		utils.Error("[Reverse] [Server] Protocol mismatch: expected TLS (0x16), got 0x%02x", peek[0])
 		return
 	}
 	if scheme == "ssh" && peek[0] != 'S' {
-		utils.Error("Protocol mismatch: expected SSH ('S'), got 0x%02x", peek[0])
-		conn.Close()
+		utils.Error("[Reverse] [Server] Protocol mismatch: expected SSH ('S'), got 0x%02x", peek[0])
 		return
 	}
 
 	// TLS (0x16)
 	if peek[0] == 0x16 {
-		handleTLS(utils.NewBufferedConn(conn, br), auth)
+		utils.Debug("[Reverse] [Server] [TLS] Incoming TLS connection from %s", conn.RemoteAddr())
+		handleTLS(utils.NewBufferedConn(conn, br), opts)
 		return
 	}
 
 	// SSH ('S')
 	if peek[0] == 'S' {
-		handleSSH(utils.NewBufferedConn(conn, br), auth, authorizedKeys)
+		utils.Debug("[Reverse] [Server] [SSH] Incoming SSH connection from %s", conn.RemoteAddr())
+		handleSSH(utils.NewBufferedConn(conn, br), opts)
 		return
 	}
 
 	// 默认 SOCKS5 (0x05) 或者直接处理
-	handleSocks5Handshake(utils.NewBufferedConn(conn, br), auth)
+	handleSocks5Handshake(utils.NewBufferedConn(conn, br), opts)
 }
 
-func handleTLS(conn net.Conn, auth *utils.Auth) {
-	cert, err := utils.GetCertificate()
-	if err != nil {
-		conn.Close()
-		return
+func handleTLS(conn net.Conn, opts *serverOptions) {
+	if opts == nil {
+		opts = &serverOptions{}
 	}
-
-	config := &tls.Config{
-		Certificates: []tls.Certificate{*cert},
-	}
-	tlsConn := tls.Server(conn, config)
+	utils.Info("[Reverse] [Server] [TLS] Incoming TLS connection from %s", conn.RemoteAddr())
+	tlsConfig := opts.TLSConfig
+	tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+	tlsConn := tls.Server(conn, tlsConfig)
 
 	if err := tlsConn.Handshake(); err != nil {
 		tlsConn.Close()
@@ -181,48 +175,30 @@ func handleTLS(conn net.Conn, auth *utils.Auth) {
 	}
 
 	// TLS 握手成功后，继续处理内部协议 (SOCKS5)
-	handleConnection(tlsConn, "socks5", auth, nil)
+	handleConnection(tlsConn, "socks5", opts)
 }
 
-func handleSSH(conn net.Conn, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
-	config := &ssh.ServerConfig{
-		NoClientAuth: auth == nil && len(authorizedKeys) == 0,
-		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if auth != nil {
-				if auth.Validate(c.User(), string(pass)) {
-					return nil, nil
-				}
-				return nil, fmt.Errorf("password rejected for %q", c.User())
-			}
-			// 如果没有配置 auth，但配置了 authorizedKeys，则禁止密码登录
-			if len(authorizedKeys) > 0 {
-				return nil, fmt.Errorf("password auth disabled when public keys are configured and no user/pass set")
-			}
-			return nil, nil
-		},
-		PublicKeyCallback: func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
-			if auth != nil && auth.User != "" && auth.User != c.User() {
-				return nil, fmt.Errorf("unknown user %q", c.User())
-			}
-			if len(authorizedKeys) == 0 {
-				return nil, fmt.Errorf("no authorized keys configured")
-			}
-			for _, k := range authorizedKeys {
-				if utils.SSHKeysEqual(k, pubKey) {
-					return nil, nil
-				}
-			}
-			return nil, fmt.Errorf("unknown public key for %q", c.User())
-		},
+func handleSSH(conn net.Conn, opts *serverOptions) {
+	if opts == nil {
+		opts = &serverOptions{}
 	}
-
-	key, _ := utils.GenerateSSHKey()
-	signer, _ := ssh.NewSignerFromKey(key)
-	config.AddHostKey(signer)
+	config := opts.SSHConfig
+	if config == nil {
+		authenticator := utils.NewSSHAuthenticator(opts.Auth, opts.AuthorizedKeys)
+		config = &ssh.ServerConfig{
+			NoClientAuth:      !authenticator.HasPassword() && !authenticator.HasAuthorizedKeys(),
+			PasswordCallback:  authenticator.PasswordCallback,
+			PublicKeyCallback: authenticator.PublicKeyCallback,
+		}
+		key, _ := utils.GenerateSSHKey()
+		signer, _ := ssh.NewSignerFromKey(key)
+		config.AddHostKey(signer)
+		opts.SSHConfig = config
+	}
 
 	_, chans, reqs, err := ssh.NewServerConn(conn, config)
 	if err != nil {
-		conn.Close()
+		utils.Error("[Reverse] [Server] [SSH] Handshake failed: %v", err)
 		return
 	}
 
@@ -230,6 +206,17 @@ func handleSSH(conn net.Conn, auth *utils.Auth, authorizedKeys []ssh.PublicKey) 
 
 	newChannel := <-chans
 	if newChannel == nil {
+		utils.Error("[Reverse] [Server] [SSH] No channel request received")
+		return
+	}
+
+	if newChannel.ChannelType() == "session" {
+		channel, requests, err := newChannel.Accept()
+		if err != nil {
+			utils.Error("[Reverse] [Server] [SSH] Session channel accept error: %v", err)
+			return
+		}
+		go utils.ConfuseSSH(channel, requests, conn)
 		return
 	}
 
@@ -240,7 +227,7 @@ func handleSSH(conn net.Conn, auth *utils.Auth, authorizedKeys []ssh.PublicKey) 
 	go ssh.DiscardRequests(requests)
 
 	// SSH 建立后，内部通道传输的是 SOCKS5 协议
-	handleConnection(&sshChannelConn{Channel: channel, conn: conn}, "socks5", auth, nil)
+	handleConnection(&sshChannelConn{Channel: channel, conn: conn}, "socks5", opts)
 }
 
 type sshChannelConn struct {
@@ -254,7 +241,7 @@ func (c *sshChannelConn) SetDeadline(t time.Time) error      { return nil }
 func (c *sshChannelConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *sshChannelConn) SetWriteDeadline(t time.Time) error { return nil }
 
-func handleSocks5Handshake(conn net.Conn, auth *utils.Auth) {
+func handleSocks5Handshake(conn net.Conn, opts *serverOptions) {
 	// 处理 SOCKS5 握手
 	buf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, buf); err != nil {
@@ -263,7 +250,6 @@ func handleSocks5Handshake(conn net.Conn, auth *utils.Auth) {
 	}
 
 	if buf[0] != 0x05 {
-		conn.Close()
 		return
 	}
 
@@ -274,7 +260,7 @@ func handleSocks5Handshake(conn net.Conn, auth *utils.Auth) {
 		return
 	}
 
-	if auth != nil {
+	if opts.Auth != nil {
 		// 需要认证，检查客户端是否支持 0x02 (Username/Password)
 		supportAuth := false
 		for _, m := range methods {
@@ -325,7 +311,7 @@ func handleSocks5Handshake(conn net.Conn, auth *utils.Auth) {
 			return
 		}
 
-		if !auth.Validate(string(user), string(pass)) {
+		if !opts.Auth.Validate(string(user), string(pass)) {
 			conn.Write([]byte{0x01, 0x01}) // Failure
 			conn.Close()
 			return
@@ -346,8 +332,6 @@ func handleSocks5Handshake(conn net.Conn, auth *utils.Auth) {
 	cmd := header[1]
 	if cmd == 0x02 { // BIND 命令
 		handleBind(conn, header)
-	} else {
-		conn.Close()
 	}
 }
 
@@ -379,7 +363,7 @@ func handleBind(conn net.Conn, header []byte) {
 
 	// 生成 Session ID
 	sessionID := generateSessionID()
-	utils.Info("[Reverse] [%s] %s <--> :%d", sessionID, conn.RemoteAddr(), bindPort)
+	utils.Info("[Reverse] [Server] [%s] %s <--> :%d", sessionID, conn.RemoteAddr(), bindPort)
 
 	conf := yamux.DefaultConfig()
 	conf.EnableKeepAlive = true
@@ -390,6 +374,7 @@ func handleBind(conn net.Conn, header []byte) {
 	if err != nil {
 		l.Close()
 		conn.Close()
+		utils.Error("[Reverse] [Server] Session %s yamux client error: %v", sessionID, err)
 		return
 	}
 
@@ -410,8 +395,10 @@ func handleBind(conn net.Conn, header []byte) {
 		defer session.Close()
 
 		for {
+			utils.Debug("[Reverse] [Server] Accept connection on :%d", bindPort)
 			userConn, err := l.Accept()
 			if err != nil {
+				utils.Error("[Reverse] [Server] Listener :%d accept error: %v", bindPort, err)
 				return
 			}
 
@@ -419,14 +406,16 @@ func handleBind(conn net.Conn, header []byte) {
 			stream, err := session.Open()
 			if err != nil {
 				userConn.Close()
-				utils.Error("Session %s open stream failed: %v", sessionID, err)
+				utils.Error("Session %s %s:%s open stream failed: %v", sessionID, userConn.RemoteAddr(), userConn.LocalAddr(), err)
 				return
 			}
+
+			utils.Debug("[Reverse] [Server] %s:%s --> %s:%s :%d", userConn.RemoteAddr(), userConn.LocalAddr(), stream.RemoteAddr(), stream.LocalAddr(), bindPort)
 
 			go func() {
 				defer userConn.Close()
 				defer stream.Close()
-				utils.Transfer(userConn, stream, "tunnel", "Reverse", "TCP")
+				utils.Transfer(userConn, stream, "tunnel", "Reverse] [Server", "TCP")
 			}()
 		}
 	}()

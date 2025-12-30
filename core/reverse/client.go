@@ -45,13 +45,13 @@ func StartClient(listenURL string, forwardURL string) {
 
 	reverseScheme, _, reverseAddr = utils.URLParse(serverURL)
 	reverseHost = strings.Split(reverseAddr, ":")[0]
-	utils.Info("[Reverse] %s:%d <--> %s via [%s %v]", reverseHost, remotePort, localTarget, reverseScheme, reverseAddr)
+	utils.Info("[Reverse] [Client] %s:%d <--> %s via [%s %v]", reverseHost, remotePort, localTarget, reverseScheme, reverseAddr)
 
 	backoff := 3 * time.Second
 	for {
 		err := connectAndServe(serverURL, remotePort, localTarget)
 		if err != nil {
-			utils.Error("Reverse connection error: %v. Retrying...", err)
+			utils.Error("[Reverse] [Client] connection error: %v. Retrying...", err)
 			time.Sleep(backoff)
 			if backoff < time.Minute {
 				backoff *= 2
@@ -81,18 +81,21 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 		var err error
 		conn, err = dialQUIC(u)
 		if err != nil {
+			utils.Error("[Reverse] [Dialer] Failed to dial quic: %v", err)
 			return err
 		}
 	case "tls":
 		var err error
 		conn, err = dialTLS(u)
 		if err != nil {
+			utils.Error("[Reverse] [Dialer] Failed to dial tls: %v", err)
 			return err
 		}
 	case "ssh":
 		var err error
 		conn, err = dialSSH(u)
 		if err != nil {
+			utils.Error("[Reverse] [Dialer] Failed to dial SSH: %v", err)
 			return err
 		}
 	case "tcp", "socks5":
@@ -163,16 +166,21 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 	}
 
 	// 读取响应
-	reply := make([]byte, 10)
-	if _, err := io.ReadFull(conn, reply); err != nil {
+	replyHeader := make([]byte, 4)
+	if _, err := io.ReadFull(conn, replyHeader); err != nil {
+		return err
+	}
+	if replyHeader[0] != 0x05 {
+		return fmt.Errorf("invalid socks version")
+	}
+	if replyHeader[1] != 0x00 {
+		return fmt.Errorf("bind request rejected")
+	}
+	if _, err := utils.ReadSocks5Addr(conn, replyHeader[3]); err != nil {
 		return err
 	}
 
-	if reply[1] != 0x00 {
-		return fmt.Errorf("bind request rejected")
-	}
-
-	utils.Info("Reverse tunnel established with reverse server %s", reverseAddr)
+	utils.Info("[Reverse] [Client] tunnel established with reverse server %s", reverseAddr)
 
 	// 启动 Yamux 服务端
 	session, err := yamux.Server(conn, nil)
@@ -188,6 +196,7 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 		}
 
 		go func() {
+			utils.Debug("[Reverse] [Client] New stream accepted from %s", stream.RemoteAddr())
 			defer stream.Close()
 
 			// 连接到本地目标
@@ -198,7 +207,7 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 			}
 			defer localConn.Close()
 
-			utils.Transfer(stream, localConn, localTarget, "ReverseClient", "TCP")
+			utils.Transfer(stream, localConn, localTarget, "Reverse] [Client", "TCP")
 		}()
 	}
 }
@@ -207,6 +216,19 @@ func dialQUIC(u *url.URL) (net.Conn, error) {
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: utils.GetInsecure(),
 		NextProtos:         []string{"reverse-quic"},
+		ServerName:         u.Hostname(),
+	}
+
+	if caFile := u.Query().Get("ca"); caFile != "" {
+		pool, err := utils.LoadCA(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load CA: %v", err)
+		}
+		tlsConf.RootCAs = pool
+		tlsConf.InsecureSkipVerify = utils.GetInsecure()
+		if tlsConf.ServerName == "" {
+			tlsConf.ServerName = u.Hostname()
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -227,7 +249,22 @@ func dialQUIC(u *url.URL) (net.Conn, error) {
 }
 
 func dialTLS(u *url.URL) (net.Conn, error) {
-	return tls.Dial("tcp", u.Host, &tls.Config{InsecureSkipVerify: utils.GetInsecure()})
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: utils.GetInsecure(),
+		ServerName:         u.Hostname(),
+	}
+	if caFile := u.Query().Get("ca"); caFile != "" {
+		pool, err := utils.LoadCA(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load CA: %v", err)
+		}
+		tlsConf.RootCAs = pool
+		tlsConf.InsecureSkipVerify = utils.GetInsecure()
+		if tlsConf.ServerName == "" {
+			tlsConf.ServerName = u.Hostname()
+		}
+	}
+	return tls.Dial("tcp", u.Host, tlsConf)
 }
 
 func dialSSH(u *url.URL) (net.Conn, error) {
@@ -237,17 +274,37 @@ func dialSSH(u *url.URL) (net.Conn, error) {
 		user = "root"
 	}
 
-	config := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(pass),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+	var authMethods []ssh.AuthMethod
+	if pass != "" {
+		authMethods = append(authMethods, ssh.Password(pass))
 	}
 
-	if !utils.GetInsecure() {
-		return nil, fmt.Errorf("SSH host key verification is required but not configured. Use --insecure to skip verification")
+	if keyFile := u.Query().Get("key"); keyFile != "" {
+		keyPass := u.Query().Get("password")
+		signer, err := utils.LoadSSHPrivateKey(keyFile, keyPass)
+		if err != nil {
+			utils.Error("[Reverse] [Dialer] Failed to load SSH private key: %v", err)
+			return nil, fmt.Errorf("failed to load SSH private key: %v", err)
+		}
+		utils.Info("[Reverse] [Dialer] Loaded SSH private key from %s", keyFile)
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	}
+
+	if len(authMethods) == 0 {
+		return nil, fmt.Errorf("no SSH auth method provided; set password or key parameter")
+	}
+
+	cb, err := utils.SSHHostKeyCallback()
+	if err != nil {
+		utils.Error("[Reverse] [Dialer] Failed to get SSH host key callback: %v", err)
+		return nil, fmt.Errorf("403 Forbidden - Access to this resource on the server is denied.")
+	}
+
+	config := &ssh.ClientConfig{
+		User:            user,
+		Auth:            authMethods,
+		Timeout:         10 * time.Second,
+		HostKeyCallback: cb,
 	}
 
 	conn, err := net.DialTimeout("tcp", u.Host, 10*time.Second)

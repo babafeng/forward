@@ -12,7 +12,6 @@ type Auth struct {
 	Pass string
 }
 
-// NewAuth creates a new Auth instance from a user:pass string
 func NewAuth(authStr string) (*Auth, error) {
 	parts := strings.SplitN(authStr, ":", 2)
 	if len(parts) != 2 {
@@ -24,7 +23,6 @@ func NewAuth(authStr string) (*Auth, error) {
 	}, nil
 }
 
-// Validate checks if the provided user and pass match the configured auth
 func (a *Auth) Validate(user, pass string) bool {
 	userMatch := subtle.ConstantTimeCompare([]byte(a.User), []byte(user)) == 1
 	passMatch := subtle.ConstantTimeCompare([]byte(a.Pass), []byte(pass)) == 1
