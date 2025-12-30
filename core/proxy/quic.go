@@ -17,30 +17,10 @@ import (
 )
 
 // StartQUIC 启动 HTTP/3 (QUIC) 代理服务器
-func StartQUIC(addr string, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
-	if tlsConfig == nil {
-		cert, err := utils.GetCertificate()
-		if err != nil {
-			utils.Error("[Proxy] [QUIC] Failed to generate certificate: %v", err)
-			return
-		}
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			NextProtos:   []string{"h3"},
-		}
-	} else {
-		// 确保 NextProtos 包含 h3
-		found := false
-		for _, p := range tlsConfig.NextProtos {
-			if p == "h3" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			tlsConfig.NextProtos = append(tlsConfig.NextProtos, "h3")
-		}
-	}
+func StartQUIC(addr string, forwardURL string, baseOpts *utils.ServerOptions) {
+	tlsConfig := baseOpts.TLSConfig
+	auth := baseOpts.Auth
+	tlsConfig.NextProtos = append(tlsConfig.NextProtos, http3.NextProtoH3)
 
 	handler := &ProxyHandler{
 		ForwardURL: forwardURL,
