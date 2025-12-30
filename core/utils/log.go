@@ -36,12 +36,9 @@ func SetLevel(level LogLevel) {
 	mu.Lock()
 	defer mu.Unlock()
 	currentLevel = level
-}
-
-func SetCallerEnabled(enabled bool) {
-	mu.Lock()
-	defer mu.Unlock()
-	includeCaller = enabled
+	if level == LevelDebug {
+		includeCaller = true
+	}
 }
 
 func shouldLog(level LogLevel) bool {

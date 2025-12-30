@@ -8,61 +8,24 @@ import (
 	"sync"
 
 	"go-forward/core/utils"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // Start 启动代理服务器
 func Start(listenURL string, forwardURL string) {
 	scheme, auth, addr := utils.URLParse(listenURL)
-
-	// 解析证书参数
-	var tlsConfig *tls.Config
-	var authorizedKeys []ssh.PublicKey
-	params := utils.ParseURLParams(listenURL)
-	if params != nil {
-		certFile := params.Get("cert")
-		keyFile := params.Get("key")
-		if certFile != "" && keyFile != "" {
-			cert, err := utils.LoadCertificate(certFile, keyFile)
-			if err != nil {
-				utils.Error("[Proxy] [Server] Failed to load certificate: %v", err)
-				return
-			}
-			tlsConfig = &tls.Config{
-				Certificates: []tls.Certificate{*cert},
-				NextProtos:   []string{"h2", "http/1.1"},
-			}
-			utils.Info("[Proxy] [Server] Loaded certificate from %s and %s", certFile, keyFile)
-		}
-
-		pubFile := params.Get("pub")
-		if pubFile != "" {
-			keys, err := utils.LoadSSHAuthorizedKeys(pubFile)
-			if err != nil {
-				utils.Error("[Proxy] [Server] Failed to load authorized keys: %v", err)
-				return
-			}
-			authorizedKeys = keys
-			utils.Info("[Proxy] [Server] Loaded %d authorized keys from %s", len(keys), pubFile)
-		}
+	baseOpts, err := utils.BuildServerOptions(listenURL, []string{"h2", "http/1.1"})
+	if err != nil {
+		utils.Error("[Proxy] [Server] option error: %v", err)
+		return
 	}
 
-	if scheme == "tls" && tlsConfig == nil {
-		cert, err := utils.GetCertificate()
-		if err != nil {
-			utils.Error("[Proxy] [Server] Failed to generate certificate: %v", err)
-			return
-		}
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			NextProtos:   []string{"h2", "http/1.1"},
-		}
+	if scheme == "tls" {
+		baseOpts.TLSConfig.NextProtos = []string{"h2", "http/1.1"}
 	}
 
 	// 如果指定了 quic 协议，则只启动 QUIC (UDP) 监听
 	if scheme == "quic" || scheme == "http3" {
-		StartQUIC(addr, forwardURL, auth, tlsConfig)
+		StartQUIC(addr, forwardURL, baseOpts)
 		return
 	}
 
@@ -76,42 +39,14 @@ func Start(listenURL string, forwardURL string) {
 	utils.Info("[Proxy] [Server] Listening on %s (%s)", addr, scheme)
 
 	if scheme == "http" || scheme == "http1.1" {
-		serveHTTPListener(l, forwardURL, auth, nil)
+		serveHTTPListener(l, forwardURL, baseOpts)
 		return
 	}
 
 	if scheme == "http2" || scheme == "https" {
-		if tlsConfig == nil {
-			cert, err := utils.GetCertificate()
-			if err != nil {
-				utils.Error("[Proxy] [Server] Failed to generate certificate: %v", err)
-				return
-			}
-			tlsConfig = &tls.Config{
-				Certificates: []tls.Certificate{*cert},
-				NextProtos:   []string{"h2", "http/1.1"},
-			}
-		} else {
-			// Ensure ALPN advertises HTTP/2.
-			hasH2 := false
-			hasHTTP1 := false
-			for _, p := range tlsConfig.NextProtos {
-				if p == "h2" {
-					hasH2 = true
-				}
-				if p == "http/1.1" {
-					hasHTTP1 = true
-				}
-			}
-			if !hasH2 {
-				tlsConfig.NextProtos = append(tlsConfig.NextProtos, "h2")
-			}
-			if !hasHTTP1 {
-				tlsConfig.NextProtos = append(tlsConfig.NextProtos, "http/1.1")
-			}
-		}
+		baseOpts.TLSConfig.NextProtos = []string{"h2", "http/1.1"}
 
-		serveHTTPListener(l, forwardURL, auth, tlsConfig)
+		serveHTTPListener(l, forwardURL, baseOpts)
 		return
 	}
 
@@ -124,14 +59,16 @@ func Start(listenURL string, forwardURL string) {
 			utils.Error("[Proxy] [Server] Accept error: %v", err)
 			continue
 		}
-		go HandleConnection(conn, forwardURL, auth, scheme, tlsConfig, authorizedKeys, dispatcher)
+		go HandleConnection(conn, forwardURL, baseOpts, dispatcher)
 	}
 }
 
-func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme string, tlsConfig *tls.Config, authorizedKeys []ssh.PublicKey, dispatcher *SniffDispatcher) {
-	// 1. 如果明确指定了协议，直接处理，不进行嗅探
-	// 这样可以避免 bufio.NewReader 预读导致的数据丢失问题，
-	// 也可以避免 SSH 服务端先发数据时的死锁问题。
+func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher) {
+	auth := baseOpts.Auth
+	scheme := baseOpts.Scheme
+	tlsConfig := baseOpts.TLSConfig
+	authorizedKeys := baseOpts.AuthorizedKeys
+
 	switch scheme {
 	case "ssh":
 		HandleSSH(conn, forwardURL, auth, authorizedKeys)
@@ -146,7 +83,7 @@ func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme
 		HandleSocks5(conn, forwardURL, auth)
 		return
 	case "tls":
-		HandleTLS(conn, forwardURL, auth, tlsConfig, dispatcher)
+		HandleTLS(conn, forwardURL, baseOpts, dispatcher)
 		return
 	}
 
@@ -167,7 +104,7 @@ func HandleConnection(conn net.Conn, forwardURL string, auth *utils.Auth, scheme
 
 	// https / tls
 	if peek[0] == 0x16 {
-		HandleTLS(newBufferedConn(conn, br), forwardURL, auth, tlsConfig, dispatcher)
+		HandleTLS(newBufferedConn(conn, br), forwardURL, baseOpts, dispatcher)
 		return
 	}
 
@@ -208,15 +145,15 @@ func (b *BufferedConn) ConnectionState() tls.ConnectionState {
 	return tls.ConnectionState{}
 }
 
-func serveHTTPListener(l net.Listener, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
+func serveHTTPListener(l net.Listener, forwardURL string, baseOpts *utils.ServerOptions) {
 	handler := &ProxyHandler{
 		ForwardURL: forwardURL,
-		Auth:       auth,
+		Auth:       baseOpts.Auth,
 	}
 	server := &http.Server{Handler: handler}
 
-	if tlsConfig != nil {
-		tlsListener := tls.NewListener(l, tlsConfig)
+	if baseOpts.TLSConfig != nil {
+		tlsListener := tls.NewListener(l, baseOpts.TLSConfig)
 		if err := server.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
 			utils.Error("[Proxy] [Server] HTTP server error: %v", err)
 		}

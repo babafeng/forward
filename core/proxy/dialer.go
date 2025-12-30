@@ -113,6 +113,7 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 				utils.Error("[Proxy] [Dialer] Failed to load SSH private key: %v", err)
 				return nil, fmt.Errorf("failed to load SSH private key: %v", err)
 			}
+			utils.Info("[Proxy] [Dialer] Loaded SSH private key from %s", keyFile)
 		}
 		conn, err = sshConnect(conn, forward.Host, addr, forward.User, signer)
 	case "tls":
@@ -483,14 +484,9 @@ func sshConnect(conn net.Conn, sshServerAddr, targetAddr string, user *url.Useri
 	}
 
 	config := &ssh.ClientConfig{
-		User:            username,
-		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
-	}
-
-	if !utils.GetInsecure() {
-		return nil, fmt.Errorf("SSH host key verification is required but not configured. Use --insecure to skip verification")
+		User:    username,
+		Auth:    authMethods,
+		Timeout: 10 * time.Second,
 	}
 
 	c, chans, reqs, err := ssh.NewClientConn(conn, sshServerAddr, config)

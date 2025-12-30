@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
@@ -72,7 +71,7 @@ func main() {
 	flag.BoolVar(&insecureFlag, "insecure", false, "Allow insecure SSL/TLS connections")
 	flag.Parse()
 
-	fmt.Fprintf(os.Stdout, "forward %s (%s %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	utils.Info("forward %s (%s %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if printVersion {
 		os.Exit(0)
 	}
@@ -87,14 +86,14 @@ func main() {
 		utils.SetLevel(utils.LevelInfo)
 	}
 
-	utils.SetInsecure(insecureFlag)
-
 	if len(listenFlags) == 0 {
 		flag.Usage()
 		return
 	}
 
 	utils.Info("Starting forward...")
+	utils.Debug("Insecure SSL/TLS connections allowed: %v", utils.GetInsecure())
+	utils.SetInsecure(insecureFlag)
 
 	// 启动所有监听器
 	for _, listen := range listenFlags {
