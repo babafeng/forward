@@ -21,10 +21,10 @@ const (
 )
 
 var (
-	currentLevel = LevelInfo
-	logger       = log.New(os.Stdout, "", 0)
-	mu           sync.Mutex
-	wd           string
+	currentLevel  = LevelInfo
+	logger        = log.New(os.Stdout, "", 0)
+	mu            sync.Mutex
+	wd            string
 	includeCaller bool
 )
 
@@ -44,8 +44,14 @@ func SetCallerEnabled(enabled bool) {
 	includeCaller = enabled
 }
 
+func shouldLog(level LogLevel) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return level >= currentLevel
+}
+
 func formatLog(level LogLevel, levelLabel string, msg string) string {
-	now := time.Now().Format("2006-01-02 15:04:05")
+	now := time.Now().Format("2006-01-02 15:04:05 -0700 MST")
 	if includeCaller || level == LevelDebug {
 		_, file, line, ok := runtime.Caller(3)
 		if !ok {
@@ -83,23 +89,31 @@ func output(level LogLevel, msg string) {
 }
 
 func Debug(format string, v ...interface{}) {
+	if !shouldLog(LevelDebug) {
+		return
+	}
 	output(LevelDebug, fmt.Sprintf(format, v...))
 }
 
 func Info(format string, v ...interface{}) {
+	if !shouldLog(LevelInfo) {
+		return
+	}
 	output(LevelInfo, fmt.Sprintf(format, v...))
 }
 
 func Warn(format string, v ...interface{}) {
+	if !shouldLog(LevelWarn) {
+		return
+	}
 	output(LevelWarn, fmt.Sprintf(format, v...))
 }
 
 func Error(format string, v ...interface{}) {
+	if !shouldLog(LevelError) {
+		return
+	}
 	output(LevelError, fmt.Sprintf(format, v...))
-}
-
-func Logging(format string, v ...interface{}) {
-	output(currentLevel, fmt.Sprintf(format, v...))
 }
 
 func SetOutput(w io.Writer) {

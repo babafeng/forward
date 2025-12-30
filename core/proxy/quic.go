@@ -60,6 +60,7 @@ func StartQUIC(addr string, forwardURL string, auth *utils.Auth, tlsConfig *tls.
 }
 
 func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.Conn, error) {
+	utils.Debug("[Proxy] [QUIC] Connecting to %s via %s", targetAddr, proxyAddr)
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: utils.GetInsecure(),
 		NextProtos:         []string{http3.NextProtoH3},
@@ -74,6 +75,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 
 	qConn, err := quic.DialAddr(ctx, proxyAddr, tlsConf, nil)
 	if err != nil {
+		utils.Error("[Proxy] [QUIC] Dial failed to %s: %v", proxyAddr, err)
 		return nil, fmt.Errorf("quic dial failed: %v", err)
 	}
 
@@ -83,6 +85,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 	str, err := cc.OpenRequestStream(ctx)
 	if err != nil {
 		qConn.CloseWithError(0, "")
+		utils.Error("[Proxy] [QUIC] Open stream failed to %s: %v", proxyAddr, err)
 		return nil, fmt.Errorf("open stream failed: %v", err)
 	}
 

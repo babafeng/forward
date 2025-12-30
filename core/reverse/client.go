@@ -45,7 +45,7 @@ func StartClient(listenURL string, forwardURL string) {
 
 	reverseScheme, _, reverseAddr = utils.URLParse(serverURL)
 	reverseHost = strings.Split(reverseAddr, ":")[0]
-	utils.Info("[Reverse] %s:%d <--> %s via [%s %v]", reverseHost, remotePort, localTarget, reverseScheme, reverseAddr)
+	utils.Info("[Reverse] [Client] %s:%d <--> %s via [%s %v]", reverseHost, remotePort, localTarget, reverseScheme, reverseAddr)
 
 	backoff := 3 * time.Second
 	for {
@@ -177,7 +177,7 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 		return err
 	}
 
-	utils.Info("Reverse tunnel established with reverse server %s", reverseAddr)
+	utils.Info("[Reverse] [Client] tunnel established with reverse server %s", reverseAddr)
 
 	// 启动 Yamux 服务端
 	session, err := yamux.Server(conn, nil)
@@ -193,6 +193,7 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 		}
 
 		go func() {
+			utils.Debug("[Reverse] [Client] New stream accepted from %s", stream.RemoteAddr())
 			defer stream.Close()
 
 			// 连接到本地目标
@@ -203,7 +204,7 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 			}
 			defer localConn.Close()
 
-			utils.Transfer(stream, localConn, localTarget, "ReverseClient", "TCP")
+			utils.Transfer(stream, localConn, localTarget, "Reverse] [Client", "TCP")
 		}()
 	}
 }

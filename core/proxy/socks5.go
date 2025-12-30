@@ -71,7 +71,7 @@ func HandleSocks5(conn net.Conn, forwardURL string, auth *utils.Auth) {
 		}
 
 		if !auth.Validate(string(uname), string(passwd)) {
-			utils.Logging("[Proxy] [SOCKS5] Auth failed for user: %s", uname)
+			utils.Error("[Proxy] [SOCKS5] Auth failed for user: %s", uname)
 			conn.Write([]byte{0x01, 0x01}) // 失败
 			return
 		}

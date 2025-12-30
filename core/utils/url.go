@@ -79,3 +79,19 @@ func ParseURLParams(listenURL string) url.Values {
 	}
 	return nil
 }
+
+// SanitizeRequestURL removes embedded credentials while keeping path/query for logging.
+func SanitizeRequestURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+
+	clean := *u
+	clean.User = nil
+
+	if clean.Scheme == "" && clean.Host == "" {
+		return clean.RequestURI()
+	}
+
+	return clean.String()
+}

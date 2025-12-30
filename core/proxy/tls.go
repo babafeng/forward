@@ -14,6 +14,7 @@ func HandleTLS(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tl
 		cert, err := utils.GetCertificate()
 		if err != nil {
 			conn.Close()
+			utils.Error("[Proxy] [TLS] Failed to generate certificate: %v", err)
 			return
 		}
 

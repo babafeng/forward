@@ -22,10 +22,10 @@ var defaultDialer = &net.Dialer{
 	KeepAlive: 30 * time.Second,
 }
 
-// Dial 通过代理连接到目标地址
 func Dial(network, addr string, forwardURL string) (net.Conn, error) {
-	forwardURL = utils.FixURLScheme(forwardURL)
+	utils.Debug("[Proxy] [Dialer] Dialing %s %s via %s", network, addr, forwardURL)
 
+	forwardURL = utils.FixURLScheme(forwardURL)
 	if strings.Count(addr, ":") > 1 && !strings.Contains(addr, "[") && !strings.Contains(addr, "]") {
 		lastColon := strings.LastIndex(addr, ":")
 		if lastColon != -1 {
@@ -45,6 +45,8 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	utils.Debug("[Proxy] [Dialer] [forward.Scheme] Dialing %s %s via %s", network, addr, forwardURL)
 
 	var conn net.Conn
 
@@ -69,6 +71,7 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 		pool, err := utils.LoadCA(caFile)
 		if err != nil {
 			conn.Close()
+			utils.Error("[Proxy] [Dialer] Failed to load CA: %v", err)
 			return nil, fmt.Errorf("failed to load CA: %v", err)
 		}
 		tlsConfig = &tls.Config{
@@ -107,6 +110,7 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 			signer, err = utils.LoadSSHPrivateKey(keyFile, password)
 			if err != nil {
 				conn.Close()
+				utils.Error("[Proxy] [Dialer] Failed to load SSH private key: %v", err)
 				return nil, fmt.Errorf("failed to load SSH private key: %v", err)
 			}
 		}
@@ -116,7 +120,6 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		// TLS 握手成功后，默认使用 SOCKS5 协议继续连接下一跳
 		utils.Debug("[Proxy] [Dialer] TLS Handshake success to %s %s %s", forward.Host, addr, forward.User)
 
 		if network == "udp" {
@@ -142,6 +145,7 @@ func Dial(network, addr string, forwardURL string) (net.Conn, error) {
 }
 
 func socks5UDPAssociate(conn net.Conn, targetAddr string, user *url.Userinfo) (net.Conn, error) {
+	utils.Debug("[Proxy] [Dialer] SOCKS5 UDP Associate to %s via %s", targetAddr, conn.RemoteAddr().String())
 	// 1. 握手 (Auth)
 	if err := socks5Auth(conn, user); err != nil {
 		return nil, err
@@ -250,6 +254,7 @@ func socks5Auth(conn net.Conn, user *url.Userinfo) error {
 }
 
 func socks5Connect(conn net.Conn, targetAddr string, user *url.Userinfo) (net.Conn, error) {
+	utils.Debug("[Proxy] [Dialer] SOCKS5 TCP Connect to %s via %s", targetAddr, conn.RemoteAddr().String())
 	if err := socks5Auth(conn, user); err != nil {
 		return nil, err
 	}
