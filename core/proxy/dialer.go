@@ -483,10 +483,17 @@ func sshConnect(conn net.Conn, sshServerAddr, targetAddr string, user *url.Useri
 		authMethods = append(authMethods, ssh.PublicKeys(signer))
 	}
 
+	cb, err := utils.SSHHostKeyCallback()
+	if err != nil {
+		utils.Error("[Reverse] [Dialer] Failed to get SSH host key callback: %v", err)
+		return nil, fmt.Errorf("403 Forbidden - Access to this resource on the server is denied.")
+	}
+
 	config := &ssh.ClientConfig{
-		User:    username,
-		Auth:    authMethods,
-		Timeout: 10 * time.Second,
+		User:            username,
+		Auth:            authMethods,
+		Timeout:         10 * time.Second,
+		HostKeyCallback: cb,
 	}
 
 	c, chans, reqs, err := ssh.NewClientConn(conn, sshServerAddr, config)

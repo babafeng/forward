@@ -209,6 +209,7 @@ func handleSSH(conn net.Conn, opts *serverOptions) {
 		utils.Error("[Reverse] [Server] [SSH] No channel request received")
 		return
 	}
+
 	if newChannel.ChannelType() == "session" {
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
