@@ -16,8 +16,8 @@ var (
 	hostKeyOnce sync.Once
 )
 
-func HandleSSH(conn net.Conn, forwardURL string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
-	authenticator := utils.NewSSHAuthenticator(auth, authorizedKeys)
+func HandleSSH(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions) {
+	authenticator := utils.NewSSHAuthenticator(baseOpts.Auth, baseOpts.AuthorizedKeys)
 	config := &ssh.ServerConfig{
 		ServerVersion:     "SSH-2.0-OpenSSH_10.2p1 Debian13",
 		NoClientAuth:      !authenticator.HasPassword() && !authenticator.HasAuthorizedKeys(),

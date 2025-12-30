@@ -294,10 +294,17 @@ func dialSSH(u *url.URL) (net.Conn, error) {
 		return nil, fmt.Errorf("no SSH auth method provided; set password or key parameter")
 	}
 
+	cb, err := utils.SSHHostKeyCallback()
+	if err != nil {
+		utils.Error("[Reverse] [Dialer] Failed to get SSH host key callback: %v", err)
+		return nil, fmt.Errorf("403 Forbidden - Access to this resource on the server is denied.")
+	}
+
 	config := &ssh.ClientConfig{
-		User:    user,
-		Auth:    authMethods,
-		Timeout: 10 * time.Second,
+		User:            user,
+		Auth:            authMethods,
+		Timeout:         10 * time.Second,
+		HostKeyCallback: cb,
 	}
 
 	conn, err := net.DialTimeout("tcp", u.Host, 10*time.Second)

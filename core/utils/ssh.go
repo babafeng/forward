@@ -60,8 +60,10 @@ func (a *SSHAuthenticator) PublicKeyCallback(c ssh.ConnMetadata, pubKey ssh.Publ
 }
 
 func SSHHostKeyCallback() (ssh.HostKeyCallback, error) {
-	if !GetInsecure() {
-		return nil, fmt.Errorf("SSH host key verification is required but not configured. Use --insecure to skip verification")
+	if GetInsecure() {
+		return ssh.InsecureIgnoreHostKey(), nil
 	}
+
+	Warn("SSH host key verification not configured; proceeding without verification (equivalent to --insecure)")
 	return ssh.InsecureIgnoreHostKey(), nil
 }

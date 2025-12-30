@@ -66,13 +66,11 @@ func Start(listenURL string, forwardURL string) {
 }
 
 func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher) {
-	auth := baseOpts.Auth
 	scheme := baseOpts.Scheme
-	authorizedKeys := baseOpts.AuthorizedKeys
 
 	switch scheme {
 	case "ssh":
-		HandleSSH(conn, forwardURL, auth, authorizedKeys)
+		HandleSSH(conn, forwardURL, baseOpts)
 		return
 	case "http", "http1.1":
 		HandleHTTP1(conn, forwardURL, baseOpts)
@@ -81,12 +79,18 @@ func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOp
 		HandleHTTP2(conn, forwardURL, baseOpts)
 		return
 	case "socks5":
-		HandleSocks5(conn, forwardURL, auth)
+		HandleSocks5(conn, forwardURL, baseOpts.Auth)
 		return
 	case "tls":
 		HandleTLS(conn, forwardURL, baseOpts, dispatcher)
 		return
 	}
+
+	dispatchBySniff(conn, forwardURL, baseOpts, dispatcher, true)
+}
+
+func dispatchBySniff(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, dispatcher *SniffDispatcher, allowTLS bool) {
+	auth := baseOpts.Auth
 
 	// 2. 嗅探协议类型 (用于自动检测或 scheme 为空/tcp 的情况)
 	br := bufio.NewReader(conn)
@@ -104,7 +108,7 @@ func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOp
 	}
 
 	// https / tls
-	if peek[0] == 0x16 {
+	if allowTLS && peek[0] == 0x16 {
 		HandleTLS(newBufferedConn(conn, br), forwardURL, baseOpts, dispatcher)
 		return
 	}
@@ -113,7 +117,7 @@ func HandleConnection(conn net.Conn, forwardURL string, baseOpts *utils.ServerOp
 	if peek[0] == 'S' {
 		peek3, _ := br.Peek(3)
 		if string(peek3) == "SSH" {
-			HandleSSH(newBufferedConn(conn, br), forwardURL, auth, authorizedKeys)
+			HandleSSH(newBufferedConn(conn, br), forwardURL, baseOpts)
 			return
 		}
 	}

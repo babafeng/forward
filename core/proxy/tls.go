@@ -20,5 +20,6 @@ func HandleTLS(conn net.Conn, forwardURL string, baseOpts *utils.ServerOptions, 
 	}
 	utils.Info("[Proxy] [TLS] Handshake success from %s", conn.RemoteAddr())
 
-	HandleConnection(tlsConn, forwardURL, baseOpts, dispatcher)
+	// Handshake is complete; continue with protocol sniffing without re-wrapping TLS.
+	dispatchBySniff(tlsConn, forwardURL, baseOpts, dispatcher, false)
 }
