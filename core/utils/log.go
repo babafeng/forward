@@ -25,6 +25,7 @@ var (
 	logger       = log.New(os.Stdout, "", 0)
 	mu           sync.Mutex
 	wd           string
+	includeCaller bool
 )
 
 func init() {
@@ -37,16 +38,25 @@ func SetLevel(level LogLevel) {
 	currentLevel = level
 }
 
-func formatLog(level string, msg string) string {
+func SetCallerEnabled(enabled bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	includeCaller = enabled
+}
+
+func formatLog(level LogLevel, levelLabel string, msg string) string {
 	now := time.Now().Format("2006-01-02 15:04:05")
-	_, file, line, ok := runtime.Caller(3)
-	if !ok {
-		file = "???"
-		line = 0
-	} else {
-		file = filepath.Base(file)
+	if includeCaller || level == LevelDebug {
+		_, file, line, ok := runtime.Caller(3)
+		if !ok {
+			file = "???"
+			line = 0
+		} else {
+			file = filepath.Base(file)
+		}
+		return fmt.Sprintf("%s [%s] %s:%d %s", now, levelLabel, file, line, msg)
 	}
-	return fmt.Sprintf("%s [%s] %s:%d %s", now, level, file, line, msg)
+	return fmt.Sprintf("%s [%s] %s", now, levelLabel, msg)
 }
 
 func output(level LogLevel, msg string) {
@@ -60,13 +70,13 @@ func output(level LogLevel, msg string) {
 	var outputMsg string
 	switch level {
 	case LevelDebug:
-		outputMsg = formatLog("DEBUG", msg)
+		outputMsg = formatLog(level, "DEBUG", msg)
 	case LevelInfo:
-		outputMsg = formatLog("INFO", msg)
+		outputMsg = formatLog(level, "INFO", msg)
 	case LevelWarn:
-		outputMsg = formatLog("WARN", msg)
+		outputMsg = formatLog(level, "WARN", msg)
 	case LevelError:
-		outputMsg = formatLog("ERROR", msg)
+		outputMsg = formatLog(level, "ERROR", msg)
 	}
 
 	logger.Println(outputMsg)

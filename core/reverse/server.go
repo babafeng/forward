@@ -48,7 +48,7 @@ func StartServer(listenURL string) {
 		"ssh:":  {},
 		"quic:": {},
 	}
-	if _, exists := proxySchemes[s]; exists {
+	if _, exists := proxySchemes[s]; !exists {
 		utils.Info("Reverse Server only supports proxy protocols (tls, ssh, quic). Given: %s", scheme)
 		return
 	}
@@ -59,6 +59,13 @@ func StartServer(listenURL string) {
 		return
 	} else {
 		utils.Info("Reverse Server listening on %s %s (TCP Only)", scheme, addr)
+	}
+
+	if scheme == "tls" {
+		if _, err := utils.GetCertificate(); err != nil {
+			utils.Error("Failed to generate certificate for TLS: %v", err)
+			return
+		}
 	}
 
 	l, err := net.Listen("tcp", addr)

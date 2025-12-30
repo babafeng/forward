@@ -1,12 +1,14 @@
 package proxy
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,10 +182,18 @@ func socks5UDPAssociate(conn net.Conn, targetAddr string, user *url.Userinfo) (n
 		return nil, fmt.Errorf("failed to dial proxy udp %s: %v", bndAddr, err)
 	}
 
+	header, err := buildSocks5UDPHeader(targetAddr)
+	if err != nil {
+		udpConn.Close()
+		return nil, err
+	}
+
 	return &Socks5UDPConn{
 		tcpConn:    conn,
 		udpConn:    udpConn,
 		targetAddr: targetAddr,
+		recvBuf:    make([]byte, 65535),
+		header:     header,
 	}, nil
 }
 
@@ -273,11 +283,12 @@ type Socks5UDPConn struct {
 	tcpConn    net.Conn
 	udpConn    net.Conn
 	targetAddr string
+	recvBuf    []byte
+	header     []byte
 }
 
 func (c *Socks5UDPConn) Read(b []byte) (n int, err error) {
-	buf := make([]byte, 65535)
-	n, err = c.udpConn.Read(buf)
+	n, err = c.udpConn.Read(c.recvBuf)
 	if err != nil {
 		return 0, err
 	}
@@ -286,13 +297,13 @@ func (c *Socks5UDPConn) Read(b []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	atyp := buf[3]
+	atyp := c.recvBuf[3]
 	headLen := 0
 	switch atyp {
 	case 0x01: // IPv4
 		headLen = 10
 	case 0x03: // Domain
-		domainLen := int(buf[4])
+		domainLen := int(c.recvBuf[4])
 		headLen = 5 + domainLen + 2
 	case 0x04: // IPv6
 		headLen = 22
@@ -304,33 +315,25 @@ func (c *Socks5UDPConn) Read(b []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	copy(b, buf[headLen:n])
-	return n - headLen, nil
+	payloadLen := n - headLen
+	if payloadLen <= 0 || len(b) == 0 {
+		return 0, nil
+	}
+	if payloadLen > len(b) {
+		copy(b, c.recvBuf[headLen:headLen+len(b)])
+		return len(b), nil
+	}
+	copy(b, c.recvBuf[headLen:n])
+	return payloadLen, nil
 }
 
 func (c *Socks5UDPConn) Write(b []byte) (n int, err error) {
-	buf := []byte{0x00, 0x00}
-	buf = append(buf, 0x00)
-
-	host, portStr, _ := net.SplitHostPort(c.targetAddr)
-	port, _ := net.LookupPort("tcp", portStr) // udp port lookup is same
-
-	ip := net.ParseIP(host)
-	if ip4 := ip.To4(); ip4 != nil {
-		buf = append(buf, 0x01)
-		buf = append(buf, ip4...)
-	} else if ip6 := ip.To16(); ip6 != nil {
-		buf = append(buf, 0x04)
-		buf = append(buf, ip6...)
-	} else {
-		buf = append(buf, 0x03)
-		buf = append(buf, byte(len(host)))
-		buf = append(buf, []byte(host)...)
+	if c.header == nil {
+		return 0, fmt.Errorf("socks5 udp header not initialized")
 	}
-
-	buf = append(buf, byte(port>>8), byte(port))
+	buf := make([]byte, 0, len(c.header)+len(b))
+	buf = append(buf, c.header...)
 	buf = append(buf, b...)
-
 	_, err = c.udpConn.Write(buf)
 	if err != nil {
 		return 0, err
@@ -380,33 +383,83 @@ func httpConnect(conn net.Conn, targetAddr string, user *url.Userinfo) (net.Conn
 		return nil, fmt.Errorf("failed to write http connect request: %w", err)
 	}
 
-	headerBuf := make([]byte, 0)
-	b := make([]byte, 1)
+	reader := bufio.NewReader(conn)
+	const maxHTTPConnectHeader = 4096
+	var total int
+
+	statusLine, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("failed to read http connect response: %w", err)
+	}
+	total += len(statusLine)
+	if total > maxHTTPConnectHeader {
+		return nil, fmt.Errorf("http connect response too large")
+	}
+
 	for {
-		_, err := conn.Read(b)
+		line, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, fmt.Errorf("failed to read http connect response: %w", err)
 		}
-		headerBuf = append(headerBuf, b[0])
-		if strings.HasSuffix(string(headerBuf), "\r\n\r\n") {
-			break
-		}
-		if len(headerBuf) > 4096 {
+		total += len(line)
+		if total > maxHTTPConnectHeader {
 			return nil, fmt.Errorf("http connect response too large")
+		}
+		if line == "\r\n" {
+			break
 		}
 	}
 
-	resp := string(headerBuf)
-	parts := strings.Split(resp, " ")
+	parts := strings.SplitN(strings.TrimSpace(statusLine), " ", 3)
 	if len(parts) < 2 {
 		return nil, fmt.Errorf("invalid http connect response")
 	}
-
 	if parts[1] != "200" {
-		return nil, fmt.Errorf("http connect failed: %s", resp)
+		return nil, fmt.Errorf("http connect failed: %s", strings.TrimSpace(statusLine))
 	}
 
-	return conn, nil
+	return newBufferedConn(conn, reader), nil
+}
+
+func buildSocks5UDPHeader(targetAddr string) ([]byte, error) {
+	host, portStr, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target address: %w", err)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		port, err = net.LookupPort("udp", portStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid target port: %w", err)
+		}
+	}
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("invalid target port: %d", port)
+	}
+
+	header := []byte{0x00, 0x00, 0x00}
+	ipHost := host
+	if i := strings.Index(host, "%"); i != -1 {
+		ipHost = host[:i]
+	}
+	ip := net.ParseIP(ipHost)
+	if ip4 := ip.To4(); ip4 != nil {
+		header = append(header, 0x01)
+		header = append(header, ip4...)
+	} else if ip6 := ip.To16(); ip6 != nil {
+		header = append(header, 0x04)
+		header = append(header, ip6...)
+	} else {
+		if len(host) > 255 {
+			return nil, fmt.Errorf("domain too long: %s", host)
+		}
+		header = append(header, 0x03, byte(len(host)))
+		header = append(header, []byte(host)...)
+	}
+
+	header = append(header, byte(port>>8), byte(port))
+	return header, nil
 }
 
 func sshConnect(conn net.Conn, sshServerAddr, targetAddr string, user *url.Userinfo, signer ssh.Signer) (net.Conn, error) {

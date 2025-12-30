@@ -163,13 +163,18 @@ func connectAndServe(serverURL string, remotePort int, localTarget string) error
 	}
 
 	// 读取响应
-	reply := make([]byte, 10)
-	if _, err := io.ReadFull(conn, reply); err != nil {
+	replyHeader := make([]byte, 4)
+	if _, err := io.ReadFull(conn, replyHeader); err != nil {
 		return err
 	}
-
-	if reply[1] != 0x00 {
+	if replyHeader[0] != 0x05 {
+		return fmt.Errorf("invalid socks version")
+	}
+	if replyHeader[1] != 0x00 {
 		return fmt.Errorf("bind request rejected")
+	}
+	if _, err := utils.ReadSocks5Addr(conn, replyHeader[3]); err != nil {
+		return err
 	}
 
 	utils.Info("Reverse tunnel established with reverse server %s", reverseAddr)

@@ -44,28 +44,28 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Proxy-Authorization")
 		if authHeader == "" {
 			w.Header().Set("Proxy-Authenticate", "Basic realm=\"Proxy\"")
-			http.Error(w, "Authentication Required", http.StatusProxyAuthRequired)
+			http.Error(w, "Authentication Required", http.StatusUnauthorized)
 			utils.Logging("[Proxy] [Handler] Request Authentication Required: %s %s --> %s via %v", r.Method, r.RemoteAddr, r.URL, forwardInfo)
 			return
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || parts[0] != "Basic" {
-			http.Error(w, "Authentication Required", http.StatusProxyAuthRequired)
+			http.Error(w, "Authentication Required", http.StatusUnauthorized)
 			utils.Logging("[Proxy] [Handler] Request Authentication Required: %s %s --> %s via %v", r.Method, r.RemoteAddr, r.URL, forwardInfo)
 			return
 		}
 
 		payload, err := base64.StdEncoding.DecodeString(parts[1])
 		if err != nil {
-			http.Error(w, "Authentication Required", http.StatusProxyAuthRequired)
+			http.Error(w, "Authentication Required", http.StatusUnauthorized)
 			utils.Logging("[Proxy] [Handler] Request Authentication Required: %s %s --> %s via %v", r.Method, r.RemoteAddr, r.URL, forwardInfo)
 			return
 		}
 
 		pair := strings.SplitN(string(payload), ":", 2)
 		if len(pair) != 2 || !h.Auth.Validate(pair[0], pair[1]) {
-			http.Error(w, "Authentication Required", http.StatusProxyAuthRequired)
+			http.Error(w, "Authentication Required", http.StatusUnauthorized)
 			utils.Logging("[Proxy] [Handler] Request Authentication Required: %s %s --> %s via %v", r.Method, r.RemoteAddr, r.URL, forwardInfo)
 			return
 		}
@@ -100,7 +100,7 @@ func (h *ProxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
 		// 转发数据
-		utils.Transfer(clientConn, destConn, r.Host, "Proxy", "HTTPS(H1)")
+		utils.Transfer(clientConn, destConn, r.Host, "Proxy", r.Proto)
 		return
 	}
 

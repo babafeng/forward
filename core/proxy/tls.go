@@ -8,7 +8,7 @@ import (
 )
 
 // HandleTLS 处理 TLS 代理请求
-func HandleTLS(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
+func HandleTLS(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config, dispatcher *SniffDispatcher) {
 	if tlsConfig == nil {
 		// 生成自签名证书
 		cert, err := utils.GetCertificate()
@@ -33,5 +33,5 @@ func HandleTLS(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tl
 	}
 	utils.Info("[Proxy] [TLS] Handshake success from %s", conn.RemoteAddr())
 
-	HandleConnection(tlsConn, forwardURL, auth, "", nil, nil)
+	HandleConnection(tlsConn, forwardURL, auth, "", nil, nil, dispatcher)
 }
