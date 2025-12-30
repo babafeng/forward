@@ -71,7 +71,7 @@ func HandleSocks5(conn net.Conn, forwardURL string, auth *utils.Auth) {
 		}
 
 		if !auth.Validate(string(uname), string(passwd)) {
-			utils.Logging("[Proxy] [SOCKS5] Auth failed for user: %s", uname)
+			utils.Error("[Proxy] [SOCKS5] Auth failed for user: %s", uname)
 			conn.Write([]byte{0x01, 0x01}) // 失败
 			return
 		}
@@ -222,7 +222,14 @@ func handleUDP(conn net.Conn, clientAddr string) {
 		}
 
 		mu.Lock()
-		clientUDPAddr = rAddr
+		if clientUDPAddr == nil {
+			ipCopy := make(net.IP, len(rAddr.IP))
+			copy(ipCopy, rAddr.IP)
+			clientUDPAddr = &net.UDPAddr{IP: ipCopy, Port: rAddr.Port, Zone: rAddr.Zone}
+		} else if clientUDPAddr.Port != rAddr.Port || !clientUDPAddr.IP.Equal(rAddr.IP) {
+			mu.Unlock()
+			continue
+		}
 		mu.Unlock()
 
 		if n < 10 {
@@ -274,11 +281,11 @@ func handleUDP(conn net.Conn, clientAddr string) {
 
 		data := buf[headerLen:n]
 		targetAddrStr := net.JoinHostPort(targetIP.String(), strconv.Itoa(targetPort))
+		utils.Debug("[Proxy] [SOCKS5] UDP packet %s --> %s %d bytes", rAddr, targetAddrStr, len(data))
 
 		mu.Lock()
 		entry, ok := targetConns[targetAddrStr]
 		if !ok {
-			// 创建新的 UDP 连接
 			rAddr, err := net.ResolveUDPAddr("udp", targetAddrStr)
 			if err != nil {
 				utils.Error("[Proxy] [SOCKS5] Resolve target %s failed: %v", targetAddrStr, err)
@@ -296,7 +303,6 @@ func handleUDP(conn net.Conn, clientAddr string) {
 			entry.lastUsed.Store(time.Now().UnixNano())
 			targetConns[targetAddrStr] = entry
 
-			// 启动接收协程
 			go func(c *net.UDPConn, tAddr string) {
 				defer c.Close()
 				b := utils.GetPacketBuffer()
@@ -309,10 +315,6 @@ func handleUDP(conn net.Conn, clientAddr string) {
 						mu.Unlock()
 						return
 					}
-
-					// 封装 SOCKS5 UDP 头部并发送回客户端
-					// RSV(2) FRAG(1) ATYP(1) ADDR PORT DATA
-					// 使用 IPv4/IPv6
 
 					// 构造头部
 					resp := []byte{0x00, 0x00, 0x00}
@@ -340,6 +342,7 @@ func handleUDP(conn net.Conn, clientAddr string) {
 					mu.Unlock()
 
 					if addr != nil {
+						utils.Debug("[Proxy] [SOCKS5] UDP packet %s --> %s %d bytes", tAddr, addr, rn)
 						l.WriteToUDP(resp, addr)
 					}
 				}

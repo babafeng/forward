@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"container/heap"
 	"net"
 	"strings"
 	"sync"
@@ -106,21 +107,15 @@ func startUDP(local, remote string, forwardURL string) {
 
 	utils.Info("UDP Forwarder listening on %s via [%s %v]", local, scheme, forwardAddr)
 
-	// UDP 会话表: srcAddr -> net.Conn
-	var sessions sync.Map
-	cleanupTicker := time.NewTicker(2 * time.Minute)
+	store := newUDPSessionStore(2 * time.Minute)
+	cleanupTicker := time.NewTicker(5 * time.Second)
 	defer cleanupTicker.Stop()
 	go func() {
 		for range cleanupTicker.C {
-			now := time.Now()
-			sessions.Range(func(key, val any) bool {
-				s := val.(*udpSession)
-				if now.Sub(time.Unix(0, s.lastActive.Load())) > 2*time.Minute {
-					s.conn.Close()
-					sessions.Delete(key)
-				}
-				return true
-			})
+			expired := store.CleanupExpired()
+			for _, s := range expired {
+				s.conn.Close()
+			}
 		}
 	}()
 
@@ -135,7 +130,7 @@ func startUDP(local, remote string, forwardURL string) {
 
 		// 获取或创建会话
 		key := srcAddr.String()
-		val, ok := sessions.Load(key)
+		val, ok := store.Get(key)
 		var session *udpSession
 
 		if !ok {
@@ -148,11 +143,11 @@ func startUDP(local, remote string, forwardURL string) {
 
 			session = &udpSession{conn: remoteConn}
 			session.lastActive.Store(time.Now().UnixNano())
-			sessions.Store(key, session)
+			store.Add(key, session)
 
 			go func(s *udpSession, clientAddr *net.UDPAddr, k string) {
 				defer s.conn.Close()
-				defer sessions.Delete(k)
+				defer store.Delete(k)
 
 				rbuf := utils.GetPacketBuffer()
 				defer utils.PutPacketBuffer(rbuf)
@@ -163,6 +158,7 @@ func startUDP(local, remote string, forwardURL string) {
 						return
 					}
 					s.lastActive.Store(time.Now().UnixNano())
+					store.Touch(k)
 					_, err = conn.WriteToUDP(rbuf[:rn], clientAddr)
 					if err != nil {
 						return
@@ -170,21 +166,133 @@ func startUDP(local, remote string, forwardURL string) {
 				}
 			}(session, srcAddr, key)
 		} else {
-			session = val.(*udpSession)
+			session = val
 		}
 
 		session.conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
 		_, err = session.conn.Write(buf[:n])
 		if err != nil {
-			sessions.Delete(key)
+			store.Delete(key)
 			session.conn.Close()
 			continue
 		}
 		session.lastActive.Store(time.Now().UnixNano())
+		store.Touch(key)
 	}
 }
 
 type udpSession struct {
 	conn       net.Conn
 	lastActive atomic.Int64
+}
+
+type udpSessionEntry struct {
+	key       string
+	session   *udpSession
+	expiresAt time.Time
+	index     int
+}
+
+type udpSessionHeap []*udpSessionEntry
+
+func (h udpSessionHeap) Len() int { return len(h) }
+
+func (h udpSessionHeap) Less(i, j int) bool {
+	return h[i].expiresAt.Before(h[j].expiresAt)
+}
+
+func (h udpSessionHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+
+func (h *udpSessionHeap) Push(x any) {
+	entry := x.(*udpSessionEntry)
+	entry.index = len(*h)
+	*h = append(*h, entry)
+}
+
+func (h *udpSessionHeap) Pop() any {
+	old := *h
+	n := len(old)
+	entry := old[n-1]
+	entry.index = -1
+	*h = old[:n-1]
+	return entry
+}
+
+type udpSessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]*udpSessionEntry
+	expiry   udpSessionHeap
+	ttl      time.Duration
+}
+
+func newUDPSessionStore(ttl time.Duration) *udpSessionStore {
+	return &udpSessionStore{
+		sessions: make(map[string]*udpSessionEntry),
+		ttl:      ttl,
+	}
+}
+
+func (s *udpSessionStore) Get(key string) (*udpSession, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.sessions[key]
+	if !ok {
+		return nil, false
+	}
+	return entry.session, true
+}
+
+func (s *udpSessionStore) Add(key string, session *udpSession) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := &udpSessionEntry{
+		key:       key,
+		session:   session,
+		expiresAt: time.Now().Add(s.ttl),
+	}
+	heap.Push(&s.expiry, entry)
+	s.sessions[key] = entry
+}
+
+func (s *udpSessionStore) Touch(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.sessions[key]
+	if !ok {
+		return
+	}
+	entry.expiresAt = time.Now().Add(s.ttl)
+	heap.Fix(&s.expiry, entry.index)
+}
+
+func (s *udpSessionStore) Delete(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.sessions[key]
+	if !ok {
+		return
+	}
+	heap.Remove(&s.expiry, entry.index)
+	delete(s.sessions, key)
+}
+
+func (s *udpSessionStore) CleanupExpired() []*udpSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var expired []*udpSession
+	for len(s.expiry) > 0 {
+		entry := s.expiry[0]
+		if entry.expiresAt.After(now) {
+			break
+		}
+		heap.Pop(&s.expiry)
+		delete(s.sessions, entry.key)
+		expired = append(expired, entry.session)
+	}
+	return expired
 }

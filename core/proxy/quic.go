@@ -16,31 +16,10 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
-// StartQUIC 启动 HTTP/3 (QUIC) 代理服务器
-func StartQUIC(addr string, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
-	if tlsConfig == nil {
-		cert, err := utils.GetCertificate()
-		if err != nil {
-			utils.Error("[Proxy] [QUIC] Failed to generate certificate: %v", err)
-			return
-		}
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			NextProtos:   []string{"h3"},
-		}
-	} else {
-		// 确保 NextProtos 包含 h3
-		found := false
-		for _, p := range tlsConfig.NextProtos {
-			if p == "h3" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			tlsConfig.NextProtos = append(tlsConfig.NextProtos, "h3")
-		}
-	}
+func StartQUIC(addr string, forwardURL string, baseOpts *utils.ServerOptions) {
+	tlsConfig := baseOpts.TLSConfig
+	auth := baseOpts.Auth
+	tlsConfig.NextProtos = append(tlsConfig.NextProtos, http3.NextProtoH3)
 
 	handler := &ProxyHandler{
 		ForwardURL: forwardURL,
@@ -60,6 +39,7 @@ func StartQUIC(addr string, forwardURL string, auth *utils.Auth, tlsConfig *tls.
 }
 
 func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.Conn, error) {
+	utils.Debug("[Proxy] [QUIC] Connecting to %s via %s", targetAddr, proxyAddr)
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: utils.GetInsecure(),
 		NextProtos:         []string{http3.NextProtoH3},
@@ -74,6 +54,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 
 	qConn, err := quic.DialAddr(ctx, proxyAddr, tlsConf, nil)
 	if err != nil {
+		utils.Error("[Proxy] [QUIC] Dial failed to %s: %v", proxyAddr, err)
 		return nil, fmt.Errorf("quic dial failed: %v", err)
 	}
 
@@ -83,6 +64,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 	str, err := cc.OpenRequestStream(ctx)
 	if err != nil {
 		qConn.CloseWithError(0, "")
+		utils.Error("[Proxy] [QUIC] Open stream failed to %s: %v", proxyAddr, err)
 		return nil, fmt.Errorf("open stream failed: %v", err)
 	}
 
@@ -101,6 +83,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		req.Header.Set("Proxy-Authorization", basicAuth)
 	}
 
+	start := time.Now()
 	if err := str.SendRequestHeader(req); err != nil {
 		str.Close()
 		return nil, fmt.Errorf("send header failed: %v", err)
@@ -112,7 +95,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		return nil, fmt.Errorf("read response failed: %v", err)
 	}
 	utils.Info("[Proxy] [QUIC] response received: %s %s --> %s %d bytes %v",
-		resp.Status, qConn.LocalAddr(), qConn.RemoteAddr(), resp.ContentLength, time.Since(time.Now()))
+		resp.Status, qConn.LocalAddr(), qConn.RemoteAddr(), resp.ContentLength, time.Since(start))
 
 	if resp.StatusCode != 200 {
 		str.Close()
