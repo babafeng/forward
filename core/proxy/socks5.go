@@ -281,7 +281,7 @@ func handleUDP(conn net.Conn, clientAddr string) {
 
 		data := buf[headerLen:n]
 		targetAddrStr := net.JoinHostPort(targetIP.String(), strconv.Itoa(targetPort))
-		utils.Debug("[Proxy] [SOCKS5] UDP packet %s -> %s %d bytes", rAddr, targetAddrStr, len(data))
+		utils.Debug("[Proxy] [SOCKS5] UDP packet %s --> %s %d bytes", rAddr, targetAddrStr, len(data))
 
 		mu.Lock()
 		entry, ok := targetConns[targetAddrStr]
@@ -342,7 +342,7 @@ func handleUDP(conn net.Conn, clientAddr string) {
 					mu.Unlock()
 
 					if addr != nil {
-						utils.Debug("[Proxy] [SOCKS5] UDP packet %s -> %s %d bytes", tAddr, addr, rn)
+						utils.Debug("[Proxy] [SOCKS5] UDP packet %s --> %s %d bytes", tAddr, addr, rn)
 						l.WriteToUDP(resp, addr)
 					}
 				}
