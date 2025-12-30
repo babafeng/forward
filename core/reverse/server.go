@@ -44,21 +44,21 @@ func StartServer(listenURL string) {
 
 	s := strings.ToLower(scheme)
 	proxySchemes := map[string]struct{}{
-		"tls:":  {},
-		"ssh:":  {},
-		"quic:": {},
+		"tls":  {},
+		"ssh":  {},
+		"quic": {},
 	}
 	if _, exists := proxySchemes[s]; !exists {
-		utils.Info("Reverse Server only supports proxy protocols (tls, ssh, quic). Given: %s", scheme)
+		utils.Error("[Reverse] [Server] only supports proxy protocols (tls, ssh, quic). Given: %s, %s", scheme, s)
 		return
 	}
 
 	if scheme == "quic" {
-		utils.Info("Reverse Server listening on %s %s (UDP Only)", scheme, addr)
+		utils.Info("[Reverse] [Server] listening on %s %s (UDP Only)", scheme, addr)
 		startQUICServer(addr, auth)
 		return
 	} else {
-		utils.Info("Reverse Server listening on %s %s (TCP Only)", scheme, addr)
+		utils.Info("[Reverse] [Server] listening on %s %s (TCP Only)", scheme, addr)
 	}
 
 	if scheme == "tls" {
@@ -86,6 +86,7 @@ func StartServer(listenURL string) {
 }
 
 func startQUICServer(addr string, auth *utils.Auth) {
+	utils.Info("[Reverse] [QUIC] Incoming QUIC connection on %s", addr)
 	cert, err := utils.GetCertificate()
 	if err != nil {
 		utils.Error("Failed to generate certificate for QUIC: %v", err)
@@ -117,6 +118,7 @@ func handleQUICConnection(conn *quic.Conn, auth *utils.Auth) {
 	// 接受一个流作为控制连接
 	stream, err := conn.AcceptStream(context.Background())
 	if err != nil {
+		utils.Error("[Reverse] [QUIC] Accept stream error: %v", err)
 		return
 	}
 	// QUIC 建立后，内部流传输的是 SOCKS5 协议
@@ -133,6 +135,7 @@ func (c *quicStreamConn) LocalAddr() net.Addr  { return c.local }
 func (c *quicStreamConn) RemoteAddr() net.Addr { return c.remote }
 
 func handleConnection(conn net.Conn, scheme string, auth *utils.Auth, authorizedKeys []ssh.PublicKey) {
+	utils.Info("[Reverse] [Server] New connection from %s for scheme %s", conn.RemoteAddr(), scheme)
 	// 嗅探协议
 	br := bufio.NewReader(conn)
 	peek, _ := br.Peek(1)
@@ -144,12 +147,12 @@ func handleConnection(conn net.Conn, scheme string, auth *utils.Auth, authorized
 
 	// Strict Protocol Enforcement
 	if scheme == "tls" && peek[0] != 0x16 {
-		utils.Error("Protocol mismatch: expected TLS (0x16), got 0x%02x", peek[0])
+		utils.Error("[Reverse] [Server] Protocol mismatch: expected TLS (0x16), got 0x%02x", peek[0])
 		conn.Close()
 		return
 	}
 	if scheme == "ssh" && peek[0] != 'S' {
-		utils.Error("Protocol mismatch: expected SSH ('S'), got 0x%02x", peek[0])
+		utils.Error("[Reverse] [Server] Protocol mismatch: expected SSH ('S'), got 0x%02x", peek[0])
 		conn.Close()
 		return
 	}
@@ -171,6 +174,8 @@ func handleConnection(conn net.Conn, scheme string, auth *utils.Auth, authorized
 }
 
 func handleTLS(conn net.Conn, auth *utils.Auth) {
+	utils.Info("[Reverse] [TLS] Incoming TLS connection from %s", conn.RemoteAddr())
+	// 生成自签名证书
 	cert, err := utils.GetCertificate()
 	if err != nil {
 		conn.Close()
@@ -386,7 +391,7 @@ func handleBind(conn net.Conn, header []byte) {
 
 	// 生成 Session ID
 	sessionID := generateSessionID()
-	utils.Info("[Reverse] [%s] %s <--> :%d", sessionID, conn.RemoteAddr(), bindPort)
+	utils.Info("[Reverse] [Server] [%s] %s <--> :%d", sessionID, conn.RemoteAddr(), bindPort)
 
 	conf := yamux.DefaultConfig()
 	conf.EnableKeepAlive = true
@@ -397,6 +402,7 @@ func handleBind(conn net.Conn, header []byte) {
 	if err != nil {
 		l.Close()
 		conn.Close()
+		utils.Error("[Reverse] [Server] Session %s yamux client error: %v", sessionID, err)
 		return
 	}
 
@@ -417,8 +423,10 @@ func handleBind(conn net.Conn, header []byte) {
 		defer session.Close()
 
 		for {
+			utils.Debug("[Reverse] [Server] Accept connection on :%d", bindPort)
 			userConn, err := l.Accept()
 			if err != nil {
+				utils.Error("[Reverse] [Server] Listener :%d accept error: %v", bindPort, err)
 				return
 			}
 
@@ -426,14 +434,16 @@ func handleBind(conn net.Conn, header []byte) {
 			stream, err := session.Open()
 			if err != nil {
 				userConn.Close()
-				utils.Error("Session %s open stream failed: %v", sessionID, err)
+				utils.Error("Session %s %s:%s open stream failed: %v", sessionID, userConn.RemoteAddr(), userConn.LocalAddr(), err)
 				return
 			}
+
+			utils.Debug("[Reverse] [Server] %s:%s --> %s:%s :%d", userConn.RemoteAddr(), userConn.LocalAddr(), stream.RemoteAddr(), stream.LocalAddr(), bindPort)
 
 			go func() {
 				defer userConn.Close()
 				defer stream.Close()
-				utils.Transfer(userConn, stream, "tunnel", "Reverse", "TCP")
+				utils.Transfer(userConn, stream, "tunnel", "Reverse] [Server", "TCP")
 			}()
 		}
 	}()
