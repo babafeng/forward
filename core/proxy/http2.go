@@ -8,7 +8,6 @@ import (
 	"go-forward/core/utils"
 )
 
-// HandleHTTP2 处理 HTTP/2 代理请求
 func HandleHTTP2(conn net.Conn, forwardURL string, auth *utils.Auth, tlsConfig *tls.Config) {
 	if tlsConfig == nil {
 		cert, err := utils.GetCertificate()

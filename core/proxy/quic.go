@@ -101,6 +101,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		req.Header.Set("Proxy-Authorization", basicAuth)
 	}
 
+	start := time.Now()
 	if err := str.SendRequestHeader(req); err != nil {
 		str.Close()
 		return nil, fmt.Errorf("send header failed: %v", err)
@@ -112,7 +113,7 @@ func quicConnect(proxyAddr string, targetAddr string, user *url.Userinfo) (net.C
 		return nil, fmt.Errorf("read response failed: %v", err)
 	}
 	utils.Info("[Proxy] [QUIC] response received: %s %s --> %s %d bytes %v",
-		resp.Status, qConn.LocalAddr(), qConn.RemoteAddr(), resp.ContentLength, time.Since(time.Now()))
+		resp.Status, qConn.LocalAddr(), qConn.RemoteAddr(), resp.ContentLength, time.Since(start))
 
 	if resp.StatusCode != 200 {
 		str.Close()

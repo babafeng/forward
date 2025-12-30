@@ -7,9 +7,7 @@ forward
 !forward/
 test.sh
 test.py
-github_webhook_api.py
-http3_test.py
-http3_proxy_test.py
+*.py
 
 # Folders
 _obj
@@ -55,3 +53,4 @@ self-rootca.cer
 .specify/
 
 .gocache/
+mem.out

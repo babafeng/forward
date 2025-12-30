@@ -30,19 +30,42 @@ func URLParse(listenURL string) (string, *Auth, string) {
 		addr = listenURL
 	}
 
+	if scheme == "" && strings.Contains(listenURL, "@") {
+		u, err := url.Parse("auto://" + listenURL)
+		if err == nil && u.User != nil && u.Host != "" {
+			pass, _ := u.User.Password()
+			auth = &Auth{User: u.User.Username(), Pass: pass}
+			addr = u.Host
+		}
+	}
+
 	return scheme, auth, addr
 }
 
 func RedactURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
+	parseURL := rawURL
+	autoPrefix := false
+	if !strings.Contains(rawURL, "://") && strings.Contains(rawURL, "@") {
+		parseURL = "auto://" + rawURL
+		autoPrefix = true
+	}
+
+	u, err := url.Parse(parseURL)
 	if err != nil {
 		return rawURL
 	}
 	if u.User != nil {
 		if _, ok := u.User.Password(); ok {
 			u.User = url.UserPassword(u.User.Username(), "*")
-			return strings.Replace(u.String(), ":%2A", ":*****", -1)
+			redacted := strings.Replace(u.String(), ":%2A", ":*****", -1)
+			if autoPrefix {
+				return strings.TrimPrefix(redacted, "auto://")
+			}
+			return redacted
 		}
+	}
+	if autoPrefix {
+		return strings.TrimPrefix(u.String(), "auto://")
 	}
 	return u.String()
 }

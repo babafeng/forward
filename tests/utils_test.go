@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"go-forward/core/utils"
@@ -23,6 +24,36 @@ func TestURLParseAndRedact(t *testing.T) {
 	redacted := utils.RedactURL("http://user:pass@127.0.0.1:8080")
 	if redacted == "http://user:pass@127.0.0.1:8080" || redacted == "" {
 		t.Fatalf("expected password redacted, got %s", redacted)
+	}
+
+	scheme, auth, addr = utils.URLParse("user:pass@:1080")
+	if scheme != "" {
+		t.Fatalf("expected empty scheme for sniffing, got %s", scheme)
+	}
+	if addr != ":1080" {
+		t.Fatalf("expected addr :1080, got %s", addr)
+	}
+	if auth == nil || auth.User != "user" || auth.Pass != "pass" {
+		t.Fatalf("auth parsed incorrectly for sniffing: %#v", auth)
+	}
+	redacted = utils.RedactURL("user:pass@:1080")
+	if redacted == "" || strings.Contains(redacted, "pass") || strings.Contains(redacted, "auto://") {
+		t.Fatalf("expected password redacted for sniffing, got %s", redacted)
+	}
+
+	scheme, auth, addr = utils.URLParse("user:pass@127.0.0.1:1080")
+	if scheme != "" {
+		t.Fatalf("expected empty scheme for sniffing host:port, got %s", scheme)
+	}
+	if addr != "127.0.0.1:1080" {
+		t.Fatalf("expected addr 127.0.0.1:1080, got %s", addr)
+	}
+	if auth == nil || auth.User != "user" || auth.Pass != "pass" {
+		t.Fatalf("auth parsed incorrectly for sniffing host:port: %#v", auth)
+	}
+	redacted = utils.RedactURL("user:pass@127.0.0.1:1080")
+	if redacted == "" || strings.Contains(redacted, "pass") || strings.Contains(redacted, "auto://") {
+		t.Fatalf("expected password redacted for sniffing host:port, got %s", redacted)
 	}
 }
 
