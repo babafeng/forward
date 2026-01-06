@@ -13,7 +13,7 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
-	"forward/internal/endpoint"
+	"forward/internal/config"
 )
 
 type Dialer struct {
@@ -23,13 +23,14 @@ type Dialer struct {
 	authHeader string
 }
 
-func New(ep endpoint.Endpoint, insecure bool) (*Dialer, error) {
+func New(cfg config.Config) (*Dialer, error) {
+	proxyEp := cfg.Proxy
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: insecure, //nolint:gosec
-		ServerName:         ep.Host,
+		InsecureSkipVerify: cfg.Insecure, //nolint:gosec
+		ServerName:         proxyEp.Host,
 		NextProtos:         []string{"h3"},
 	}
-	if sni := strings.TrimSpace(ep.Query.Get("sni")); sni != "" {
+	if sni := strings.TrimSpace(proxyEp.Query.Get("sni")); sni != "" {
 		tlsCfg.ServerName = sni
 	}
 
@@ -38,15 +39,15 @@ func New(ep endpoint.Endpoint, insecure bool) (*Dialer, error) {
 	}
 
 	var authHeader string
-	if user, pass, ok := ep.UserPass(); ok {
+	if user, pass, ok := proxyEp.UserPass(); ok {
 		creds := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
 		authHeader = "Basic " + creds
 	}
 
 	return &Dialer{
-		target:     ep.Address(),
+		target:     proxyEp.Address(),
 		rt:         rt,
-		timeout:    10 * time.Second,
+		timeout:    cfg.DialTimeout,
 		authHeader: authHeader,
 	}, nil
 }

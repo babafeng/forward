@@ -25,11 +25,8 @@ type Dialer struct {
 	tlsConfig  *tls.Config
 }
 
-func newDialer(cfg config.Config) (dialer.Dialer, error) {
+func New(cfg config.Config) (dialer.Dialer, error) {
 	p := cfg.Proxy
-	if p == nil {
-		return nil, fmt.Errorf("http dialer requires proxy")
-	}
 	useTLS := strings.EqualFold(p.Scheme, "https")
 
 	var tlsCfg *tls.Config
@@ -51,7 +48,7 @@ func newDialer(cfg config.Config) (dialer.Dialer, error) {
 	return &Dialer{
 		proxy:      p.Address(),
 		useTLS:     useTLS,
-		timeout:    10 * time.Second,
+		timeout:    cfg.DialTimeout,
 		authHeader: authHeader,
 		tlsConfig:  tlsCfg,
 	}, nil
