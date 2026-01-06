@@ -19,11 +19,8 @@ type Dialer struct {
 	baseDial dialer.Dialer
 }
 
-func newDialer(cfg config.Config) (dialer.Dialer, error) {
+func New(cfg config.Config) (dialer.Dialer, error) {
 	p := cfg.Proxy
-	if p == nil {
-		return nil, fmt.Errorf("tls dialer requires proxy")
-	}
 
 	base := dialer.NewDirect(cfg)
 
@@ -35,7 +32,7 @@ func newDialer(cfg config.Config) (dialer.Dialer, error) {
 	return &Dialer{
 		target:   p.Address(),
 		tlsCfg:   tlsCfg,
-		timeout:  10 * time.Second,
+		timeout:  cfg.DialTimeout,
 		baseDial: base,
 	}, nil
 }

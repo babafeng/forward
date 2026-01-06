@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	stdlog "log"
 	"net"
 	stdhttp "net/http"
@@ -14,7 +15,6 @@ import (
 	"forward/internal/logging"
 )
 
-// Handler follows net/http Handler.
 type Handler interface {
 	ServeHTTP(stdhttp.ResponseWriter, *stdhttp.Request)
 }
@@ -77,7 +77,7 @@ func (l *Listener) Run(ctx context.Context) error {
 		_ = srv.Close()
 	}()
 
-	if err := srv.Serve(ln); err != nil && err != stdhttp.ErrServerClosed && !strings.Contains(err.Error(), "use of closed network connection") {
+	if err := srv.Serve(ln); err != nil && err != stdhttp.ErrServerClosed && !errors.Is(err, net.ErrClosed) {
 		l.log.Error("Forward http error: serve: %v", err)
 		return err
 	}

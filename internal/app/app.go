@@ -118,6 +118,11 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	}
 	cfg.Mode = config.ModeProxyServer
 	cfg.IsProxyServer = true
+
+	if !cfg.Listen.HasUserPass() {
+		cfg.Logger.Warn("Proxy server listening on %s without authentication", cfg.Listen.Address())
+	}
+
 	_, err := runForwarders(ctx, cfg)
 	return err
 }
@@ -125,6 +130,11 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 func runReverseServer(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModeReverseServer
 	cfg.IsReverseServer = true
+
+	if !cfg.Listen.HasUserPass() {
+		cfg.Logger.Warn("Reverse server listening on %s without authentication", cfg.Listen.Address())
+	}
+
 	_, err := runForwarders(ctx, cfg)
 	return err
 }

@@ -57,7 +57,11 @@ func (c *Client) Run(ctx context.Context) error {
 
 	backoff := time.Second * 2
 	for ctx.Err() == nil {
+		start := time.Now()
 		if err := c.connectOnce(ctx, host, port, target); err != nil && ctx.Err() == nil {
+			if time.Since(start) > 5*time.Second {
+				backoff = time.Second * 2
+			}
 			c.log.Error("Reverse client error: %v", err)
 			select {
 			case <-ctx.Done():
@@ -142,7 +146,7 @@ func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn
 		if err != nil {
 			return nil, err
 		}
-		return tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", ep.Address(), tlsCfg)
+		return tls.DialWithDialer(&net.Dialer{Timeout: c.cfg.DialTimeout}, "tcp", ep.Address(), tlsCfg)
 	case "tcp":
 		return c.serverDial.DialContext(ctx, "tcp", ep.Address())
 	case "quic", "http3":
@@ -152,6 +156,10 @@ func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn
 		if err != nil {
 			return nil, err
 		}
+
+		ctx, cancel := context.WithTimeout(ctx, c.cfg.DialTimeout)
+		defer cancel()
+
 		qconn, err := quic.DialAddr(ctx, ep.Address(), tlsCfg, nil)
 		if err != nil {
 			return nil, err

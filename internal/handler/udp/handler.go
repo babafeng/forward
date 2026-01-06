@@ -50,13 +50,12 @@ func (h *Handler) Handle(ctx context.Context, conn *net.UDPConn, pkt []byte, src
 	s.touch()
 	s.bytesIn.Add(int64(len(pkt)))
 
-	// We need to copy data if we don't block, but here we assume upstream.Write is fast enough
-	// or we accept the cost. However, to be safe with pool, we should be careful.
-	// Since Handle is now async (expected), we own 'pkt'.
+	_ = s.upstream.SetWriteDeadline(time.Now().Add(1 * time.Second))
 	if _, err := s.upstream.Write(pkt); err != nil {
 		h.log.Error("Forward udp error: write upstream: %v", err)
 		s.close()
 	}
+	_ = s.upstream.SetWriteDeadline(time.Time{})
 	pool.Put(pkt)
 }
 

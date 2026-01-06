@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"forward/internal/config"
 	"forward/internal/dialer"
 )
@@ -10,6 +11,9 @@ func init() {
 	dialer.Register("https", newDialer)
 }
 
-func New(cfg config.Config) (dialer.Dialer, error) {
-	return newDialer(cfg)
+func newDialer(cfg config.Config) (dialer.Dialer, error) {
+	if cfg.Proxy == nil {
+		return nil, fmt.Errorf("http dialer requires proxy")
+	}
+	return New(cfg)
 }

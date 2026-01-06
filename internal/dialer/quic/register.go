@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"fmt"
 	"forward/internal/config"
 	"forward/internal/dialer"
 )
@@ -12,7 +13,7 @@ func init() {
 
 func newDialer(cfg config.Config) (dialer.Dialer, error) {
 	if cfg.Proxy == nil {
-		return nil, nil
+		return nil, fmt.Errorf("quic dialer requires proxy")
 	}
-	return New(*cfg.Proxy, cfg.Insecure)
+	return New(cfg)
 }

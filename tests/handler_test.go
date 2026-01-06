@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"forward/internal/config"
 	"forward/internal/handler/http"
@@ -17,11 +18,15 @@ import (
 
 type mockDialer struct {
 	dialErr error
+	conn    net.Conn
 }
 
 func (m *mockDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if m.dialErr != nil {
 		return nil, m.dialErr
+	}
+	if m.conn != nil {
+		return m.conn, nil
 	}
 	return nil, errors.New("not implemented")
 }
@@ -101,5 +106,51 @@ func TestHandler_handleConnect_GenericError(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, "[ERROR]") {
 		t.Errorf("expected log to contain '[ERROR]', got:\n%s", logOutput)
+	}
+}
+
+func TestHandler_handleConnect_ContextCancelHang(t *testing.T) {
+	// Setup logger
+	var logBuf bytes.Buffer
+	logger := logging.New(logging.Options{Level: logging.LevelDebug, Out: &logBuf, Err: &logBuf})
+	cfg := config.Config{Logger: logger}
+
+	// Mock dialer connecting to a pipe to simulate an open connection
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	mDialer := &mockDialer{conn: clientConn}
+
+	h := http.New(cfg, mDialer)
+
+	// Create request with CONNECT
+	req := httptest.NewRequest(stdhttp.MethodConnect, "http://example.com:443", nil)
+	// We do NOT use NewRecorder because it might implement Hijacker if the underlying type supports it,
+	// but httptest.ResponseRecorder does NOT implement Hijacker by default, which is what we want
+	// to test the fallback path.
+	w := httptest.NewRecorder()
+
+	// Create a context we can cancel
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+
+	// Run valid handler in a goroutine
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	// Wait a bit to ensure it established connection and entered the copy loop
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel context
+	cancel()
+
+	// It should return promptly. If it hangs, this select will timeout.
+	select {
+	case <-done:
+		// Success
+	case <-time.After(1 * time.Second):
+		t.Fatal("Handler hung and did not return after context cancellation")
 	}
 }

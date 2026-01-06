@@ -196,23 +196,45 @@ func (h *Handler) prepareUpstreamRequest(ctx context.Context, r *stdhttp.Request
 }
 
 func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {
-	defer upstream.Close()
-	defer body.Close()
+	var once sync.Once
+	closer := func() {
+		once.Do(func() {
+			upstream.Close()
+			body.Close()
+		})
+	}
+	defer closer()
+
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			closer()
+		case <-doneCh:
+		}
+	}()
 
 	clientDone := make(chan struct{})
 	go func() {
+		defer close(clientDone)
 		io.Copy(upstream, body)
 		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		} else {
-			_ = upstream.Close()
+			// Do not fully close, as we might be reading
+			// But if CloseWrite is not supported, we have to rely on context/defer
 		}
-		close(clientDone)
 	}()
 
 	respWriter := &flushWriter{w: w, f: fl}
 	io.Copy(respWriter, upstream)
-	<-clientDone
+
+	select {
+	case <-clientDone:
+	case <-ctx.Done():
+	}
 }
 
 type flushWriter struct {

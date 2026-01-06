@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"forward/internal/config"
 	"forward/internal/endpoint"
 	socks5util "forward/internal/utils/socks5"
 )
@@ -36,7 +37,8 @@ type Dialer struct {
 	Timeout time.Duration
 }
 
-func New(proxy endpoint.Endpoint) (*Dialer, error) {
+func New(cfg config.Config) (*Dialer, error) {
+	proxy := *cfg.Proxy
 	scheme := strings.ToLower(proxy.Scheme)
 	if scheme != "socks5" && scheme != "socks5h" {
 		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxy.Scheme)
@@ -46,7 +48,7 @@ func New(proxy endpoint.Endpoint) (*Dialer, error) {
 		proxy:    proxy,
 		username: user,
 		password: pass,
-		Timeout:  10 * time.Second,
+		Timeout:  cfg.DialTimeout,
 	}, nil
 }
 

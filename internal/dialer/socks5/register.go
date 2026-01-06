@@ -1,6 +1,8 @@
 package socks5
 
 import (
+	"fmt"
+
 	"forward/internal/config"
 	"forward/internal/dialer"
 )
@@ -11,5 +13,8 @@ func init() {
 }
 
 func newDialer(cfg config.Config) (dialer.Dialer, error) {
-	return New(*cfg.Proxy)
+	if cfg.Proxy == nil {
+		return nil, fmt.Errorf("socks5 dialer requires proxy")
+	}
+	return New(cfg)
 }
