@@ -199,7 +199,7 @@ func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string,
 }
 
 func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Writer, dest string) {
-	h.log.Debug("Forward SOCKS5 CONNECT dialing %s", dest)
+	h.log.Info("Forward SOCKS5 Received connection %s --> %s", conn.RemoteAddr(), dest)
 	up, err := h.dialer.DialContext(ctx, "tcp", dest)
 	if err != nil {
 		h.log.Error("Forward socks5 connect dial error: %v", err)
@@ -344,7 +344,6 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer 
 	}
 	s.mu.Unlock()
 
-	// 使用 singleflight 避免重复 dial
 	result, _, _ := s.sf.Do(dest, func() (interface{}, error) {
 		s.mu.Lock()
 		if p := s.sessions[dest]; p != nil {
@@ -358,6 +357,8 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer 
 			s.log.Error("Forward socks5 udp dial %s error: %v", dest, err)
 			return nil, err
 		}
+
+		s.log.Info("Forward SOCKS5 UDP Received connection %s --> %s", dest)
 
 		p := &udpPeer{
 			conn: c,

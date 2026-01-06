@@ -30,7 +30,7 @@ func (h *Handler) Handle(ctx context.Context, in net.Conn) {
 	src := in.RemoteAddr().String()
 	dst := h.target
 
-	h.log.Debug("Forward TCP Received connection %s --> %s", src, dst)
+	h.log.Info("Forward TCP Received connection %s --> %s", src, dst)
 	out, err := h.dialer.DialContext(ctx, "tcp", dst)
 	if err != nil {
 		h.log.Error("Forward tcp error: dial %s: %v", dst, err)
