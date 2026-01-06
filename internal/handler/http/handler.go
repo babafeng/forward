@@ -46,7 +46,7 @@ func New(cfg config.Config, d dialer.Dialer) *Handler {
 func (h *Handler) transportClient() *stdhttp.Transport {
 	h.transportOnce.Do(func() {
 		tlsCfg := &tls.Config{
-			InsecureSkipVerify: h.insecureTLS, //nolint:gosec
+			InsecureSkipVerify: h.insecureTLS,
 		}
 		h.transport = &stdhttp.Transport{
 			Proxy:               nil,

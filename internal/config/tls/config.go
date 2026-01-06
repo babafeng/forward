@@ -75,7 +75,7 @@ func ServerConfig(cfg config.Config, opts ServerOptions) (*tls.Config, error) {
 
 func ClientConfig(ep endpoint.Endpoint, insecure bool, opts ClientOptions) (*tls.Config, error) {
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: insecure, //nolint:gosec
+		InsecureSkipVerify: insecure,
 		NextProtos:         opts.NextProtos,
 		ServerName:         opts.ServerName,
 	}

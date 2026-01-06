@@ -2,7 +2,6 @@ package quic
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"forward/internal/config"
+	ctls "forward/internal/config/tls"
 )
 
 type Dialer struct {
@@ -25,13 +25,12 @@ type Dialer struct {
 
 func New(cfg config.Config) (*Dialer, error) {
 	proxyEp := cfg.Proxy
-	tlsCfg := &tls.Config{
-		InsecureSkipVerify: cfg.Insecure, //nolint:gosec
-		ServerName:         proxyEp.Host,
-		NextProtos:         []string{"h3"},
-	}
-	if sni := strings.TrimSpace(proxyEp.Query.Get("sni")); sni != "" {
-		tlsCfg.ServerName = sni
+	tlsCfg, err := ctls.ClientConfig(*proxyEp, cfg.Insecure, ctls.ClientOptions{
+		ServerName: proxyEp.Host,
+		NextProtos: []string{"h3"},
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	rt := &http3.Transport{

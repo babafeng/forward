@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"forward/internal/config"
+	ctls "forward/internal/config/tls"
 	"forward/internal/dialer"
 )
 
@@ -24,9 +25,12 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 
 	base := dialer.NewDirect(cfg)
 
-	tlsCfg := &tls.Config{
-		InsecureSkipVerify: cfg.Insecure, //nolint:gosec
-		ServerName:         p.Host,
+	tlsCfg, err := ctls.ClientConfig(*p, cfg.Insecure, ctls.ClientOptions{
+		ServerName: p.Host,
+		NextProtos: []string{"h2", "http/1.1"},
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return &Dialer{
