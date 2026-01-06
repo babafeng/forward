@@ -150,7 +150,7 @@ func parseArgs(args []string) (config.Config, error) {
 	forward := fs.String("F", "", "Forward target endpoint, e.g. https://remote.com:443")
 	proxy := fs.String("x", "", "Optional proxy endpoint, e.g. socks5://127.0.0.1:1080")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
-	isDebug := fs.Bool("debug", true, "Enable debug logging")
+	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isVersion := fs.Bool("version", false, "Show version information")
 	dialTimeout := fs.Duration("dial-timeout", 10*time.Second, "Dial timeout")
 	dialKeepAlive := fs.Duration("dial-keepalive", 30*time.Second, "Dial keepalive")
