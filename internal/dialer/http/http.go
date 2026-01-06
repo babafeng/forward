@@ -32,7 +32,7 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 	var tlsCfg *tls.Config
 	if useTLS {
 		tlsCfg = &tls.Config{
-			InsecureSkipVerify: cfg.Insecure, //nolint:gosec
+			InsecureSkipVerify: cfg.Insecure,
 		}
 		if p.Host != "" {
 			tlsCfg.ServerName = p.Host
