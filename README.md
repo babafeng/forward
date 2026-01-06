@@ -1,12 +1,12 @@
 # forward
 
-forward is a security & lightweight & high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, SSH, TLS) with protocol sniffing on the same port.
+forward is a security & lightweight & high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, TLS) with protocol sniffing on the same port.
 
 ## Features
 
 * **Port Forwarding**: TCP/UDP forwarding with support for proxy chains.
 * **Intranet Penetration (Reverse Proxy)**: Expose local services to the internet via a reverse tunnel.
-* **Proxy Server**: HTTP/SOCKS5/SSH/TLS proxy server with protocol sniffing (multiplexing on same port).
+* **Proxy Server**: HTTP/SOCKS5/TLS proxy server with protocol sniffing (multiplexing on same port).
 * **Multiplexing**: Uses Yamux for TCP and QUIC for UDP (planned) to improve performance.
 
 ## Installation
@@ -49,13 +49,6 @@ forward -L "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/pat
 forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer"
 ```
 
-You can set cert for ssh category service.
-
-```bash
-forward -L "ssh://user:pass@your.server.com:2333?pub=/path/to/authorized_keys"
-forward -L http://:1080 -F "ssh://user:pass@your.server.com:2333?key=/path/to/private.key"
-```
-
 ## Usage
 
 ### Port Forwarding
@@ -66,34 +59,33 @@ Forward local 8080 --> 1.2.3.4:80, access 8080 == 1.2.3.4:80
 
 ```bash
 # Forward TCP
-forward -L tcp://:8080//1.2.3.4:80
+forward -L tcp://:8080/1.2.3.4:80
+forward -L tcp://:8080 -F tcp://1.2.3.4:80
 
 # Forward UDP
-forward -L udp://:5353//8.8.8.8:53
-
+forward -L udp://:5353/8.8.8.8:53
+forward -L udp://:5353 -F udp://8.8.8.8:53
 ```
 
 Advanced usage
 
 ```bash
 # —L forward tcp/udp port
-# -F specify proxy to use, proxy protocols supported: socks5, tls, ssh, quic
+# -x specify proxy to use, proxy protocols supported: socks5, tls, quic
 # quic      - only UDP
 # socks5    - TCP and UDP
-# tls / ssh - only TCP
-forward -L tcp://:8080//1.2.3.4:80 -F tls://proxy.com:1080
+# tls - only TCP
+forward -L tcp://:8080//1.2.3.4:80 -x tls://proxy.com:1080
 ```
 
 8080 --> proxy.com:1080(tls) --> 1.2.3.4:80
 
 ### Proxy Server
 
-Start a proxy server supporting http / socks5 / https / quic / tls / ssh
+Start a proxy server supporting http / socks5 / https / quic / tls
 
 ```bash
 forward -L http://:1080
-
-forward -L :1080  # http socks5 http1 http2 https quic tls ssh
 ```
 
 ### Intranet Reverse Proxy
@@ -103,7 +95,7 @@ forward -L :1080  # http socks5 http1 http2 https quic tls ssh
 Start a reverse proxy server listening on port 2333.
 
 ```bash
-# support all proxy schemes, but recommend using secure ones below: tls / ssh / quic
+# support all proxy schemes, but recommend using secure ones below: tls / quic
 forward -L tls://user:passwd@:2333?bind=true
 ```
 
@@ -112,11 +104,11 @@ forward -L tls://user:passwd@:2333?bind=true
 Connect to the server and map remote port 11080 to local 1080.
 
 ```bash
-# Map remote 11080 -> local 127.0.0.1:1080
-forward -L tcp://11080//127.0.0.1:1080 -F tls://your.server.com:2333
+# Map remote 2222 -> local 127.0.0.1:22
+forward -L tcp://:2222//127.0.0.1:22 -F tls://your.server.com:2333
 ```
 
-Now, accessing `your.server.com:11080` will reach the intranet machine's `127.0.0.1:1080`.
+Now, accessing `your.server.com:2222` will reach the intranet machine's `127.0.0.1:22`.
 
 ### Proxy Chaining
 
