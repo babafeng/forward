@@ -86,8 +86,7 @@ func (h *Handler) getOrCreateSession(ctx context.Context, lconn *net.UDPConn, sr
 		}
 		h.mu.Unlock()
 
-		h.log.Debug("Forward UDP Received connection from %s", key)
-		h.log.Debug("Forward UDP Dialing upstream %s for client %s", h.target, key)
+		h.log.Info("Forward UDP Received connection %s --> %s", key, h.target)
 		up, err := h.dialer.DialContext(ctx, "udp", h.target)
 		if err != nil {
 			h.log.Error("Forward UDP error: dial %s: %v", h.target, err)

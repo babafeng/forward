@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	stdhttp "net/http"
@@ -97,10 +98,15 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		target += ":443"
 	}
 
-	h.log.Debug("Forward HTTP CONNECT Received connection from %s --> %s", r.RemoteAddr, target)
+	h.log.Info("Forward HTTP CONNECT Received connection %s --> %s", r.RemoteAddr, target)
 	up, err := h.dialer.DialContext(r.Context(), "tcp", target)
 	if err != nil {
-		h.log.Error("Forward http connect dial error: %v", err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+			(r.Context().Err() != nil && (errors.Is(r.Context().Err(), context.Canceled) || errors.Is(r.Context().Err(), context.DeadlineExceeded))) {
+			h.log.Debug("Forward http connect dial canceled: %v", err)
+		} else {
+			h.log.Error("Forward http connect dial error: %v", err)
+		}
 		writeSimple(w, stdhttp.StatusBadGateway, "dial upstream failed")
 		return
 	}
@@ -152,6 +158,8 @@ func (h *Handler) handleForward(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeSimple(w, stdhttp.StatusBadRequest, "bad request")
 		return
 	}
+
+	h.log.Info("Forward HTTP Received connection %s --> %s", r.RemoteAddr, req.URL.Host)
 
 	resp, err := h.transportClient().RoundTrip(req)
 	if err != nil {
