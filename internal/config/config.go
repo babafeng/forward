@@ -18,6 +18,16 @@ const (
 
 	DefaultInitialBackoff = 2 * time.Second
 	DefaultMaxBackoff     = 30 * time.Second
+
+	CamouflageRealm     = `Authorization Required`
+	CamouflagePageTitle = "403 Forbidden"
+	CamouflagePageBody  = `<html>
+<head><title>%s</title></head>
+<body>
+<center><h1>%s</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>`
 )
 
 type RunMode int
