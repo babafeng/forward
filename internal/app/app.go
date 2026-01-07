@@ -68,6 +68,10 @@ func Main() int {
 }
 
 func runOne(ctx context.Context, cfg config.Config) error {
+	if isReverseForwardServer(cfg) {
+		return runReverseServer(ctx, cfg)
+	}
+
 	if isReverseForwardClient(cfg) {
 		return runReverseClient(ctx, cfg)
 	}
@@ -78,10 +82,6 @@ func runOne(ctx context.Context, cfg config.Config) error {
 
 	if isProxyServer(cfg) {
 		return runProxyServer(ctx, cfg)
-	}
-
-	if isReverseForwardServer(cfg) {
-		return runReverseServer(ctx, cfg)
 	}
 
 	return fmt.Errorf("unknown mode or scheme: %s", cfg.Listen.Scheme)
@@ -128,7 +128,6 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 }
 
 func runReverseServer(ctx context.Context, cfg config.Config) error {
-	cfg.Mode = config.ModeReverseServer
 	cfg.Mode = config.ModeReverseServer
 
 	if !cfg.Listen.HasUserPass() {

@@ -33,18 +33,11 @@ bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/install.s
 You can register `forward` as a system service on Linux (systemd) or macOS (launchd) using the provided script.
 
 ```bash
-# Register Linux system service (root or sudo required)
 # This will create a systemd unit and enable it on boot
-sudo bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward -- --L tcp://:8080/1.2.3.4:80
-
-# Register macOS user service with logs
-# This will create a launchd plist and load it
-bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward -- --L http://:1080
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward -- -L tcp://:8080/1.2.3.4:80
 
 # Unregister/Remove service
-sudo bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward --remove  # Linux
-
-bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward --remove  # macOS
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward --remove
 ```
 
 ## Auth

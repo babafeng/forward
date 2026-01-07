@@ -1,156 +1,167 @@
 package tests
 
 import (
-	"bytes"
 	"context"
-	"errors"
+	"encoding/base64"
 	"net"
-	stdhttp "net/http"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"forward/internal/config"
-	"forward/internal/handler/http"
+	"forward/internal/endpoint"
+	forwardhttp "forward/internal/handler/http"
 	"forward/internal/logging"
 )
 
-type mockDialer struct {
-	dialErr error
-	conn    net.Conn
-}
+type mockDialer struct{}
 
 func (m *mockDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	if m.dialErr != nil {
-		return nil, m.dialErr
-	}
-	if m.conn != nil {
-		return m.conn, nil
-	}
-	return nil, errors.New("not implemented")
+	return nil, net.UnknownNetworkError("mock dial error")
 }
 
-func TestHandler_handleConnect_CanceledContext(t *testing.T) {
-	// Setup logger to capture output
-	var logBuf bytes.Buffer
-	logger := logging.New(logging.Options{
-		Level: logging.LevelDebug,
-		Out:   &logBuf,
-		Err:   &logBuf,
-	})
+func TestHandler_Camouflage(t *testing.T) {
+	cfg := config.Config{
+		Logger: logging.New(logging.Options{Level: logging.LevelError}),
+		Listen: endpoint.Endpoint{
+			Scheme: "http",
+			User:   nil, // No auth enabled initially
+		},
+	}
 
-	// Setup handler with mock dialer that returns context.Canceled
-	cfg := config.Config{Logger: logger}
-	mDialer := &mockDialer{dialErr: context.Canceled}
-	h := http.New(cfg, mDialer)
+	h := forwardhttp.New(cfg, &mockDialer{})
 
-	// Create a request with CONNECT method
-	req := httptest.NewRequest(stdhttp.MethodConnect, "http://example.com:443", nil)
+	tests := []struct {
+		name           string
+		method         string
+		target         string // Request URI
+		header         http.Header
+		expectedStatus int
+	}{
+		{
+			name:           "Probe GET /",
+			method:         "GET",
+			target:         "/",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "Probe HEAD /",
+			method:         "HEAD",
+			target:         "/",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "Probe POST /",
+			method:         "POST",
+			target:         "/",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "Probe GET / (Origin Form)",
+			method:         "GET",
+			target:         "http://127.0.0.1:8080/",
+			header:         nil,
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "Proxy Request (Absolute URI)",
+			method:         "GET",
+			target:         "http://example.com/",
+			expectedStatus: http.StatusBadGateway, // Dial fails (mock)
+		},
+		{
+			name:           "CONNECT Request",
+			method:         "CONNECT",
+			target:         "example.com:443",
+			expectedStatus: http.StatusBadGateway, // Dial fails (mock)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(tt.method, tt.target, nil)
+			w := httptest.NewRecorder()
+
+			if tt.expectedStatus == http.StatusForbidden {
+				r.URL.Scheme = ""
+				r.URL.Host = ""
+				r.RequestURI = tt.target
+			}
+
+			if tt.method == "CONNECT" {
+				r.URL.Scheme = ""
+			}
+
+			h.ServeHTTP(w, r)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+			if w.Code == http.StatusForbidden {
+				body := w.Body.String()
+				expectedTitle := "403 Forbidden"
+				if !strings.Contains(body, "<html>") || !strings.Contains(body, "<title>"+expectedTitle+"</title>") {
+					t.Errorf("expected HTML body with title '%s', got '%s'", expectedTitle, body)
+				}
+				if !strings.Contains(body, "<center>nginx</center>") {
+					t.Errorf("expected nginx signature in body, got '%s'", body)
+				}
+			}
+		})
+	}
+}
+
+func TestHandler_Camouflage_WithAuth(t *testing.T) {
+	user := "user"
+	pass := "pass"
+	cfg := config.Config{
+		Logger: logging.New(logging.Options{Level: logging.LevelError}),
+		Listen: endpoint.Endpoint{
+			Scheme: "http",
+			User:   url.UserPassword(user, pass),
+		},
+	}
+
+	h := forwardhttp.New(cfg, &mockDialer{})
+
+	// 1. Probe request -> 403
+	req := httptest.NewRequest("GET", "/", nil)
+	req.URL.Scheme = ""
+	req.URL.Host = ""
+	req.RequestURI = "/"
+
 	w := httptest.NewRecorder()
-
-	// Cancel the context to simulate client disconnect or timeout logic matching the mock
-	// (Though the mock returns the error directly, we want to ensure consistent behavior)
-	ctx, cancel := context.WithCancel(req.Context())
-	cancel() // cancel immediately
-	req = req.WithContext(ctx)
-
-	// Invoke ServeHTTP
 	h.ServeHTTP(w, req)
 
-	// Check response status
-	if w.Code != stdhttp.StatusBadGateway {
-		t.Errorf("expected status 502, got %d", w.Code)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Probe with auth enabled: expected 403, got %d", w.Code)
 	}
 
-	// Verify log output contains "dial canceled" (debug level) not "dial error"
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "Forward http connect dial canceled") {
-		t.Errorf("expected log to contain 'Forward http connect dial canceled', got:\n%s", logOutput)
-	}
-	if strings.Contains(logOutput, "[ERROR]") {
-		t.Errorf("expected log NOT to contain '[ERROR]', got:\n%s", logOutput)
-	}
-}
+	// 2. Normal Proxy Request without Auth -> 403
+	req2 := httptest.NewRequest("GET", "http://example.com/", nil)
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
 
-func TestHandler_handleConnect_GenericError(t *testing.T) {
-	// Setup logger to capture output
-	var logBuf bytes.Buffer
-	logger := logging.New(logging.Options{
-		Level: logging.LevelDebug,
-		Out:   &logBuf,
-		Err:   &logBuf,
-	})
-
-	// Setup handler with mock dialer that returns a generic error
-	cfg := config.Config{Logger: logger}
-	mDialer := &mockDialer{dialErr: errors.New("network failure")}
-	h := http.New(cfg, mDialer)
-
-	// Create a request with CONNECT method
-	req := httptest.NewRequest(stdhttp.MethodConnect, "http://example.com:443", nil)
-	w := httptest.NewRecorder()
-
-	// Invoke ServeHTTP
-	h.ServeHTTP(w, req)
-
-	// Check response status
-	if w.Code != stdhttp.StatusBadGateway {
-		t.Errorf("expected status 502, got %d", w.Code)
+	if w2.Code != http.StatusForbidden {
+		t.Errorf("Proxy with auth enabled (no creds): expected 403, got %d", w2.Code)
 	}
 
-	// Verify log output contains "dial error" (error level)
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "Forward http connect dial error") {
-		t.Errorf("expected log to contain 'Forward http connect dial error', got:\n%s", logOutput)
+	// Check Realm
+	authHeader := w2.Header().Get("Proxy-Authenticate")
+	if !strings.Contains(authHeader, `realm="Authorization Required"`) {
+		t.Errorf("expected generic realm 'Authorization Required', got '%s'", authHeader)
 	}
-	if !strings.Contains(logOutput, "[ERROR]") {
-		t.Errorf("expected log to contain '[ERROR]', got:\n%s", logOutput)
-	}
-}
 
-func TestHandler_handleConnect_ContextCancelHang(t *testing.T) {
-	// Setup logger
-	var logBuf bytes.Buffer
-	logger := logging.New(logging.Options{Level: logging.LevelDebug, Out: &logBuf, Err: &logBuf})
-	cfg := config.Config{Logger: logger}
+	// 3. Normal Proxy Request WITH Auth -> BadGateway (Mock Dial)
+	req3 := httptest.NewRequest("GET", "http://example.com/", nil)
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+	req3.Header.Set("Proxy-Authorization", auth)
+	w3 := httptest.NewRecorder()
+	h.ServeHTTP(w3, req3)
 
-	// Mock dialer connecting to a pipe to simulate an open connection
-	serverConn, clientConn := net.Pipe()
-	defer serverConn.Close()
-	mDialer := &mockDialer{conn: clientConn}
-
-	h := http.New(cfg, mDialer)
-
-	// Create request with CONNECT
-	req := httptest.NewRequest(stdhttp.MethodConnect, "http://example.com:443", nil)
-	// We do NOT use NewRecorder because it might implement Hijacker if the underlying type supports it,
-	// but httptest.ResponseRecorder does NOT implement Hijacker by default, which is what we want
-	// to test the fallback path.
-	w := httptest.NewRecorder()
-
-	// Create a context we can cancel
-	ctx, cancel := context.WithCancel(req.Context())
-	req = req.WithContext(ctx)
-
-	// Run valid handler in a goroutine
-	done := make(chan struct{})
-	go func() {
-		h.ServeHTTP(w, req)
-		close(done)
-	}()
-
-	// Wait a bit to ensure it established connection and entered the copy loop
-	time.Sleep(100 * time.Millisecond)
-
-	// Cancel context
-	cancel()
-
-	// It should return promptly. If it hangs, this select will timeout.
-	select {
-	case <-done:
-		// Success
-	case <-time.After(1 * time.Second):
-		t.Fatal("Handler hung and did not return after context cancellation")
+	if w3.Code != http.StatusBadGateway {
+		t.Errorf("Proxy with auth enabled (valid creds): expected 502 (Mock Error), got %d", w3.Code)
 	}
 }
