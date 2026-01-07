@@ -94,7 +94,7 @@ Advanced usage
 # quic      - only UDP
 # socks5    - TCP and UDP
 # tls - only TCP
-forward -L tcp://:8080//1.2.3.4:80 -x tls://proxy.com:1080
+forward -L tcp://:8080/1.2.3.4:80 -x tls://proxy.com:1080
 ```
 
 8080 --> proxy.com:1080(tls) --> 1.2.3.4:80
@@ -124,7 +124,7 @@ Connect to the server and map remote port 11080 to local 1080.
 
 ```bash
 # Map remote 2222 -> local 127.0.0.1:22
-forward -L tcp://:2222//127.0.0.1:22 -F tls://your.server.com:2333
+forward -L tcp://:2222/127.0.0.1:22 -F tls://your.server.com:2333
 ```
 
 Now, accessing `your.server.com:2222` will reach the intranet machine's `127.0.0.1:22`.
@@ -142,5 +142,5 @@ forward -L http://127.0.0.1:1080 -F tls://proxy.com:1080
 You can start multiple services at once.
 
 ```bash
-forward -L tcp://:8080//1.2.3.4:80 -L socks5://:1080
+forward -L tcp://:8080/1.2.3.4:80 -L socks5://:1080
 ```
