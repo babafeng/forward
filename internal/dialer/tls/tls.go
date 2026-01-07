@@ -54,7 +54,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	}
 
 	client := tls.Client(conn, d.tlsCfg)
-	if err := client.Handshake(); err != nil {
+	if err := client.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}

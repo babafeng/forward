@@ -70,6 +70,8 @@ func ServerConfig(cfg config.Config, opts ServerOptions) (*tls.Config, error) {
 		NextProtos:   opts.NextProtos,
 		ClientCAs:    clientCAs,
 		ClientAuth:   tls.NoClientCert,
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS13,
 	}, nil
 }
 

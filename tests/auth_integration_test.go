@@ -41,10 +41,9 @@ func TestSOCKS5WithAuth(t *testing.T) {
 	listenEP := mustParseEndpoint(t, fmt.Sprintf("socks5://testuser:testpass@127.0.0.1:%d", port))
 
 	cfg := config.Config{
-		Listen:        listenEP,
-		Logger:        logging.New(logging.Options{Level: logging.LevelOff}),
-		IsProxyServer: true,
-		Mode:          config.ModeProxyServer,
+		Listen: listenEP,
+		Logger: logging.New(logging.Options{Level: logging.LevelOff}),
+		Mode:   config.ModeProxyServer,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -112,10 +111,9 @@ func TestSOCKS5AuthFail(t *testing.T) {
 	listenEP := mustParseEndpoint(t, fmt.Sprintf("socks5://admin:secret@127.0.0.1:%d", port))
 
 	cfg := config.Config{
-		Listen:        listenEP,
-		Logger:        logging.New(logging.Options{Level: logging.LevelOff}),
-		IsProxyServer: true,
-		Mode:          config.ModeProxyServer,
+		Listen: listenEP,
+		Logger: logging.New(logging.Options{Level: logging.LevelOff}),
+		Mode:   config.ModeProxyServer,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

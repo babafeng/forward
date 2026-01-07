@@ -67,7 +67,17 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	nd.KeepAlive = 30 * time.Second
 
 	if d.useTLS {
-		base, err = tls.DialWithDialer(&nd, "tcp", d.proxy, d.tlsConfig)
+		// Use DialContext + HandshakeContext to support cancellation
+		base, err = nd.DialContext(ctx, "tcp", d.proxy)
+		if err != nil {
+			return nil, err
+		}
+		tlsConn := tls.Client(base, d.tlsConfig)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = base.Close()
+			return nil, err
+		}
+		base = tlsConn
 	} else {
 		base, err = nd.DialContext(ctx, "tcp", d.proxy)
 	}

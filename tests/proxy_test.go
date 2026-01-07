@@ -44,10 +44,9 @@ func TestSOCKS5ProxyBasic(t *testing.T) {
 	listenEP := mustParseEndpoint(t, fmt.Sprintf("socks5://127.0.0.1:%d", port))
 
 	cfg := config.Config{
-		Listen:        listenEP,
-		Logger:        logging.New(logging.Options{Level: logging.LevelOff}),
-		IsProxyServer: true,
-		Mode:          config.ModeProxyServer,
+		Listen: listenEP,
+		Logger: logging.New(logging.Options{Level: logging.LevelOff}),
+		Mode:   config.ModeProxyServer,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,10 +146,9 @@ func TestHTTPProxyConnect(t *testing.T) {
 	listenEP := mustParseEndpoint(t, fmt.Sprintf("http://127.0.0.1:%d", port))
 
 	cfg := config.Config{
-		Listen:        listenEP,
-		Logger:        logging.New(logging.Options{Level: logging.LevelOff}),
-		IsProxyServer: true,
-		Mode:          config.ModeProxyServer,
+		Listen: listenEP,
+		Logger: logging.New(logging.Options{Level: logging.LevelOff}),
+		Mode:   config.ModeProxyServer,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

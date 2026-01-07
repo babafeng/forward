@@ -26,9 +26,27 @@ func (c *rwcConn) RemoteAddr() net.Addr {
 	return &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 0}
 }
 
-func (c *rwcConn) SetDeadline(t time.Time) error      { return nil }
-func (c *rwcConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *rwcConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *rwcConn) SetDeadline(t time.Time) error {
+	if t.IsZero() {
+		return nil
+	}
+	d := time.Until(t)
+	if d <= 0 {
+		return c.Close()
+	}
+	time.AfterFunc(d, func() {
+		_ = c.Close()
+	})
+	return nil
+}
+
+func (c *rwcConn) SetReadDeadline(t time.Time) error {
+	return c.SetDeadline(t)
+}
+
+func (c *rwcConn) SetWriteDeadline(t time.Time) error {
+	return c.SetDeadline(t)
+}
 
 type combinedRWC struct {
 	r io.ReadCloser

@@ -3,6 +3,7 @@ package net
 import (
 	"context"
 	"errors"
+	"forward/internal/config"
 	"io"
 	"net"
 	"sync"
@@ -31,7 +32,7 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 
 	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, config.DefaultCopyBuffer)
 		n, e := io.CopyBuffer(dst, src, buf)
 		if n > 0 {
 			total.Add(n)
