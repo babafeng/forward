@@ -84,12 +84,12 @@ func runOne(ctx context.Context, cfg config.Config) error {
 		return runReverseServer(ctx, cfg)
 	}
 
-	return nil
+	return fmt.Errorf("unknown mode or scheme: %s", cfg.Listen.Scheme)
 }
 
 func runReverseClient(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModeReverseClient
-	cfg.IsReverseClient = true
+	cfg.Mode = config.ModeReverseClient
 	client, err := rc.New(cfg)
 	if err != nil {
 		return fmt.Errorf("reverse client init error: %w", err)
@@ -102,7 +102,7 @@ func runReverseClient(ctx context.Context, cfg config.Config) error {
 
 func runPortForward(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModePortForward
-	cfg.IsPortForward = true
+	cfg.Mode = config.ModePortForward
 	if cfg.Forward == nil {
 		ef, _ := endpoint.Parse(fmt.Sprintf("%s://%s", cfg.Listen.Scheme, cfg.Listen.FAddress))
 		cfg.Forward = &ef
@@ -117,7 +117,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		cfg.Forward = nil
 	}
 	cfg.Mode = config.ModeProxyServer
-	cfg.IsProxyServer = true
+	cfg.Mode = config.ModeProxyServer
 
 	if !cfg.Listen.HasUserPass() {
 		cfg.Logger.Warn("Proxy server listening on %s without authentication", cfg.Listen.Address())
@@ -129,7 +129,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 
 func runReverseServer(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModeReverseServer
-	cfg.IsReverseServer = true
+	cfg.Mode = config.ModeReverseServer
 
 	if !cfg.Listen.HasUserPass() {
 		cfg.Logger.Warn("Reverse server listening on %s without authentication", cfg.Listen.Address())

@@ -241,6 +241,18 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 
 	h.log.Debug("Forward SOCKS5 UDP relay at %s", bind)
 
+	// Create a context that will be canceled when the TCP connection is closed
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Monitor the TCP connection for closure
+	go func() {
+		defer cancel()
+		buf := make([]byte, 1)
+		_, _ = conn.Read(buf)
+		// Any return from Read (including EOF) means the connection is closed or broken
+	}()
+
 	sess := newUDPSession(h.dialer, h.log, udpLn, h.udpIdle)
 	sess.run(ctx)
 }
@@ -320,7 +332,7 @@ func (s *udpSession) run(ctx context.Context) {
 			continue
 		}
 
-		peer := s.getOrCreatePeer(ctx, dest)
+		peer := s.getOrCreatePeer(ctx, dest, src)
 		if peer == nil {
 			continue
 		}
@@ -330,12 +342,10 @@ func (s *udpSession) run(ctx context.Context) {
 			s.log.Error("Forward socks5 udp write upstream error: %v", err)
 			continue
 		}
-
-		go s.readUpstream(ctx, peer, src)
 	}
 }
 
-func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer {
+func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.UDPAddr) *udpPeer {
 	// 快速路径
 	s.mu.Lock()
 	if p := s.sessions[dest]; p != nil {
@@ -366,6 +376,8 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer 
 		}
 		p.lastSeen.Store(time.Now().UnixNano())
 
+		go s.readUpstream(ctx, p, src)
+
 		s.mu.Lock()
 		s.sessions[dest] = p
 		s.mu.Unlock()
@@ -379,26 +391,45 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer 
 }
 
 func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.UDPAddr) {
-	buf := make([]byte, 64*1024)
-	_ = p.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err := p.conn.Read(buf)
-	if err != nil {
-		return
-	}
-	payload := buf[:n]
+	defer func() {
+		s.mu.Lock()
+		delete(s.sessions, p.dest)
+		s.mu.Unlock()
+		p.conn.Close()
+	}()
 
+	buf := make([]byte, 64*1024)
 	host, portStr, err := net.SplitHostPort(p.dest)
 	if err != nil {
 		return
 	}
 	port, _ := strconv.Atoi(portStr)
 
-	resp, err := buildUDPResponse(host, port, payload)
-	if err != nil {
-		return
+	for {
+		_ = p.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, err := p.conn.Read(buf)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				// check idle
+				if time.Since(time.Unix(0, p.lastSeen.Load())) > s.idle {
+					return
+				}
+				continue
+			}
+			return
+		}
+
+		payload := buf[:n]
+		resp, err := buildUDPResponse(host, port, payload)
+		if err != nil {
+			continue
+		}
+		_, _ = s.relay.WriteToUDP(resp, client)
+		p.lastSeen.Store(time.Now().UnixNano())
 	}
-	_, _ = s.relay.WriteToUDP(resp, client)
-	p.lastSeen.Store(time.Now().UnixNano())
 }
 
 func (s *udpSession) cleanupIdle() {

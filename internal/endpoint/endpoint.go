@@ -62,7 +62,7 @@ func Parse(raw string) (Endpoint, error) {
 	}
 
 	raddr := u.Host
-	faddr := strings.TrimPrefix(u.Path, "/")
+	faddr := strings.TrimLeft(u.Path, "/")
 	if faddr == "" {
 		raddr = ""
 	}

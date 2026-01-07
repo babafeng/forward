@@ -251,8 +251,31 @@ func (fw *flushWriter) Write(p []byte) (int, error) {
 }
 
 func cleanProxyHeaders(r *stdhttp.Request) {
-	r.Header.Del("Proxy-Authorization")
-	r.Header.Del("Proxy-Connection")
+	// Remove standard hop-by-hop headers
+	hopByHop := []string{
+		"Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailers",
+		"Transfer-Encoding",
+		"Upgrade",
+		"Proxy-Connection", // Non-standard but common
+	}
+
+	// Remove headers listed in the Connection header
+	if c := r.Header.Get("Connection"); c != "" {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				r.Header.Del(f)
+			}
+		}
+	}
+
+	for _, h := range hopByHop {
+		r.Header.Del(h)
+	}
 }
 
 func parseProxyAuth(v string) (string, string, bool) {

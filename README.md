@@ -20,12 +20,31 @@ go build -o forward ./cmd/forward && chmod +x forward
 
 ```bash
 # install latest version
-bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh) --install
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/install.sh) --install
 ```
 
 ```bash
 # install specific version
-bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/install.sh)
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/install.sh)
+```
+
+## Run as Service
+
+You can register `forward` as a system service on Linux (systemd) or macOS (launchd) using the provided script.
+
+```bash
+# Register Linux system service (root or sudo required)
+# This will create a systemd unit and enable it on boot
+sudo bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward -- --L tcp://:8080/1.2.3.4:80
+
+# Register macOS user service with logs
+# This will create a launchd plist and load it
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward -- --L http://:1080
+
+# Unregister/Remove service
+sudo bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward --remove  # Linux
+
+bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward --remove  # macOS
 ```
 
 ## Auth

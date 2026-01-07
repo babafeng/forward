@@ -8,6 +8,7 @@ import (
 	"net"
 	stdhttp "net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/net/http2"
 
@@ -59,10 +60,13 @@ func (l *Listener) Run(ctx context.Context) error {
 	}
 
 	srv := &stdhttp.Server{
-		Handler:     l.handler,
-		TLSConfig:   l.tlsConfig,
-		ErrorLog:    stdlog.New(&httpErrorLogWriter{log: l.log}, "", 0),
-		BaseContext: func(net.Listener) context.Context { return ctx },
+		Handler:      l.handler,
+		TLSConfig:    l.tlsConfig,
+		ErrorLog:     stdlog.New(&httpErrorLogWriter{log: l.log}, "", 0),
+		BaseContext:  func(net.Listener) context.Context { return ctx },
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 	if l.tlsConfig != nil {
 		_ = http2.ConfigureServer(srv, nil)
@@ -73,8 +77,12 @@ func (l *Listener) Run(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		_ = ln.Close()
-		_ = srv.Close()
+		// Graceful shutdown
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			_ = srv.Close()
+		}
 	}()
 
 	if err := srv.Serve(ln); err != nil && err != stdhttp.ErrServerClosed && !errors.Is(err, net.ErrClosed) {

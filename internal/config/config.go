@@ -61,11 +61,6 @@ type Config struct {
 
 	Mode RunMode
 
-	IsProxyServer   bool
-	IsReverseClient bool
-	IsReverseServer bool
-	IsPortForward   bool
-
 	Insecure bool
 }
 

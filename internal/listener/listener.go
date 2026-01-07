@@ -41,7 +41,7 @@ func New(cfg config.Config, d dialer.Dialer) (Runner, error) {
 	var f Factory
 	var ok bool
 
-	if cfg.IsReverseServer {
+	if cfg.IsMode(config.ModeReverseServer) {
 		f, ok = factories["reverse"]
 	} else {
 		f, ok = factories[scheme]

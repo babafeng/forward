@@ -122,10 +122,9 @@ func TestHTTPProxyListenAddress(t *testing.T) {
 			listenEP := mustParseEndpoint(t, listenURL)
 
 			cfg := config.Config{
-				Listen:        listenEP,
-				Logger:        testLogger(),
-				IsProxyServer: true,
-				Mode:          config.ModeProxyServer,
+				Listen: listenEP,
+				Logger: testLogger(),
+				Mode:   config.ModeProxyServer,
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())
