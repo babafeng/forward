@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	stdhttp "net/http"
@@ -63,6 +64,13 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 
 // ServeHTTP implements net/http Handler to support HTTP/1.1, HTTP/2, HTTP/3 entrypoints.
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
+		if !r.URL.IsAbs() && r.URL.Path == "/" {
+			writeSimple(w, stdhttp.StatusForbidden, "403 Forbidden")
+			return
+		}
+	}
+
 	if h.requireAuth && !h.authorize(w, r) {
 		return
 	}
@@ -298,19 +306,22 @@ func parseProxyAuth(v string) (string, string, bool) {
 }
 
 func writeAuthRequired(w stdhttp.ResponseWriter) {
-	w.Header().Set("Proxy-Authenticate", `Basic realm="forward"`)
-	writeSimple(w, stdhttp.StatusProxyAuthRequired, "proxy authentication required")
+	w.Header().Set("Proxy-Authenticate", `Basic realm="`+config.CamouflageRealm+`"`)
+	writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 }
 
-func writeSimple(w stdhttp.ResponseWriter, status int, body string) {
+func writeSimple(w stdhttp.ResponseWriter, status int, title string) {
 	statusText := stdhttp.StatusText(status)
 	if statusText == "" {
 		statusText = "Error"
 	}
-	if body == "" {
-		body = statusText
+	if title == "" {
+		title = statusText
 	}
-	w.Header().Set("Content-Type", "text/plain")
+
+	body := fmt.Sprintf(config.CamouflagePageBody, title, title)
+
+	w.Header().Set("Content-Type", "text/html")
 	w.Header().Set("Connection", "close")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(body))

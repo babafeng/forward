@@ -7,6 +7,7 @@ import (
 
 	_ "forward/internal/listener/http"
 	_ "forward/internal/listener/http3"
+	_ "forward/internal/listener/reverse"
 	_ "forward/internal/listener/socks5"
 	_ "forward/internal/listener/tcp"
 	_ "forward/internal/listener/udp"

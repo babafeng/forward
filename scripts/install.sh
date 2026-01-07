@@ -148,8 +148,6 @@ install_forward() {
     if [[ ":$PATH:" != *":$install_dir:"* ]]; then
         echo "Make sure $install_dir is in your PATH."
     fi
-    echo "forward installation completed: $dest version $version"
-
 }
 
 require_cmd curl

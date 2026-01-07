@@ -31,7 +31,7 @@ func New(cfg config.Config, h Handler) (*Listener, error) {
 	var tlsCfg *tls.Config
 	var err error
 	switch cfg.Listen.Scheme {
-	case "tls":
+	case "tls", "https":
 		tlsCfg, err = ctls.ServerConfig(cfg, ctls.ServerOptions{
 			NextProtos: []string{"h2", "http/1.1"},
 		})
