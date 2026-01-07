@@ -19,8 +19,8 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 		return nil, fmt.Errorf("reverse listener requires bind=true")
 	}
 	scheme := strings.ToLower(cfg.Listen.Scheme)
-	if scheme != "tcp" && scheme != "tls" && scheme != "quic" && scheme != "http3" {
-		return nil, fmt.Errorf("reverse listener supports tcp/tls/quic/http3, got %s", cfg.Listen.Scheme)
+	if scheme != "tcp" && scheme != "tls" && scheme != "quic" && scheme != "http3" && scheme != "https" {
+		return nil, fmt.Errorf("reverse listener supports tcp/tls/https/quic/http3, got %s", cfg.Listen.Scheme)
 	}
 	h, err := hrev.NewServer(cfg)
 	if err != nil {
