@@ -20,6 +20,7 @@ import (
 	"forward/internal/dialer"
 	inet "forward/internal/io/net"
 	"forward/internal/logging"
+	"forward/internal/utils"
 )
 
 type Handler struct {
@@ -64,6 +65,8 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 
 // ServeHTTP implements net/http Handler to support HTTP/1.1, HTTP/2, HTTP/3 entrypoints.
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	cid := utils.NewID()
+
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if !r.URL.IsAbs() && r.URL.Path == "/" {
 			writeSimple(w, stdhttp.StatusForbidden, "403 Forbidden")
@@ -71,32 +74,32 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		}
 	}
 
-	if h.requireAuth && !h.authorize(w, r) {
+	if h.requireAuth && !h.authorize(cid, w, r) {
 		return
 	}
 
 	if strings.EqualFold(r.Method, stdhttp.MethodConnect) {
-		h.handleConnect(w, r)
+		h.handleConnect(cid, w, r)
 		return
 	}
 
-	h.handleForward(w, r)
+	h.handleForward(cid, w, r)
 }
 
-func (h *Handler) authorize(w stdhttp.ResponseWriter, r *stdhttp.Request) bool {
+func (h *Handler) authorize(cid string, w stdhttp.ResponseWriter, r *stdhttp.Request) bool {
 	user, pass, ok := parseProxyAuth(r.Header.Get("Proxy-Authorization"))
 	if ok && h.auth.Check(user, pass) {
-		h.log.Debug("Forward HTTP auth success for user %s", user)
+		h.log.Debug("[%s] Forward HTTP auth success for user %s", cid, user)
 		return true
 	}
 	if h.requireAuth {
-		h.log.Debug("Forward HTTP auth failed or missing credentials from %s", r.RemoteAddr)
+		h.log.Debug("[%s] Forward HTTP auth failed or missing credentials from %s", cid, r.RemoteAddr)
 	}
 	writeAuthRequired(w)
 	return false
 }
 
-func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+func (h *Handler) handleConnect(cid string, w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	target := r.Host
 	if target == "" {
 		writeSimple(w, stdhttp.StatusBadRequest, "missing host")
@@ -106,14 +109,14 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		target += ":443"
 	}
 
-	h.log.Info("Forward HTTP CONNECT Received connection %s --> %s", r.RemoteAddr, target)
+	h.log.Info("[%s] Forward HTTP CONNECT Received connection %s --> %s", cid, r.RemoteAddr, target)
 	up, err := h.dialer.DialContext(r.Context(), "tcp", target)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 			(r.Context().Err() != nil && (errors.Is(r.Context().Err(), context.Canceled) || errors.Is(r.Context().Err(), context.DeadlineExceeded))) {
-			h.log.Debug("Forward http connect dial canceled: %v", err)
+			h.log.Debug("[%s] Forward HTTP connect dial canceled: %v", cid, err)
 		} else {
-			h.log.Error("Forward http connect dial error: %v", err)
+			h.log.Error("[%s] Forward HTTP connect dial error: %v", cid, err)
 		}
 		writeSimple(w, stdhttp.StatusForbidden, err.Error())
 		return
@@ -122,7 +125,7 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if hj, ok := w.(stdhttp.Hijacker); ok {
 		conn, bufrw, err := hj.Hijack()
 		if err != nil {
-			h.log.Error("Forward http connect hijack error: %v", err)
+			h.log.Error("[%s] Forward HTTP connect hijack error: %v", cid, err)
 			_ = up.Close()
 			writeSimple(w, stdhttp.StatusInternalServerError, "hijack failed")
 			return
@@ -133,19 +136,19 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		_, _ = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 		_ = bufrw.Flush()
 
-		h.log.Debug("Forward HTTP CONNECT Connected to upstream %s --> %s", r.RemoteAddr, target)
+		h.log.Debug("[%s] Forward HTTP CONNECT Connected to upstream %s --> %s", cid, r.RemoteAddr, target)
 
 		bytes, dur, err := inet.Bidirectional(r.Context(), conn, up)
 		if err != nil && r.Context().Err() == nil {
-			h.log.Error("Forward http connect transfer error: %v", err)
+			h.log.Error("[%s] Forward HTTP connect transfer error: %v", cid, err)
 		}
-		h.log.Debug("Forward HTTP CONNECT Closed connection %s --> %s transferred %d bytes in %s", r.RemoteAddr, target, bytes, dur)
+		h.log.Debug("[%s] Forward HTTP CONNECT Closed connection %s --> %s transferred %d bytes in %s", cid, r.RemoteAddr, target, bytes, dur)
 		return
 	}
 
 	flusher, ok := w.(stdhttp.Flusher)
 	if !ok {
-		h.log.Error("Forward http connect: response writer not flushable")
+		h.log.Error("[%s] Forward HTTP connect: response writer not flushable", cid)
 		_ = up.Close()
 		writeSimple(w, stdhttp.StatusInternalServerError, "stream not supported")
 		return
@@ -157,8 +160,8 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	h.streamWithBody(r.Context(), w, r.Body, up, flusher)
 }
 
-func (h *Handler) handleForward(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	h.log.Debug("Forward HTTP Received connection from %s", r.RemoteAddr)
+func (h *Handler) handleForward(cid string, w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	h.log.Debug("[%s] Forward HTTP Received connection from %s", cid, r.RemoteAddr)
 
 	ctx := r.Context()
 	req, err := h.prepareUpstreamRequest(ctx, r)
@@ -167,25 +170,25 @@ func (h *Handler) handleForward(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 
-	h.log.Info("Forward HTTP Received connection %s --> %s", r.RemoteAddr, req.URL.Host)
+	h.log.Info("[%s] Forward HTTP Received connection %s --> %s", cid, r.RemoteAddr, req.URL.Host)
 
 	resp, err := h.transportClient().RoundTrip(req)
 	if err != nil {
-		h.log.Debug("Forward HTTP dial failed %s: %v", req.URL.String(), err)
+		h.log.Debug("[%s] Forward HTTP dial failed %s: %v", cid, req.URL.String(), err)
 		writeSimple(w, stdhttp.StatusForbidden, err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
-	h.log.Debug("Forward HTTP response from upstream: %s %d %s", req.URL.Host, resp.StatusCode, resp.Status)
+	h.log.Debug("[%s] Forward HTTP response from upstream: %s %d %s", cid, req.URL.Host, resp.StatusCode, resp.Status)
 
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil && ctx.Err() == nil {
-		h.log.Error("Forward http error: write client: %v", err)
+		h.log.Error("[%s] Forward HTTP error: write client: %v", cid, err)
 		return
 	}
-	h.log.Info("Forward HTTP Close %s %d %s", req.URL.Host, resp.StatusCode, resp.Status)
+	h.log.Info("[%s] Forward HTTP Close %s %d %s", cid, req.URL.Host, resp.StatusCode, resp.Status)
 }
 
 func (h *Handler) prepareUpstreamRequest(ctx context.Context, r *stdhttp.Request) (*stdhttp.Request, error) {

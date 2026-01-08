@@ -13,7 +13,6 @@ const (
 	AtypIPv6   = 0x04
 )
 
-// EncodeAddr 将主机和端口编码为 SOCKS5 地址格式
 func EncodeAddr(host string, port int) ([]byte, error) {
 	if port < 0 || port > 65535 {
 		return nil, fmt.Errorf("invalid port: %d", port)
@@ -51,7 +50,6 @@ func EncodeAddr(host string, port int) ([]byte, error) {
 	return b, nil
 }
 
-// ReadAddr 从 reader 读取 SOCKS5 地址
 func ReadAddr(r io.Reader, atyp byte) (string, int, error) {
 	switch atyp {
 	case AtypIPv4:
@@ -88,7 +86,6 @@ func ReadAddr(r io.Reader, atyp byte) (string, int, error) {
 	}
 }
 
-// ReadPort 从 reader 读取端口号
 func ReadPort(r io.Reader) (int, error) {
 	pb := make([]byte, 2)
 	if _, err := io.ReadFull(r, pb); err != nil {
