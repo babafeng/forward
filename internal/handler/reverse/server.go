@@ -122,18 +122,14 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 	}
 	sid := hex.EncodeToString(sidBuf)
 
-	// Create a prefixed logger for this session?
-	// Or just include [SID:...] in messages. For simplicity (and since logging package doesn't support context easy), we format strings.
-	// But yamux logger needs prefix too.
-
 	conf := yamux.DefaultConfig()
 	conf.KeepAliveInterval = 10 * time.Second
 	conf.LogOutput = nil
-	conf.Logger = log.New(s.log.Writer(logging.LevelDebug), fmt.Sprintf("[yamux][SID:%s] ", sid), 0)
+	conf.Logger = log.New(s.log.Writer(logging.LevelDebug), fmt.Sprintf("[yamux][%s] ", sid), 0)
 
 	session, err := yamux.Client(conn, conf)
 	if err != nil {
-		s.log.Error("[SID:%s] Reverse server yamux error: %v", sid, err)
+		s.log.Error("[%s] Reverse server yamux error: %v", sid, err)
 		return
 	}
 	defer session.Close()
@@ -153,7 +149,7 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 	}()
 
-	s.log.Info("[SID:%s] Reverse session established for %s", sid, bindAddr)
+	s.log.Info("[%s] Reverse session established for %s", sid, bindAddr)
 
 	if isUDP {
 		s.handleBoundUDP(ctx, session, udpLn, sid)
@@ -164,7 +160,7 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 				if ctx.Err() != nil {
 					return
 				}
-				s.log.Error("[SID:%s] Reverse server accept bound error: %v", sid, err)
+				s.log.Error("[%s] Reverse server accept bound error: %v", sid, err)
 				return
 			}
 			go s.handleBoundConn(ctx, session, lc, sid)
@@ -181,23 +177,23 @@ func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, cl
 	// session.RemoteAddr is the Client's addr (tunnel end)
 	tunnelRemote := session.RemoteAddr().String()
 
-	s.log.Info("[SID:%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, src, bound, tunnelRemote)
+	s.log.Info("[%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, src, bound, tunnelRemote)
 
 	stream, err := session.Open()
 	if err != nil {
-		s.log.Error("[SID:%s] Reverse server open stream error: %v", sid, err)
+		s.log.Error("[%s] Reverse server open stream error: %v", sid, err)
 		return
 	}
 	defer stream.Close()
 
 	dst := stream.RemoteAddr().String()
-	s.log.Debug("[SID:%s] Reverse TCP Connected to upstream %s --> %s", sid, src, dst)
+	s.log.Debug("[%s] Reverse TCP Connected to upstream %s --> %s", sid, src, dst)
 
 	bytes, dur, err := inet.Bidirectional(ctx, clientConn, stream)
 	if err != nil && ctx.Err() == nil {
-		s.log.Error("[SID:%s] Reverse server transfer error: %v", sid, err)
+		s.log.Error("[%s] Reverse server transfer error: %v", sid, err)
 	}
-	s.log.Debug("[SID:%s] Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", sid, src, dst, bytes, dur)
+	s.log.Debug("[%s] Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", sid, src, dst, bytes, dur)
 }
 
 func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, conn *net.UDPConn, sid string) {
@@ -215,18 +211,18 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 	for {
 		n, src, err := conn.ReadFromUDP(pkt)
 		if err != nil {
-			s.log.Error("[SID:%s] Reverse UDP Read error: %v", sid, err)
+			s.log.Error("[%s] Reverse UDP Read error: %v", sid, err)
 			return
 		}
 
 		srcKey := src.String()
 		sess, ok := activeSessions[srcKey]
 		if !ok {
-			s.log.Info("[SID:%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, srcKey, bound, tunnelRemote)
+			s.log.Info("[%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, srcKey, bound, tunnelRemote)
 
 			stream, err := session.Open()
 			if err != nil {
-				s.log.Error("[SID:%s] Reverse UDP Open stream error: %v", sid, err)
+				s.log.Error("[%s] Reverse UDP Open stream error: %v", sid, err)
 				continue
 			}
 
@@ -255,7 +251,7 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 		}
 
 		if _, err := sess.ps.Write(pkt[:n]); err != nil {
-			s.log.Error("[SID:%s] Reverse UDP Write to stream error: %v", sid, err)
+			s.log.Error("[%s] Reverse UDP Write to stream error: %v", sid, err)
 			sess.stream.Close()
 			delete(activeSessions, srcKey)
 		}

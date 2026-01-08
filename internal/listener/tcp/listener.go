@@ -57,7 +57,7 @@ func (l *Listener) Run(ctx context.Context) error {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				break
 			}
-			l.log.Error("Forward tcp error: accept: %v", err)
+			l.log.Error("Forward TCP error: accept: %v", err)
 			continue
 		}
 
