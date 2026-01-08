@@ -21,12 +21,12 @@ type Handler interface {
 }
 
 type Listener struct {
-	addr      string
-	scheme    string
-	handler   Handler
-	log       *logging.Logger
-	proxyDesc string
-	tlsConfig *tls.Config
+	addr        string
+	scheme      string
+	handler     Handler
+	log         *logging.Logger
+	forwardDesc string
+	tlsConfig   *tls.Config
 }
 
 func New(cfg config.Config, h Handler) *Listener {
@@ -34,17 +34,17 @@ func New(cfg config.Config, h Handler) *Listener {
 }
 
 func NewWithTLS(cfg config.Config, h Handler, tlsCfg *tls.Config) *Listener {
-	proxy := "direct"
-	if cfg.Proxy != nil {
-		proxy = cfg.Proxy.Address()
+	forward := "direct"
+	if cfg.Forward != nil && cfg.Mode != config.ModePortForward {
+		forward = cfg.Forward.Address()
 	}
 	return &Listener{
-		addr:      cfg.Listen.Address(),
-		scheme:    cfg.Listen.Scheme,
-		handler:   h,
-		log:       cfg.Logger,
-		proxyDesc: proxy,
-		tlsConfig: tlsCfg,
+		addr:        cfg.Listen.Address(),
+		scheme:      cfg.Listen.Scheme,
+		handler:     h,
+		log:         cfg.Logger,
+		forwardDesc: forward,
+		tlsConfig:   tlsCfg,
 	}
 }
 
@@ -73,7 +73,7 @@ func (l *Listener) Run(ctx context.Context) error {
 	}
 	defer ln.Close()
 
-	l.log.Info("Forward %s proxy listening on %s via %s", l.scheme, l.addr, l.proxyDesc)
+	l.log.Info("Forward %s proxy listening on %s via %s", l.scheme, l.addr, l.forwardDesc)
 
 	go func() {
 		<-ctx.Done()

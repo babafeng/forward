@@ -115,7 +115,7 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		} else {
 			h.log.Error("Forward http connect dial error: %v", err)
 		}
-		writeSimple(w, stdhttp.StatusBadGateway, "dial upstream failed")
+		writeSimple(w, stdhttp.StatusForbidden, err.Error())
 		return
 	}
 
@@ -172,7 +172,7 @@ func (h *Handler) handleForward(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	resp, err := h.transportClient().RoundTrip(req)
 	if err != nil {
 		h.log.Debug("Forward HTTP dial failed %s: %v", req.URL.String(), err)
-		writeSimple(w, stdhttp.StatusBadGateway, "dial upstream failed")
+		writeSimple(w, stdhttp.StatusForbidden, err.Error())
 		return
 	}
 	defer resp.Body.Close()

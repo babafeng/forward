@@ -92,7 +92,11 @@ func (e Endpoint) String() string {
 		Host:   e.Address(),
 	}
 	if e.User != nil {
-		u.User = e.User
+		if _, hasPass := e.User.Password(); hasPass {
+			u.User = url.UserPassword(e.User.Username(), "redacted")
+		} else {
+			u.User = e.User
+		}
 	}
 	if len(e.Query) > 0 {
 		u.RawQuery = e.Query.Encode()

@@ -60,7 +60,6 @@ type Config struct {
 	Listeners []endpoint.Endpoint
 	LogLevel  logging.Level
 
-	Proxy   *endpoint.Endpoint
 	Forward *endpoint.Endpoint
 
 	Logger *logging.Logger

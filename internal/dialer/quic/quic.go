@@ -24,9 +24,9 @@ type Dialer struct {
 }
 
 func New(cfg config.Config) (*Dialer, error) {
-	proxyEp := cfg.Proxy
-	tlsCfg, err := ctls.ClientConfig(*proxyEp, cfg.Insecure, ctls.ClientOptions{
-		ServerName: proxyEp.Host,
+	forward := cfg.Forward
+	tlsCfg, err := ctls.ClientConfig(*forward, cfg.Insecure, ctls.ClientOptions{
+		ServerName: forward.Host,
 		NextProtos: []string{"h3"},
 	})
 	if err != nil {
@@ -38,13 +38,13 @@ func New(cfg config.Config) (*Dialer, error) {
 	}
 
 	var authHeader string
-	if user, pass, ok := proxyEp.UserPass(); ok {
+	if user, pass, ok := forward.UserPass(); ok {
 		creds := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
 		authHeader = "Basic " + creds
 	}
 
 	return &Dialer{
-		target:     proxyEp.Address(),
+		target:     forward.Address(),
 		rt:         rt,
 		timeout:    cfg.DialTimeout,
 		authHeader: authHeader,
@@ -53,14 +53,14 @@ func New(cfg config.Config) (*Dialer, error) {
 
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if !strings.HasPrefix(strings.ToLower(network), "tcp") {
-		return nil, fmt.Errorf("quic proxy supports tcp only")
+		return nil, fmt.Errorf("quic forward supports tcp only")
 	}
 
-	proxyURL := fmt.Sprintf("https://%s", d.target)
+	forwardURL := fmt.Sprintf("https://%s", d.target)
 
 	pr, pw := io.Pipe()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, proxyURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, forwardURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -79,10 +79,10 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, fmt.Errorf("proxy connect failed: %s", resp.Status)
+		return nil, fmt.Errorf("forward connect failed: %s", resp.Status)
 	}
 
-	return &rwcConn{
+	return &RWCConn{
 		ReadWriteCloser: &combinedRWC{
 			r: resp.Body,
 			w: pw,

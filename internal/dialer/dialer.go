@@ -36,16 +36,20 @@ func Register(scheme string, f Factory) {
 }
 
 func New(cfg config.Config) (Dialer, error) {
-	if cfg.Proxy == nil {
+	if cfg.Mode == config.ModePortForward {
 		return NewDirect(cfg), nil
 	}
 
-	scheme := strings.ToLower(cfg.Proxy.Scheme)
+	if cfg.Forward == nil {
+		return NewDirect(cfg), nil
+	}
+
+	scheme := strings.ToLower(cfg.Forward.Scheme)
 	mu.RLock()
 	f, ok := factories[scheme]
 	mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("unsupported proxy scheme: %s", cfg.Proxy.Scheme)
+		return nil, fmt.Errorf("unsupported forward scheme: %s", cfg.Forward.Scheme)
 	}
 	return f(cfg)
 }
