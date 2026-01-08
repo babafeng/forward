@@ -3,9 +3,13 @@ package reverse
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
@@ -64,7 +68,8 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 		authFn = s.auth.Check
 	}
 
-	host, port, err := rproto.Socks5ServerBind(br, bw, authFn)
+	// Check Socks5 Bind
+	host, port, isUDP, err := rproto.Socks5ServerBind(br, bw, authFn)
 	if err != nil {
 		s.log.Error("Reverse server socks5 bind error: %v", err)
 		return
@@ -74,66 +79,185 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 		host = "0.0.0.0"
 	}
 	bindAddr := net.JoinHostPort(host, strconv.Itoa(port))
-	ln, err := net.Listen("tcp", bindAddr)
-	if err != nil {
-		s.log.Error("Reverse server listen %s error: %v", bindAddr, err)
-		return
+
+	var ln net.Listener
+	var udpLn *net.UDPConn
+	var network string
+
+	if isUDP {
+		network = "udp"
+		uaddr, err := net.ResolveUDPAddr("udp", bindAddr)
+		if err != nil {
+			s.log.Error("Reverse server resolve udp %s: %v", bindAddr, err)
+			return
+		}
+		udpLn, err = net.ListenUDP("udp", uaddr)
+		if err != nil {
+			s.log.Error("Reverse server listen udp %s error: %v", bindAddr, err)
+			return
+		}
+		defer udpLn.Close()
+	} else {
+		network = "tcp"
+		ln, err = net.Listen("tcp", bindAddr)
+		if err != nil {
+			s.log.Error("Reverse server listen tcp %s error: %v", bindAddr, err)
+			return
+		}
+		defer ln.Close()
 	}
-	defer ln.Close()
 
 	if err := rproto.WriteBindSuccess(bw, host, port); err != nil {
 		s.log.Error("Reverse server write bind reply error: %v", err)
 		return
 	}
 
-	s.log.Info("Reverse server bound %s, bridging to client %s", bindAddr, conn.RemoteAddr())
+	s.log.Info("Reverse server bound %s (%s), bridging to client %s", bindAddr, network, conn.RemoteAddr())
 
-	session, err := yamux.Client(conn, nil)
+	// Generate Session ID
+	sidBuf := make([]byte, 8)
+	if _, err := rand.Read(sidBuf); err != nil {
+		s.log.Error("Reverse server init error: %v", err)
+		return
+	}
+	sid := hex.EncodeToString(sidBuf)
+
+	// Create a prefixed logger for this session?
+	// Or just include [SID:...] in messages. For simplicity (and since logging package doesn't support context easy), we format strings.
+	// But yamux logger needs prefix too.
+
+	conf := yamux.DefaultConfig()
+	conf.KeepAliveInterval = 10 * time.Second
+	conf.LogOutput = nil
+	conf.Logger = log.New(s.log.Writer(logging.LevelDebug), fmt.Sprintf("[yamux][SID:%s] ", sid), 0)
+
+	session, err := yamux.Client(conn, conf)
 	if err != nil {
-		s.log.Error("Reverse server yamux error: %v", err)
+		s.log.Error("[SID:%s] Reverse server yamux error: %v", sid, err)
 		return
 	}
 	defer session.Close()
 
 	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
+		select {
+		case <-ctx.Done():
+		case <-session.CloseChan():
+		}
+		if ln != nil {
+			_ = ln.Close()
+		}
+		if udpLn != nil {
+			_ = udpLn.Close()
+		}
 		_ = session.Close()
 		_ = conn.Close()
 	}()
 
-	for {
-		lc, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
+	s.log.Info("[SID:%s] Reverse session established for %s", sid, bindAddr)
+
+	if isUDP {
+		s.handleBoundUDP(ctx, session, udpLn, sid)
+	} else {
+		for {
+			lc, err := ln.Accept()
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				s.log.Error("[SID:%s] Reverse server accept bound error: %v", sid, err)
 				return
 			}
-			s.log.Error("Reverse server accept bound error: %v", err)
-			return
+			go s.handleBoundConn(ctx, session, lc, sid)
 		}
-		go s.handleBoundConn(ctx, session, lc)
 	}
 }
 
-func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, clientConn net.Conn) {
+func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, clientConn net.Conn, sid string) {
 	defer clientConn.Close()
 
 	src := clientConn.RemoteAddr().String()
-	s.log.Debug("Reverse TCP Received connection from %s", src)
+	// clientConn.LocalAddr is 'bound' addr
+	bound := clientConn.LocalAddr().String()
+	// session.RemoteAddr is the Client's addr (tunnel end)
+	tunnelRemote := session.RemoteAddr().String()
+
+	s.log.Info("[SID:%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, src, bound, tunnelRemote)
 
 	stream, err := session.Open()
 	if err != nil {
-		s.log.Error("Reverse server open stream error: %v", err)
+		s.log.Error("[SID:%s] Reverse server open stream error: %v", sid, err)
 		return
 	}
 	defer stream.Close()
 
 	dst := stream.RemoteAddr().String()
-	s.log.Debug("Reverse TCP Connected to upstream %s --> %s", src, dst)
+	s.log.Debug("[SID:%s] Reverse TCP Connected to upstream %s --> %s", sid, src, dst)
 
 	bytes, dur, err := inet.Bidirectional(ctx, clientConn, stream)
 	if err != nil && ctx.Err() == nil {
-		s.log.Error("Reverse server transfer error: %v", err)
+		s.log.Error("[SID:%s] Reverse server transfer error: %v", sid, err)
 	}
-	s.log.Debug("Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", src, dst, bytes, dur)
+	s.log.Debug("[SID:%s] Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", sid, src, dst, bytes, dur)
+}
+
+func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, conn *net.UDPConn, sid string) {
+	type udpSession struct {
+		stream net.Conn
+		ps     *inet.PacketStream
+	}
+
+	activeSessions := make(map[string]*udpSession)
+
+	pkt := make([]byte, 64*1024)
+	bound := conn.LocalAddr().String()
+	tunnelRemote := session.RemoteAddr().String()
+
+	for {
+		n, src, err := conn.ReadFromUDP(pkt)
+		if err != nil {
+			s.log.Error("[SID:%s] Reverse UDP Read error: %v", sid, err)
+			return
+		}
+
+		srcKey := src.String()
+		sess, ok := activeSessions[srcKey]
+		if !ok {
+			s.log.Info("[SID:%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, srcKey, bound, tunnelRemote)
+
+			stream, err := session.Open()
+			if err != nil {
+				s.log.Error("[SID:%s] Reverse UDP Open stream error: %v", sid, err)
+				continue
+			}
+
+			ps := inet.NewPacketStream(stream)
+			sess = &udpSession{
+				stream: stream,
+				ps:     ps,
+			}
+			activeSessions[srcKey] = sess
+
+			// Start reading from stream and writing back to UDP
+			go func(uSess *udpSession, addr *net.UDPAddr) {
+				defer uSess.stream.Close()
+				buf := make([]byte, 64*1024)
+				for {
+					n, err := uSess.ps.Read(buf)
+					if err != nil {
+						// Stream closed or error
+						return
+					}
+					if _, err := conn.WriteToUDP(buf[:n], addr); err != nil {
+						return
+					}
+				}
+			}(sess, src)
+		}
+
+		if _, err := sess.ps.Write(pkt[:n]); err != nil {
+			s.log.Error("[SID:%s] Reverse UDP Write to stream error: %v", sid, err)
+			sess.stream.Close()
+			delete(activeSessions, srcKey)
+		}
+	}
 }

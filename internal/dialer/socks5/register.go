@@ -13,8 +13,8 @@ func init() {
 }
 
 func newDialer(cfg config.Config) (dialer.Dialer, error) {
-	if cfg.Proxy == nil {
-		return nil, fmt.Errorf("socks5 dialer requires proxy")
+	if cfg.Forward == nil {
+		return nil, fmt.Errorf("socks5 dialer requires forward")
 	}
 	return New(cfg)
 }

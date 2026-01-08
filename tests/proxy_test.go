@@ -222,6 +222,7 @@ func TestMultipleListeners(t *testing.T) {
 		Listeners: []endpoint.Endpoint{ep1, ep2},
 		Forward:   &forwardEP,
 		Logger:    logging.New(logging.Options{Level: logging.LevelOff}),
+		Mode:      config.ModePortForward,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

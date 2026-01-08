@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -55,10 +56,15 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	port := c.cfg.Listen.Port
 
+	network := "tcp"
+	if c.cfg.Listen.Scheme == "udp" {
+		network = "udp"
+	}
+
 	backoff := time.Second * 2
 	for ctx.Err() == nil {
 		start := time.Now()
-		if err := c.connectOnce(ctx, host, port, target); err != nil && ctx.Err() == nil {
+		if err := c.connectOnce(ctx, network, host, port, target); err != nil && ctx.Err() == nil {
 			if time.Since(start) > 5*time.Second {
 				backoff = time.Second * 2
 			}
@@ -76,7 +82,7 @@ func (c *Client) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (c *Client) connectOnce(ctx context.Context, bindHost string, bindPort int, target string) error {
+func (c *Client) connectOnce(ctx context.Context, network, bindHost string, bindPort int, target string) error {
 	if c.cfg.Forward == nil {
 		return fmt.Errorf("reverse client: forward endpoint is required")
 	}
@@ -89,52 +95,69 @@ func (c *Client) connectOnce(ctx context.Context, bindHost string, bindPort int,
 	c.log.Info("Reverse client connected to %s", forward.Address())
 
 	user, pass, _ := forward.UserPass()
-	if err := rproto.Socks5ClientBind(conn, user, pass, bindHost, bindPort); err != nil {
+
+	isUDP := (network == "udp")
+	if err := rproto.Socks5ClientBind(conn, user, pass, bindHost, bindPort, isUDP); err != nil {
 		conn.Close()
 		return fmt.Errorf("socks5 bind: %w", err)
 	}
 
-	session, err := yamux.Server(conn, nil)
+	conf := yamux.DefaultConfig()
+	conf.KeepAliveInterval = 10 * time.Second
+	conf.LogOutput = nil // Clear default LogOutput to allow setting Logger
+	conf.Logger = log.New(c.log.Writer(logging.LevelDebug), "[yamux] ", 0)
+
+	session, err := yamux.Server(conn, conf)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("yamux server: %w", err)
 	}
 	defer session.Close()
 
-	c.log.Info("Reverse client tunnel ready: remote %s exposes %s", forward.Address(), net.JoinHostPort(bindHost, fmt.Sprintf("%d", bindPort)))
+	c.log.Info("Reverse client tunnel ready: remote %s exposes %s (%s)", forward.Address(), net.JoinHostPort(bindHost, fmt.Sprintf("%d", bindPort)), network)
 
 	for {
 		stream, err := session.Accept()
 		if err != nil {
 			return err
 		}
-		go c.handleStream(ctx, stream, target)
+		go c.handleStream(ctx, stream, network, target)
 	}
 }
 
-func (c *Client) handleStream(ctx context.Context, stream net.Conn, target string) {
+func (c *Client) handleStream(ctx context.Context, stream net.Conn, network, target string) {
 	defer stream.Close()
 
 	src := stream.RemoteAddr().String()
-	c.log.Debug("Reverse TCP Received connection from %s", src)
+	c.log.Info("Forward Reverse Client Received connection %s --> %s", src, target)
+	c.log.Debug("Reverse %s Received connection from %s", network, src)
 
 	localDialer := dialer.NewDirect(c.cfg)
 
-	c.log.Debug("Reverse TCP Dialing upstream %s for client %s", target, src)
-	out, err := localDialer.DialContext(ctx, "tcp", target)
+	c.log.Debug("Reverse %s Dialing upstream %s for client %s", network, target, src)
+	out, err := localDialer.DialContext(ctx, network, target)
 	if err != nil {
 		c.log.Error("Reverse client dial local %s error: %v", target, err)
 		return
 	}
 	defer out.Close()
 
-	c.log.Debug("Reverse TCP Connected to upstream %s --> %s", src, target)
+	c.log.Debug("Reverse %s Connected to upstream %s --> %s", network, src, target)
 
-	bytes, dur, err := inet.Bidirectional(ctx, stream, out)
+	var bytes int64
+	var dur time.Duration
+
+	if network == "udp" {
+		ps := inet.NewPacketStream(stream)
+		bytes, dur, err = inet.Bidirectional(ctx, out, ps)
+	} else {
+		bytes, dur, err = inet.Bidirectional(ctx, stream, out)
+	}
+
 	if err != nil && ctx.Err() == nil {
 		c.log.Error("Reverse client transfer error: %v", err)
 	}
-	c.log.Debug("Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", src, target, bytes, dur)
+	c.log.Debug("Reverse %s Closed connection %s --> %s transferred %d bytes in %s", network, src, target, bytes, dur)
 }
 
 func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn, error) {

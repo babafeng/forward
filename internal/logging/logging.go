@@ -143,3 +143,18 @@ func (l *Logger) printf(msgLevel Level, isErr bool, format string, args ...any) 
 	}
 	l.out.Printf(newFormat, args...)
 }
+
+type logWriter struct {
+	l     *Logger
+	level Level
+}
+
+func (w *logWriter) Write(p []byte) (n int, err error) {
+	msg := strings.TrimSpace(string(p))
+	w.l.printf(w.level, w.level >= LevelError, "%s", msg)
+	return len(p), nil
+}
+
+func (l *Logger) Writer(level Level) io.Writer {
+	return &logWriter{l: l, level: level}
+}

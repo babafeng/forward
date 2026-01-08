@@ -21,12 +21,12 @@ type Dialer struct {
 }
 
 func New(cfg config.Config) (dialer.Dialer, error) {
-	p := cfg.Proxy
+	forward := cfg.Forward
 
 	base := dialer.NewDirect(cfg)
 
-	tlsCfg, err := ctls.ClientConfig(*p, cfg.Insecure, ctls.ClientOptions{
-		ServerName: p.Host,
+	tlsCfg, err := ctls.ClientConfig(*forward, cfg.Insecure, ctls.ClientOptions{
+		ServerName: forward.Host,
 		NextProtos: []string{"h2", "http/1.1"},
 	})
 	if err != nil {
@@ -34,7 +34,7 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 	}
 
 	return &Dialer{
-		target:   p.Address(),
+		target:   forward.Address(),
 		tlsCfg:   tlsCfg,
 		timeout:  cfg.DialTimeout,
 		baseDial: base,

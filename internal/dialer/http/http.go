@@ -17,7 +17,7 @@ import (
 )
 
 type Dialer struct {
-	proxy   string
+	forward string
 	useTLS  bool
 	timeout time.Duration
 
@@ -26,27 +26,27 @@ type Dialer struct {
 }
 
 func New(cfg config.Config) (dialer.Dialer, error) {
-	p := cfg.Proxy
-	useTLS := strings.EqualFold(p.Scheme, "https")
+	forward := cfg.Forward
+	useTLS := strings.EqualFold(forward.Scheme, "https")
 
 	var tlsCfg *tls.Config
 	if useTLS {
 		tlsCfg = &tls.Config{
 			InsecureSkipVerify: cfg.Insecure,
 		}
-		if p.Host != "" {
-			tlsCfg.ServerName = p.Host
+		if forward.Host != "" {
+			tlsCfg.ServerName = forward.Host
 		}
 	}
 
 	var authHeader string
-	if user, pass, ok := p.UserPass(); ok {
+	if user, pass, ok := forward.UserPass(); ok {
 		creds := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
 		authHeader = "Proxy-Authorization: Basic " + creds + "\r\n"
 	}
 
 	return &Dialer{
-		proxy:      p.Address(),
+		forward:    forward.Address(),
 		useTLS:     useTLS,
 		timeout:    cfg.DialTimeout,
 		authHeader: authHeader,
@@ -56,7 +56,7 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if !strings.HasPrefix(network, "tcp") {
-		return nil, fmt.Errorf("http proxy supports tcp only")
+		return nil, fmt.Errorf("http forward supports tcp only")
 	}
 
 	var base net.Conn
@@ -68,7 +68,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 
 	if d.useTLS {
 		// Use DialContext + HandshakeContext to support cancellation
-		base, err = nd.DialContext(ctx, "tcp", d.proxy)
+		base, err = nd.DialContext(ctx, "tcp", d.forward)
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +79,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		}
 		base = tlsConn
 	} else {
-		base, err = nd.DialContext(ctx, "tcp", d.proxy)
+		base, err = nd.DialContext(ctx, "tcp", d.forward)
 	}
 	if err != nil {
 		return nil, err
