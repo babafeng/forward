@@ -39,24 +39,28 @@ func TestHandler_Camouflage(t *testing.T) {
 		target         string // Request URI
 		header         http.Header
 		expectedStatus int
+		expectedTitle  string
 	}{
 		{
 			name:           "Probe GET /",
 			method:         "GET",
 			target:         "/",
 			expectedStatus: http.StatusForbidden,
+			expectedTitle:  "403 Forbidden",
 		},
 		{
 			name:           "Probe HEAD /",
 			method:         "HEAD",
 			target:         "/",
 			expectedStatus: http.StatusForbidden,
+			expectedTitle:  "403 Forbidden",
 		},
 		{
 			name:           "Probe POST /",
 			method:         "POST",
 			target:         "/",
 			expectedStatus: http.StatusForbidden,
+			expectedTitle:  "403 Forbidden",
 		},
 		{
 			name:           "Probe GET / (Origin Form)",
@@ -64,18 +68,21 @@ func TestHandler_Camouflage(t *testing.T) {
 			target:         "http://127.0.0.1:8080/",
 			header:         nil,
 			expectedStatus: http.StatusForbidden,
+			expectedTitle:  "403 Forbidden",
 		},
 		{
 			name:           "Proxy Request (Absolute URI)",
 			method:         "GET",
 			target:         "http://example.com/",
-			expectedStatus: http.StatusBadGateway, // Dial fails (mock)
+			expectedStatus: http.StatusForbidden, // Dial fails (mock) -> 403
+			expectedTitle:  "mock dial error",
 		},
 		{
 			name:           "CONNECT Request",
 			method:         "CONNECT",
 			target:         "example.com:443",
-			expectedStatus: http.StatusBadGateway, // Dial fails (mock)
+			expectedStatus: http.StatusForbidden, // Dial fails (mock) -> 403
+			expectedTitle:  "mock dial error",
 		},
 	}
 
@@ -84,7 +91,7 @@ func TestHandler_Camouflage(t *testing.T) {
 			r := httptest.NewRequest(tt.method, tt.target, nil)
 			w := httptest.NewRecorder()
 
-			if tt.expectedStatus == http.StatusForbidden {
+			if tt.expectedTitle == "403 Forbidden" {
 				r.URL.Scheme = ""
 				r.URL.Host = ""
 				r.RequestURI = tt.target
@@ -101,9 +108,8 @@ func TestHandler_Camouflage(t *testing.T) {
 			}
 			if w.Code == http.StatusForbidden {
 				body := w.Body.String()
-				expectedTitle := "403 Forbidden"
-				if !strings.Contains(body, "<html>") || !strings.Contains(body, "<title>"+expectedTitle+"</title>") {
-					t.Errorf("expected HTML body with title '%s', got '%s'", expectedTitle, body)
+				if !strings.Contains(body, "<html>") || !strings.Contains(body, tt.expectedTitle) {
+					t.Errorf("expected HTML body with title/content '%s', got '%s'", tt.expectedTitle, body)
 				}
 				if !strings.Contains(body, "<center>nginx</center>") {
 					t.Errorf("expected nginx signature in body, got '%s'", body)
@@ -154,14 +160,14 @@ func TestHandler_Camouflage_WithAuth(t *testing.T) {
 		t.Errorf("expected generic realm 'Authorization Required', got '%s'", authHeader)
 	}
 
-	// 3. Normal Proxy Request WITH Auth -> BadGateway (Mock Dial)
+	// 3. Normal Proxy Request WITH Auth -> Forbidden (Mock Dial failure treated as Forbidden)
 	req3 := httptest.NewRequest("GET", "http://example.com/", nil)
 	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 	req3.Header.Set("Proxy-Authorization", auth)
 	w3 := httptest.NewRecorder()
 	h.ServeHTTP(w3, req3)
 
-	if w3.Code != http.StatusBadGateway {
-		t.Errorf("Proxy with auth enabled (valid creds): expected 502 (Mock Error), got %d", w3.Code)
+	if w3.Code != http.StatusForbidden {
+		t.Errorf("Proxy with auth enabled (valid creds): expected 403 (Mock Dial Error), got %d", w3.Code)
 	}
 }

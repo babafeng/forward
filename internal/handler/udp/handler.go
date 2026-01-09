@@ -13,6 +13,7 @@ import (
 	"forward/internal/dialer"
 	"forward/internal/logging"
 	"forward/internal/pool"
+	"forward/internal/utils"
 )
 
 type Handler struct {
@@ -52,7 +53,7 @@ func (h *Handler) Handle(ctx context.Context, conn *net.UDPConn, pkt []byte, src
 
 	_ = s.upstream.SetWriteDeadline(time.Now().Add(1 * time.Second))
 	if _, err := s.upstream.Write(pkt); err != nil {
-		h.log.Error("Forward udp error: write upstream: %v", err)
+		h.log.Error("[%s] Forward UDP error: write upstream: %v", s.cid, err)
 		s.close()
 	}
 	_ = s.upstream.SetWriteDeadline(time.Time{})
@@ -85,15 +86,17 @@ func (h *Handler) getOrCreateSession(ctx context.Context, lconn *net.UDPConn, sr
 		}
 		h.mu.Unlock()
 
-		h.log.Info("Forward UDP Received connection %s --> %s", key, h.target)
+		cid := utils.NewID()
+		h.log.Info("[%s] Forward UDP Received connection %s --> %s", cid, key, h.target)
 		up, err := h.dialer.DialContext(ctx, "udp", h.target)
 		if err != nil {
-			h.log.Error("Forward UDP error: dial %s: %v", h.target, err)
+			h.log.Error("[%s] Forward UDP error: dial %s: %v", cid, h.target, err)
 			return nil, err
 		}
-		h.log.Debug("Forward UDP Connected to upstream %s --> %s", key, h.target)
+		h.log.Debug("[%s] Forward UDP Connected to upstream %s --> %s", cid, key, h.target)
 
 		s := &session{
+			cid:      cid,
 			h:        h,
 			key:      key,
 			src:      cloneUDPAddr(src),
@@ -139,6 +142,7 @@ func (h *Handler) closeAll() {
 }
 
 type session struct {
+	cid string
 	h   *Handler
 	key string
 
@@ -182,7 +186,7 @@ func (s *session) run() {
 			continue
 		}
 
-		s.h.log.Debug("Forward UDP Received %d bytes from upstream for %s", n, s.src.String())
+		s.h.log.Debug("[%s] Forward UDP Received %d bytes from upstream for %s", s.cid, n, s.src.String())
 
 		s.touch()
 		s.bytesOut.Add(int64(n))
@@ -207,7 +211,7 @@ func (s *session) close() {
 
 		total := s.bytesIn.Load() + s.bytesOut.Load()
 		dur := time.Since(s.start)
-		s.h.log.Debug("Forward UDP Closed connection %s --> %s transferred %d bytes in %s", s.src.String(), s.h.target, total, dur)
+		s.h.log.Debug("[%s] Forward UDP Closed connection %s --> %s transferred %d bytes in %s", s.cid, s.src.String(), s.h.target, total, dur)
 	})
 }
 

@@ -12,12 +12,18 @@ const (
 	DefaultDialKeepAlive  = 30 * time.Second
 	DefaultUDPIdleTimeout = 2 * time.Minute
 	DefaultReadDeadline   = 1 * time.Second
+	DefaultReadHeaderTimeout = 10 * time.Second
 
 	DefaultBufferSize = 64 * 1024 // 64KB
 	DefaultCopyBuffer = 32 * 1024 // 32KB
 
-	DefaultInitialBackoff = 2 * time.Second
-	DefaultMaxBackoff     = 30 * time.Second
+	DefaultMaxHeaderBytes = 1 << 20
+
+	DefaultInitialBackoff   = 2 * time.Second
+	DefaultMaxBackoff       = 30 * time.Second
+	DefaultHandshakeTimeout = 5 * time.Second
+	DefaultMaxConnections   = 4096
+	DefaultMaxUDPSessions   = 1024
 
 	CamouflageRealm     = `Authorization Required`
 	CamouflagePageTitle = "403 Forbidden"
@@ -60,7 +66,6 @@ type Config struct {
 	Listeners []endpoint.Endpoint
 	LogLevel  logging.Level
 
-	Proxy   *endpoint.Endpoint
 	Forward *endpoint.Endpoint
 
 	Logger *logging.Logger
@@ -68,6 +73,8 @@ type Config struct {
 	UDPIdleTimeout time.Duration
 	DialTimeout    time.Duration
 	DialKeepAlive  time.Duration
+	ReadHeaderTimeout time.Duration
+	MaxHeaderBytes    int
 
 	Mode RunMode
 

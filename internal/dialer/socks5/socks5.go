@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"forward/internal/config"
+	"forward/internal/dialer"
 	"forward/internal/endpoint"
 	socks5util "forward/internal/utils/socks5"
 )
@@ -28,27 +29,29 @@ const (
 )
 
 type Dialer struct {
-	proxy endpoint.Endpoint
+	forward endpoint.Endpoint
 
 	username string
 	password string
 
 	// Timeout is used when ctx has no deadline.
 	Timeout time.Duration
+	base    dialer.Dialer
 }
 
 func New(cfg config.Config) (*Dialer, error) {
-	proxy := *cfg.Proxy
-	scheme := strings.ToLower(proxy.Scheme)
+	forward := *cfg.Forward
+	scheme := strings.ToLower(forward.Scheme)
 	if scheme != "socks5" && scheme != "socks5h" {
-		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxy.Scheme)
+		return nil, fmt.Errorf("unsupported forward scheme: %s", forward.Scheme)
 	}
-	user, pass, _ := proxy.UserPass()
+	user, pass, _ := forward.UserPass()
 	return &Dialer{
-		proxy:    proxy,
+		forward:  forward,
 		username: user,
 		password: pass,
 		Timeout:  cfg.DialTimeout,
+		base:     dialer.NewDirect(cfg),
 	}, nil
 }
 
@@ -65,7 +68,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 }
 
 func (d *Dialer) dialTCP(ctx context.Context, target string) (net.Conn, error) {
-	tcpConn, err := d.dialProxyTCP(ctx)
+	tcpConn, err := d.dialForwardTCP(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -90,11 +93,8 @@ func (d *Dialer) dialTCP(ctx context.Context, target string) (net.Conn, error) {
 	return tcpConn, nil
 }
 
-func (d *Dialer) dialProxyTCP(ctx context.Context) (net.Conn, error) {
-	var nd net.Dialer
-	nd.Timeout = d.Timeout
-	nd.KeepAlive = 30 * time.Second
-	return nd.DialContext(ctx, "tcp", d.proxy.Address())
+func (d *Dialer) dialForwardTCP(ctx context.Context) (net.Conn, error) {
+	return d.base.DialContext(ctx, "tcp", d.forward.Address())
 }
 
 func (d *Dialer) handshake(ctx context.Context, conn net.Conn) error {
@@ -337,7 +337,7 @@ type UDPConn struct {
 }
 
 func (d *Dialer) dialUDP(ctx context.Context, target string) (net.Conn, error) {
-	control, err := d.dialProxyTCP(ctx)
+	control, err := d.dialForwardTCP(ctx)
 	if err != nil {
 		return nil, err
 	}

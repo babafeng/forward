@@ -15,10 +15,11 @@ const (
 	socksMethodNoAuth   = 0x00
 	socksMethodUserPass = 0x02
 
-	socksCmdBind = 0x02
+	socksCmdBind         = 0x02
+	socksCmdUDPAssociate = 0x03
 )
 
-func Socks5ClientBind(conn net.Conn, user, pass, bindHost string, bindPort int) error {
+func Socks5ClientBind(conn net.Conn, user, pass, bindHost string, bindPort int, udp bool) error {
 	bw := bufio.NewWriter(conn)
 	br := bufio.NewReader(conn)
 
@@ -56,8 +57,14 @@ func Socks5ClientBind(conn net.Conn, user, pass, bindHost string, bindPort int) 
 	if err != nil {
 		return err
 	}
+
+	cmd := byte(socksCmdBind)
+	if udp {
+		cmd = socksCmdUDPAssociate
+	}
+
 	req := make([]byte, 0, 3+len(addr))
-	req = append(req, socksVer5, socksCmdBind, 0x00)
+	req = append(req, socksVer5, cmd, 0x00)
 	req = append(req, addr...)
 	if _, err := bw.Write(req); err != nil {
 		return err
@@ -82,18 +89,18 @@ func Socks5ClientBind(conn net.Conn, user, pass, bindHost string, bindPort int) 
 	return err
 }
 
-func Socks5ServerBind(br *bufio.Reader, bw *bufio.Writer, userPassCheck func(u, p string) bool) (bindHost string, bindPort int, err error) {
+func Socks5ServerBind(br *bufio.Reader, bw *bufio.Writer, userPassCheck func(u, p string) bool) (bindHost string, bindPort int, isUDP bool, err error) {
 	head := make([]byte, 2)
 	if _, err = io.ReadFull(br, head); err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 	if head[0] != socksVer5 {
-		return "", 0, fmt.Errorf("socks5: bad version %d", head[0])
+		return "", 0, false, fmt.Errorf("socks5: bad version %d", head[0])
 	}
 	nmethods := int(head[1])
 	methods := make([]byte, nmethods)
 	if _, err = io.ReadFull(br, methods); err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 
 	wantAuth := userPassCheck != nil
@@ -103,45 +110,48 @@ func Socks5ServerBind(br *bufio.Reader, bw *bufio.Writer, userPassCheck func(u, 
 	}
 	if !socks5util.Contains(methods, method) {
 		if _, err := bw.Write([]byte{socksVer5, 0xFF}); err != nil {
-			return "", 0, fmt.Errorf("write reject: %w", err)
+			return "", 0, false, fmt.Errorf("write reject: %w", err)
 		}
 		if err := bw.Flush(); err != nil {
-			return "", 0, fmt.Errorf("flush reject: %w", err)
+			return "", 0, false, fmt.Errorf("flush reject: %w", err)
 		}
-		return "", 0, fmt.Errorf("socks5: required auth method not offered")
+		return "", 0, false, fmt.Errorf("socks5: required auth method not offered")
 	}
 	if _, err := bw.Write([]byte{socksVer5, method}); err != nil {
-		return "", 0, fmt.Errorf("write method: %w", err)
+		return "", 0, false, fmt.Errorf("write method: %w", err)
 	}
 	if err := bw.Flush(); err != nil {
-		return "", 0, fmt.Errorf("flush method: %w", err)
+		return "", 0, false, fmt.Errorf("flush method: %w", err)
 	}
 
 	if method == socksMethodUserPass {
 		if err = readUserPassAuth(br, bw, userPassCheck); err != nil {
-			return "", 0, err
+			return "", 0, false, err
 		}
 	}
 
 	reqHead := make([]byte, 4)
 	if _, err = io.ReadFull(br, reqHead); err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
-	if reqHead[0] != socksVer5 || reqHead[1] != socksCmdBind {
-		return "", 0, fmt.Errorf("socks5: unsupported cmd 0x%02x", reqHead[1])
+
+	cmd := reqHead[1]
+	if cmd != socksCmdBind && cmd != socksCmdUDPAssociate {
+		return "", 0, false, fmt.Errorf("socks5: unsupported cmd 0x%02x", cmd)
 	}
+	isUDP = (cmd == socksCmdUDPAssociate)
 
 	host, port, err := socks5util.ReadAddr(br, reqHead[3])
 	if err != nil {
-		return "", 0, err
+		return "", 0, false, err
 	}
 	if host == "" {
 		host = "0.0.0.0"
 	}
 	if port == 0 {
-		return "", 0, fmt.Errorf("socks5: invalid bind port 0")
+		return "", 0, false, fmt.Errorf("socks5: invalid bind port 0")
 	}
-	return host, port, nil
+	return host, port, isUDP, nil
 }
 
 func WriteBindSuccess(bw *bufio.Writer, host string, port int) error {
