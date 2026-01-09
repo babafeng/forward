@@ -264,7 +264,7 @@ func parseConfigFile(path string, isVersion bool) (config.Config, error) {
 
 func isProxyServer(cfg config.Config) bool {
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h":
+	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h", "vless", "vless+reality":
 		return true
 	default:
 		return false
@@ -293,7 +293,7 @@ func isPortForward(cfg config.Config) bool {
 func isReverseForwardServer(cfg config.Config) bool {
 	// remote server: -L tls://user:pass@0.0.0.0:443?bind=true or -L tls://user:pass@:443?bind=true
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "tls", "http3", "https", "quic":
+	case "tls", "http3", "https", "quic", "vless", "vless+reality":
 		return cfg.Listen.Query.Get("bind") == "true"
 	default:
 		return false
