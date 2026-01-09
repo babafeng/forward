@@ -212,13 +212,15 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Insecure = *insecure
 	cfg.DialTimeout = 10 * time.Second
 	cfg.DialKeepAlive = 30 * time.Second
+	cfg.ReadHeaderTimeout = config.DefaultReadHeaderTimeout
+	cfg.MaxHeaderBytes = config.DefaultMaxHeaderBytes
 
 	return cfg, nil
 }
 
 func isProxyServer(cfg config.Config) bool {
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "http", "https", "http3", "socks5", "tls", "quic":
+	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h":
 		return true
 	default:
 		return false

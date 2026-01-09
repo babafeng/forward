@@ -112,7 +112,9 @@ func loadCA(caFile string) (*x509.CertPool, error) {
 		return nil, err
 	}
 	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(caCert)
+	if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+		return nil, fmt.Errorf("invalid CA pem")
+	}
 	return caCertPool, nil
 }
 
