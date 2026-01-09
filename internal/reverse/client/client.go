@@ -116,9 +116,23 @@ func (c *Client) connectOnce(ctx context.Context, network, bindHost string, bind
 
 	c.log.Info("Reverse client tunnel ready: remote %s exposes %s (%s)", forward.Address(), net.JoinHostPort(bindHost, fmt.Sprintf("%d", bindPort)), network)
 
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			session.Close()
+			conn.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	for {
 		stream, err := session.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 		go c.handleStream(ctx, stream, network, target)
@@ -162,7 +176,7 @@ func (c *Client) handleStream(ctx context.Context, stream net.Conn, network, tar
 
 func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn, error) {
 	switch ep.Scheme {
-	case "tls":
+	case "tls", "https":
 		tlsCfg, err := ctls.ClientConfig(ep, c.cfg.Insecure, ctls.ClientOptions{
 			NextProtos: []string{"h2", "http/1.1"},
 		})

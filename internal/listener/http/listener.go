@@ -27,6 +27,8 @@ type Listener struct {
 	log         *logging.Logger
 	forwardDesc string
 	tlsConfig   *tls.Config
+	readHeaderTimeout time.Duration
+	maxHeaderBytes    int
 }
 
 func New(cfg config.Config, h Handler) *Listener {
@@ -38,6 +40,14 @@ func NewWithTLS(cfg config.Config, h Handler, tlsCfg *tls.Config) *Listener {
 	if cfg.Forward != nil && cfg.Mode != config.ModePortForward {
 		forward = cfg.Forward.Address()
 	}
+	readHeaderTimeout := cfg.ReadHeaderTimeout
+	if readHeaderTimeout <= 0 {
+		readHeaderTimeout = config.DefaultReadHeaderTimeout
+	}
+	maxHeaderBytes := cfg.MaxHeaderBytes
+	if maxHeaderBytes <= 0 {
+		maxHeaderBytes = config.DefaultMaxHeaderBytes
+	}
 	return &Listener{
 		addr:        cfg.Listen.Address(),
 		scheme:      cfg.Listen.Scheme,
@@ -45,6 +55,8 @@ func NewWithTLS(cfg config.Config, h Handler, tlsCfg *tls.Config) *Listener {
 		log:         cfg.Logger,
 		forwardDesc: forward,
 		tlsConfig:   tlsCfg,
+		readHeaderTimeout: readHeaderTimeout,
+		maxHeaderBytes:    maxHeaderBytes,
 	}
 }
 
@@ -64,6 +76,8 @@ func (l *Listener) Run(ctx context.Context) error {
 		TLSConfig:    l.tlsConfig,
 		ErrorLog:     stdlog.New(&httpErrorLogWriter{log: l.log}, "", 0),
 		BaseContext:  func(net.Listener) context.Context { return ctx },
+		ReadHeaderTimeout: l.readHeaderTimeout,
+		MaxHeaderBytes:    l.maxHeaderBytes,
 		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,

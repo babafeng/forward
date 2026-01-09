@@ -1,12 +1,12 @@
 # forward
 
-forward is a security & lightweight & high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, TLS) with protocol sniffing on the same port.
+forward is a security & lightweight & high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, TLS).
 
 ## Features
 
 * **Port Forwarding**: TCP/UDP forwarding with support for proxy chains.
 * **Intranet Penetration (Reverse Proxy)**: Expose local services to the internet via a reverse tunnel.
-* **Proxy Server**: HTTP/SOCKS5/TLS proxy server with protocol sniffing (multiplexing on same port).
+* **Proxy Server**: HTTP/SOCKS5/TLS proxy server.
 * **Multiplexing**: Uses Yamux for TCP and QUIC for UDP (planned) to improve performance.
 
 ## Installation

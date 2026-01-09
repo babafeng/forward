@@ -29,6 +29,7 @@ type Handler struct {
 	auth        auth.Authenticator
 	requireAuth bool
 	insecureTLS bool
+	transparent bool
 
 	transportOnce sync.Once
 	transport     *stdhttp.Transport
@@ -42,6 +43,7 @@ func New(cfg config.Config, d dialer.Dialer) *Handler {
 		auth:        auth.FromUserPass(user, pass),
 		requireAuth: ok,
 		insecureTLS: cfg.Insecure,
+		transparent: strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
 	}
 }
 
@@ -68,7 +70,7 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	cid := utils.NewID()
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
-		if !r.URL.IsAbs() && r.URL.Path == "/" {
+		if !r.URL.IsAbs() && !h.transparent {
 			writeSimple(w, stdhttp.StatusForbidden, "403 Forbidden")
 			return
 		}
@@ -118,7 +120,7 @@ func (h *Handler) handleConnect(cid string, w stdhttp.ResponseWriter, r *stdhttp
 		} else {
 			h.log.Error("[%s] Forward HTTP connect dial error: %v", cid, err)
 		}
-		writeSimple(w, stdhttp.StatusForbidden, err.Error())
+		writeSimple(w, stdhttp.StatusForbidden, "403 Forbidden")
 		return
 	}
 
@@ -197,11 +199,19 @@ func (h *Handler) prepareUpstreamRequest(ctx context.Context, r *stdhttp.Request
 	req := r.Clone(ctx)
 	req.RequestURI = ""
 
-	if req.URL.Scheme == "" {
+	if !req.URL.IsAbs() {
+		if !h.transparent {
+			return nil, fmt.Errorf("absolute-form required")
+		}
+		if req.Host == "" {
+			return nil, fmt.Errorf("missing host")
+		}
 		req.URL.Scheme = "http"
+		req.URL.Host = req.Host
+		return req, nil
 	}
 	if req.URL.Host == "" {
-		req.URL.Host = r.Host
+		return nil, fmt.Errorf("missing host")
 	}
 	return req, nil
 }
@@ -331,7 +341,32 @@ func writeSimple(w stdhttp.ResponseWriter, status int, title string) {
 }
 
 func copyHeaders(dst, src stdhttp.Header) {
+	hopByHop := map[string]struct{}{
+		"Connection":          {},
+		"Keep-Alive":          {},
+		"Proxy-Authenticate":  {},
+		"Proxy-Authorization": {},
+		"Te":                  {},
+		"Trailers":            {},
+		"Transfer-Encoding":   {},
+		"Upgrade":             {},
+		"Proxy-Connection":    {},
+	}
+	connectionTokens := map[string]struct{}{}
+	if c := src.Get("Connection"); c != "" {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				connectionTokens[stdhttp.CanonicalHeaderKey(f)] = struct{}{}
+			}
+		}
+	}
 	for k, vv := range src {
+		if _, skip := hopByHop[k]; skip {
+			continue
+		}
+		if _, skip := connectionTokens[k]; skip {
+			continue
+		}
 		for _, v := range vv {
 			dst.Add(k, v)
 		}
