@@ -58,7 +58,7 @@ type Direct struct {
 	d net.Dialer
 }
 
-func NewDirect(cfg config.Config) *Direct {
+func NewNetDialer(cfg config.Config) *net.Dialer {
 	timeout := cfg.DialTimeout
 	if timeout == 0 {
 		timeout = 10 * time.Second
@@ -67,11 +67,15 @@ func NewDirect(cfg config.Config) *Direct {
 	if keepAlive == 0 {
 		keepAlive = 30 * time.Second
 	}
+	return &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: keepAlive,
+	}
+}
+
+func NewDirect(cfg config.Config) *Direct {
 	return &Direct{
-		d: net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: keepAlive,
-		},
+		d: *NewNetDialer(cfg),
 	}
 }
 

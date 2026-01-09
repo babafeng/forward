@@ -169,7 +169,9 @@ func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn
 		if err != nil {
 			return nil, err
 		}
-		return tls.DialWithDialer(&net.Dialer{Timeout: c.cfg.DialTimeout}, "tcp", ep.Address(), tlsCfg)
+
+		baseDial := dialer.NewNetDialer(c.cfg)
+		return tls.DialWithDialer(baseDial, "tcp", ep.Address(), tlsCfg)
 	case "tcp":
 		return c.serverDial.DialContext(ctx, "tcp", ep.Address())
 	case "quic", "http3":

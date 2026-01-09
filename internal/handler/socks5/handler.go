@@ -64,6 +64,8 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 
 	h.log.Debug("[%s] Forward SOCKS5 Received connection from %s", cid, conn.RemoteAddr())
 
+	_ = conn.SetReadDeadline(time.Now().Add(config.DefaultHandshakeTimeout))
+
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
 
@@ -201,6 +203,8 @@ func (h *Handler) readRequest(cid string, br *bufio.Reader, bw *bufio.Writer) (b
 }
 
 func (h *Handler) handleConnect(ctx context.Context, cid string, conn net.Conn, bw *bufio.Writer, dest string) {
+	_ = conn.SetReadDeadline(time.Time{})
+
 	h.log.Info("[%s] Forward SOCKS5 Received connection %s --> %s", cid, conn.RemoteAddr(), dest)
 	up, err := h.dialer.DialContext(ctx, "tcp", dest)
 	if err != nil {
@@ -223,6 +227,8 @@ func (h *Handler) handleConnect(ctx context.Context, cid string, conn net.Conn, 
 }
 
 func (h *Handler) handleUDP(ctx context.Context, cid string, conn net.Conn, bw *bufio.Writer) {
+	_ = conn.SetReadDeadline(time.Time{})
+
 	laddr := conn.LocalAddr()
 	var ip net.IP
 	if ta, ok := laddr.(*net.TCPAddr); ok && ta != nil {

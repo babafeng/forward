@@ -91,6 +91,45 @@ install_forward() {
     echo "Downloading forward version $version..."
     curl -fsSL -o "$_forward_tmpdir/$asset" "$download_url"
 
+    echo "Verifying checksums..."
+    local checksum_asset="checksums.txt"
+    local checksum_url
+    checksum_url="$(curl -fsSL "$base_url/tags/$version" | \
+        grep -Eo "\"browser_download_url\": \"[^\"]*${checksum_asset}\"" | \
+        awk -F'\"' '{print $4}' | head -n 1)"
+
+    if [[ -z "$checksum_url" ]]; then
+         echo "Warning: checksums.txt not found in release assets. Skipping verification."
+         echo "SECURITY NOTICE: The downloaded binary is not verified! Proceed at your own risk."
+    else
+         curl -fsSL -o "$_forward_tmpdir/$checksum_asset" "$checksum_url"
+         
+         (
+             cd "$_forward_tmpdir"
+             local verified=0
+             if command -v sha256sum >/dev/null 2>&1; then
+                 if sha256sum -c --ignore-missing "$checksum_asset" 2>/dev/null | grep -q ": OK"; then
+                    verified=1
+                 fi
+             elif command -v shasum >/dev/null 2>&1; then
+                 if shasum -a 256 -c "$checksum_asset" 2>/dev/null | grep -q ": OK"; then
+                    verified=1
+                 fi
+             else
+                 echo "Warning: neither sha256sum nor shasum found. Skipping verification."
+                 echo "SECURITY NOTICE: The downloaded binary is not verified!"
+                 # Return success to continue, relying on missing tools warning
+                 return 0
+             fi
+
+             if [[ $verified -eq 0 ]]; then
+                 echo "Checksum verification FAILED! The downloaded file may be corrupted or tampered with."
+                 exit 1
+             fi
+             echo "Checksum verified successfully."
+         )
+    fi
+
     echo "Installing forward version $version..."
     if [[ "$archive_ext" == "tar.gz" ]]; then
         require_cmd tar

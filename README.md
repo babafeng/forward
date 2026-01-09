@@ -58,7 +58,7 @@ You can set cert for tls category service.
 forward -L "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
 
 # And client, If self-signed cert, set ca option
-forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer"
+forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer&sni=your.server.com"
 ```
 
 ## Usage
@@ -79,25 +79,20 @@ forward -L udp://:5353/8.8.8.8:53
 forward -L udp://:5353 -F udp://8.8.8.8:53
 ```
 
-Advanced usage
-
-```bash
-# —L forward tcp/udp port
-# -x specify proxy to use, proxy protocols supported: socks5, tls, quic
-# quic      - only UDP
-# socks5    - TCP and UDP
-# tls - only TCP
-forward -L tcp://:8080/1.2.3.4:80 -x tls://proxy.com:1080
-```
-
-8080 --> proxy.com:1080(tls) --> 1.2.3.4:80
-
 ### Proxy Server
 
 Start a proxy server supporting http / socks5 / https / quic / tls
 
 ```bash
 forward -L http://:1080
+```
+
+Advanced usage
+
+```bash
+# —L forward tcp/udp port
+# -F forward to remote host
+forward -L http://:1080 -F tls://user:pass@your.server.com:443
 ```
 
 ### Intranet Reverse Proxy
@@ -107,7 +102,7 @@ forward -L http://:1080
 Start a reverse proxy server listening on port 2333.
 
 ```bash
-# support all proxy schemes, but recommend using secure ones below: tls / quic
+# support all proxy schemes, but recommend using secure ones below: tls / quic / https
 forward -L tls://user:passwd@:2333?bind=true
 ```
 

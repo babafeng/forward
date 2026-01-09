@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -43,7 +44,8 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
 
-	// Check first byte for SOCKS5 (0x05) vs HTTP Probe
+	_ = conn.SetReadDeadline(time.Now().Add(config.DefaultHandshakeTimeout))
+
 	peek, err := br.Peek(1)
 	if err != nil {
 		s.log.Error("Reverse server peek error: %v", err)
@@ -127,6 +129,8 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 	conf.LogOutput = nil
 	conf.Logger = log.New(s.log.Writer(logging.LevelDebug), fmt.Sprintf("[yamux][%s] ", sid), 0)
 
+	_ = conn.SetReadDeadline(time.Time{})
+
 	session, err := yamux.Client(conn, conf)
 	if err != nil {
 		s.log.Error("[%s] Reverse server yamux error: %v", sid, err)
@@ -198,19 +202,43 @@ func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, cl
 
 func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, conn *net.UDPConn, sid string) {
 	type udpSession struct {
-		stream net.Conn
-		ps     *inet.PacketStream
+		stream   net.Conn
+		ps       *inet.PacketStream
+		lastSeen time.Time
 	}
 
 	activeSessions := make(map[string]*udpSession)
+	idleTimeout := s.cfg.UDPIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = config.DefaultUDPIdleTimeout
+	}
 
 	pkt := make([]byte, 64*1024)
 	bound := conn.LocalAddr().String()
 	tunnelRemote := session.RemoteAddr().String()
 
+	cleanupIdle := func() {
+		now := time.Now()
+		for k, sess := range activeSessions {
+			if now.Sub(sess.lastSeen) > idleTimeout {
+				_ = sess.stream.Close()
+				delete(activeSessions, k)
+				s.log.Debug("[%s] Reverse UDP session %s idle timeout", sid, k)
+			}
+		}
+	}
+
 	for {
+		_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 		n, src, err := conn.ReadFromUDP(pkt)
 		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				cleanupIdle()
+				continue
+			}
 			s.log.Error("[%s] Reverse UDP Read error: %v", sid, err)
 			return
 		}
@@ -218,6 +246,14 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 		srcKey := src.String()
 		sess, ok := activeSessions[srcKey]
 		if !ok {
+			if len(activeSessions) >= config.DefaultMaxUDPSessions {
+				cleanupIdle()
+				if len(activeSessions) >= config.DefaultMaxUDPSessions {
+					s.log.Warn("[%s] Reverse UDP max sessions reached, dropping packet from %s", sid, srcKey)
+					continue
+				}
+			}
+
 			s.log.Info("[%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, srcKey, bound, tunnelRemote)
 
 			stream, err := session.Open()
@@ -228,19 +264,19 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 
 			ps := inet.NewPacketStream(stream)
 			sess = &udpSession{
-				stream: stream,
-				ps:     ps,
+				stream:   stream,
+				ps:       ps,
+				lastSeen: time.Now(),
 			}
 			activeSessions[srcKey] = sess
 
-			// Start reading from stream and writing back to UDP
 			go func(uSess *udpSession, addr *net.UDPAddr) {
 				defer uSess.stream.Close()
 				buf := make([]byte, 64*1024)
 				for {
+					_ = uSess.stream.SetReadDeadline(time.Now().Add(idleTimeout))
 					n, err := uSess.ps.Read(buf)
 					if err != nil {
-						// Stream closed or error
 						return
 					}
 					if _, err := conn.WriteToUDP(buf[:n], addr); err != nil {
@@ -248,6 +284,8 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 					}
 				}
 			}(sess, src)
+		} else {
+			sess.lastSeen = time.Now()
 		}
 
 		if _, err := sess.ps.Write(pkt[:n]); err != nil {
