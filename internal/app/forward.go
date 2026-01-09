@@ -11,12 +11,14 @@ import (
 	_ "forward/internal/listener/socks5"
 	_ "forward/internal/listener/tcp"
 	_ "forward/internal/listener/udp"
+	_ "forward/internal/listener/vless"
 
 	_ "forward/internal/dialer/direct"
 	_ "forward/internal/dialer/http"
 	_ "forward/internal/dialer/quic"
 	_ "forward/internal/dialer/socks5"
 	_ "forward/internal/dialer/tls"
+	_ "forward/internal/dialer/vless"
 )
 
 func NewForwarder(cfg config.Config) (listener.Runner, error) {
