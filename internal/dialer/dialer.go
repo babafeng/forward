@@ -36,16 +36,20 @@ func Register(scheme string, f Factory) {
 }
 
 func New(cfg config.Config) (Dialer, error) {
-	if cfg.Proxy == nil {
+	if cfg.Mode == config.ModePortForward {
 		return NewDirect(cfg), nil
 	}
 
-	scheme := strings.ToLower(cfg.Proxy.Scheme)
+	if cfg.Forward == nil {
+		return NewDirect(cfg), nil
+	}
+
+	scheme := strings.ToLower(cfg.Forward.Scheme)
 	mu.RLock()
 	f, ok := factories[scheme]
 	mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("unsupported proxy scheme: %s", cfg.Proxy.Scheme)
+		return nil, fmt.Errorf("unsupported forward scheme: %s", cfg.Forward.Scheme)
 	}
 	return f(cfg)
 }
@@ -54,7 +58,7 @@ type Direct struct {
 	d net.Dialer
 }
 
-func NewDirect(cfg config.Config) *Direct {
+func NewNetDialer(cfg config.Config) *net.Dialer {
 	timeout := cfg.DialTimeout
 	if timeout == 0 {
 		timeout = 10 * time.Second
@@ -63,11 +67,15 @@ func NewDirect(cfg config.Config) *Direct {
 	if keepAlive == 0 {
 		keepAlive = 30 * time.Second
 	}
+	return &net.Dialer{
+		Timeout:   timeout,
+		KeepAlive: keepAlive,
+	}
+}
+
+func NewDirect(cfg config.Config) *Direct {
 	return &Direct{
-		d: net.Dialer{
-			Timeout:   timeout,
-			KeepAlive: keepAlive,
-		},
+		d: *NewNetDialer(cfg),
 	}
 }
 

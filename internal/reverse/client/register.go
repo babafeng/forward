@@ -27,7 +27,7 @@ func New(cfg config.Config) (Runner, error) {
 }
 
 func init() {
-	Register("tcp", func(cfg config.Config) (Runner, error) {
+	Register("https", func(cfg config.Config) (Runner, error) {
 		return NewRunner(cfg)
 	})
 	Register("tls", func(cfg config.Config) (Runner, error) {

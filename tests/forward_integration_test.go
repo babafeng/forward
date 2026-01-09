@@ -39,6 +39,7 @@ func TestTCPPortForwardEndToEnd(t *testing.T) {
 		Forward:  &forwardEP,
 		Logger:   testLogger(),
 		LogLevel: logging.LevelError,
+		Mode:     config.ModePortForward,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -114,6 +115,7 @@ func TestUDPPortForwardEndToEnd(t *testing.T) {
 		Logger:         testLogger(),
 		LogLevel:       logging.LevelError,
 		UDPIdleTimeout: time.Second,
+		Mode:           config.ModePortForward,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

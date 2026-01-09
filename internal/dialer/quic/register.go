@@ -12,8 +12,8 @@ func init() {
 }
 
 func newDialer(cfg config.Config) (dialer.Dialer, error) {
-	if cfg.Proxy == nil {
-		return nil, fmt.Errorf("quic dialer requires proxy")
+	if cfg.Forward == nil {
+		return nil, fmt.Errorf("quic dialer requires forward")
 	}
 	return New(cfg)
 }

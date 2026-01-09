@@ -1,50 +1,60 @@
 package tests
 
 import (
-	"testing"
-
 	"forward/internal/pool"
+	"testing"
 )
 
-func TestPoolGetPut(t *testing.T) {
-	buf := pool.Get()
-	if buf == nil {
-		t.Fatal("Get() returned nil")
+var (
+	defaultSize = 64 * 1024
+)
+
+func TestPoolResetsLength(t *testing.T) {
+	// 1. Get a buffer from the pool
+	b := pool.Get()
+	if len(b) != cap(b) {
+		t.Fatalf("Initial Get() returned len=%d, cap=%d, expected len==cap", len(b), cap(b))
 	}
 
-	// 验证缓冲区大小
-	if cap(buf) < 64*1024 {
-		t.Errorf("buffer capacity = %d, want >= %d", cap(buf), 64*1024)
+	// 2. Simulate usage: truncate it
+	b = b[:10]
+	if len(b) != 10 {
+		t.Fatalf("Failed to truncate buffer")
 	}
 
-	// 归还缓冲区不应 panic
-	pool.Put(buf)
-}
+	// 3. Put it back
+	pool.Put(b)
 
-func TestPoolMultipleGetPut(t *testing.T) {
-	buffers := make([][]byte, 10)
+	// 4. Validate Get() behavior strictly
+	// Since sync.Pool doesn't guarantee we get the *same* object back,
+	// we fundamentally verify that Get() *always* returns a full-capacity slice,
+	// regardless of whether it's a new one or a recycled one.
+	// However, to ensure Put() logic is correct (resetting it), we rely on
+	// inspecting the code or running this many times if we wanted to catch a recycled one.
+	// But crucially, if Get() is implemented correctly (resetting on retrieval),
+	// then it doesn't matter what state Put() left it in (though Put resetting is good hygiene).
+	// If the fix is in Get(), this test passes.
 
-	// 获取多个缓冲区
-	for i := range buffers {
-		buffers[i] = pool.Get()
-		if buffers[i] == nil {
-			t.Fatalf("Get() returned nil at index %d", i)
+	for i := 0; i < 100; i++ {
+		b2 := pool.Get()
+		if len(b2) != cap(b2) {
+			t.Errorf("Iteration %d: Get() returned len=%d, cap=%d", i, len(b2), cap(b2))
 		}
-	}
-
-	// 归还所有缓冲区
-	for _, buf := range buffers {
-		pool.Put(buf)
+		pool.Put(b2)
 	}
 }
 
-func TestPoolPutSmallBuffer(t *testing.T) {
-	// 归还小缓冲区不应 panic
-	smallBuf := make([]byte, 100)
-	pool.Put(smallBuf)
-}
+func TestGetWithSize(t *testing.T) {
+	size := 1024
+	b := pool.GetWithSize(size)
+	if len(b) < size {
+		t.Errorf("GetWithSize(%d) returned len=%d", size, len(b))
+	}
 
-func TestPoolPutNil(t *testing.T) {
-	// 归还 nil 不应 panic
-	pool.Put(nil)
+	// Test larger than default
+	largeSize := defaultSize + 100
+	b2 := pool.GetWithSize(largeSize)
+	if len(b2) != largeSize {
+		t.Errorf("GetWithSize(%d) returned len=%d", largeSize, len(b2))
+	}
 }

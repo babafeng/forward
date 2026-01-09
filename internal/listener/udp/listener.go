@@ -21,6 +21,7 @@ type Listener struct {
 	handler Handler
 	log     *logging.Logger
 	wg      sync.WaitGroup
+	sem     chan struct{}
 }
 
 func New(cfg config.Config, h Handler) *Listener {
@@ -28,6 +29,7 @@ func New(cfg config.Config, h Handler) *Listener {
 		addr:    cfg.Listen.Address(),
 		handler: h,
 		log:     cfg.Logger,
+		sem:     make(chan struct{}, config.DefaultMaxConnections),
 	}
 }
 
@@ -73,9 +75,13 @@ func (l *Listener) Run(ctx context.Context) error {
 			continue
 		}
 
+		l.sem <- struct{}{}
 		l.wg.Add(1)
 		go func(pkt []byte, src *net.UDPAddr) {
-			defer l.wg.Done()
+			defer func() {
+				<-l.sem
+				l.wg.Done()
+			}()
 			l.handler.Handle(ctx, conn, pkt, src)
 		}(pkt[:n], src)
 	}

@@ -18,7 +18,7 @@ func TestSocks5BindNoAuth(t *testing.T) {
 	go func() {
 		br := bufio.NewReader(server)
 		bw := bufio.NewWriter(server)
-		host, port, err := rproto.Socks5ServerBind(br, bw, nil)
+		host, port, _, err := rproto.Socks5ServerBind(br, bw, nil)
 		if err != nil {
 			done <- err
 			return
@@ -30,7 +30,7 @@ func TestSocks5BindNoAuth(t *testing.T) {
 		done <- rproto.WriteBindSuccess(bw, host, port)
 	}()
 
-	if err := rproto.Socks5ClientBind(client, "", "", "0.0.0.0", 8080); err != nil {
+	if err := rproto.Socks5ClientBind(client, "", "", "0.0.0.0", 8080, false); err != nil {
 		t.Fatalf("client bind failed: %v", err)
 	}
 	if err := <-done; err != nil {
@@ -47,7 +47,7 @@ func TestSocks5BindWithAuth(t *testing.T) {
 	go func() {
 		br := bufio.NewReader(server)
 		bw := bufio.NewWriter(server)
-		host, port, err := rproto.Socks5ServerBind(br, bw, func(u, p string) bool {
+		host, port, _, err := rproto.Socks5ServerBind(br, bw, func(u, p string) bool {
 			return u == "user" && p == "pass"
 		})
 		if err != nil {
@@ -61,7 +61,7 @@ func TestSocks5BindWithAuth(t *testing.T) {
 		done <- rproto.WriteBindSuccess(bw, host, port)
 	}()
 
-	if err := rproto.Socks5ClientBind(client, "user", "pass", "127.0.0.1", 9090); err != nil {
+	if err := rproto.Socks5ClientBind(client, "user", "pass", "127.0.0.1", 9090, false); err != nil {
 		t.Fatalf("client bind failed: %v", err)
 	}
 	if err := <-done; err != nil {

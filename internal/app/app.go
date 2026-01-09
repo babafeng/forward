@@ -89,7 +89,6 @@ func runOne(ctx context.Context, cfg config.Config) error {
 
 func runReverseClient(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModeReverseClient
-	cfg.Mode = config.ModeReverseClient
 	client, err := rc.New(cfg)
 	if err != nil {
 		return fmt.Errorf("reverse client init error: %w", err)
@@ -102,21 +101,21 @@ func runReverseClient(ctx context.Context, cfg config.Config) error {
 
 func runPortForward(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModePortForward
-	cfg.Mode = config.ModePortForward
-	if cfg.Forward == nil {
+
+	if cfg.Listen.FAddress != "" {
 		ef, _ := endpoint.Parse(fmt.Sprintf("%s://%s", cfg.Listen.Scheme, cfg.Listen.FAddress))
 		cfg.Forward = &ef
+	} else {
+		if cfg.Forward == nil {
+			return fmt.Errorf("missing target address (use -L .../target or -F target)")
+		}
 	}
+
 	_, err := runForwarders(ctx, cfg)
 	return err
 }
 
 func runProxyServer(ctx context.Context, cfg config.Config) error {
-	if cfg.Proxy == nil && cfg.Forward != nil && cfg.Listen.FAddress == "" {
-		cfg.Proxy = cfg.Forward
-		cfg.Forward = nil
-	}
-	cfg.Mode = config.ModeProxyServer
 	cfg.Mode = config.ModeProxyServer
 
 	if !cfg.Listen.HasUserPass() {
@@ -157,12 +156,9 @@ func parseArgs(args []string) (config.Config, error) {
 	var listenFlags stringSlice
 	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. https://127.0.0.1:443 (can be repeated)")
 	forward := fs.String("F", "", "Forward target endpoint, e.g. https://remote.com:443")
-	proxy := fs.String("x", "", "Optional proxy endpoint, e.g. socks5://127.0.0.1:1080")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isVersion := fs.Bool("version", false, "Show version information")
-	dialTimeout := fs.Duration("dial-timeout", 10*time.Second, "Dial timeout")
-	dialKeepAlive := fs.Duration("dial-keepalive", 30*time.Second, "Dial keepalive")
 
 	fs.Usage = func() { Usage(fs) }
 
@@ -185,7 +181,7 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 
-	logger.Info("Forward %s (%s %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	logger.Info("Forward %s (%s %s/%s)", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
 		return config.Config{}, nil
 	}
@@ -212,25 +208,19 @@ func parseArgs(args []string) (config.Config, error) {
 		cfg.Forward = &ef
 	}
 
-	if strings.TrimSpace(*proxy) != "" {
-		ep, err := endpoint.Parse(*proxy)
-		if err != nil {
-			return cfg, fmt.Errorf("parse -x: %w", err)
-		}
-		cfg.Proxy = &ep
-	}
-
 	cfg.UDPIdleTimeout = 2 * time.Minute
 	cfg.Insecure = *insecure
-	cfg.DialTimeout = *dialTimeout
-	cfg.DialKeepAlive = *dialKeepAlive
+	cfg.DialTimeout = 10 * time.Second
+	cfg.DialKeepAlive = 30 * time.Second
+	cfg.ReadHeaderTimeout = config.DefaultReadHeaderTimeout
+	cfg.MaxHeaderBytes = config.DefaultMaxHeaderBytes
 
 	return cfg, nil
 }
 
 func isProxyServer(cfg config.Config) bool {
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "http", "https", "http3", "socks5", "tls", "quic":
+	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h":
 		return true
 	default:
 		return false
@@ -303,10 +293,6 @@ Examples:
      forward -L udp://:5353/8.8.8.8:53
      forward -L udp://:5353 -F udp://8.8.8.8:53
 
-     # Forward with Proxy (Chain)
-     forward -L tcp://:8080/1.2.3.4:80 -x socks5://proxy.com:1080
-     forward -L tcp://:8080/1.2.3.4:80 -x tls://proxy.com:1080
-
   2. Proxy Server
      # Start HTTP/SOCKS5/TLS/QUIC server
      forward -L http://:1080
@@ -314,11 +300,12 @@ Examples:
      forward -L tls://:1080?cert=server.crt&key=server.key
      forward -L quic://:1080?cert=server.crt&key=server.key
 
-     # With Authentication
-     forward -L socks5://user:pass@:1080
+     # With Forward Chain
+     forward -L socks5://user:pass@:1080 -F tls://user:pass@remote.com:443
 
   3. Intranet Penetration (Reverse Proxy)
      # Server (Public IP)
+     forward -L tls://:2333?bind=true
      forward -L tls://:2333?bind=true&cert=server.crt&key=server.key
 
      # Client (Intranet)
@@ -327,6 +314,9 @@ Examples:
 
   4. Multiple Listeners
      forward -L tcp://:8080/1.2.3.4:80 -L socks5://:1080
+
+  5. Authentication - use basic auth mode
+     forward -L socks5://user:pass@:1080
 
 Flags:
 `)

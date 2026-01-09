@@ -45,7 +45,7 @@ func ServerConfig(cfg config.Config, opts ServerOptions) (*tls.Config, error) {
 			cfg.Logger.Error("Failed to generate tls certificate: %v", err)
 			return nil, fmt.Errorf("Failed to generate tls certificate: %w", err)
 		}
-		cfg.Logger.Warn("Generated self-signed tls certificate...")
+		cfg.Logger.Warn("Generated self-signed tls certificate, just for development testing and debugging...")
 	} else {
 		cert, err = loadCertificate(certFile, keyFile)
 		if err != nil {
@@ -112,7 +112,9 @@ func loadCA(caFile string) (*x509.CertPool, error) {
 		return nil, err
 	}
 	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(caCert)
+	if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+		return nil, fmt.Errorf("invalid CA pem")
+	}
 	return caCertPool, nil
 }
 

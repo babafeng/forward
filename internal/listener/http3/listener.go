@@ -25,8 +25,8 @@ type Listener struct {
 
 func New(cfg config.Config, h Handler, srv *http3.Server) *Listener {
 	proxy := "direct"
-	if cfg.Proxy != nil {
-		proxy = cfg.Proxy.Address()
+	if cfg.Forward != nil && cfg.Mode != config.ModePortForward {
+		proxy = cfg.Forward.Address()
 	}
 	return &Listener{
 		addr:      cfg.Listen.Address(),
@@ -38,10 +38,6 @@ func New(cfg config.Config, h Handler, srv *http3.Server) *Listener {
 }
 
 func (l *Listener) Run(ctx context.Context) error {
-	if l.server == nil {
-		return nil
-	}
-
 	l.log.Info("Forward HTTP/3 proxy listening on %s via %s", l.addr, l.proxyDesc)
 
 	l.server.Addr = l.addr

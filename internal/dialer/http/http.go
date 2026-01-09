@@ -13,76 +13,70 @@ import (
 	"time"
 
 	"forward/internal/config"
+	ctls "forward/internal/config/tls"
 	"forward/internal/dialer"
 )
 
 type Dialer struct {
-	proxy   string
+	forward string
 	useTLS  bool
 	timeout time.Duration
 
 	authHeader string
 	tlsConfig  *tls.Config
+	base       dialer.Dialer
 }
 
 func New(cfg config.Config) (dialer.Dialer, error) {
-	p := cfg.Proxy
-	useTLS := strings.EqualFold(p.Scheme, "https")
+	forward := cfg.Forward
+	useTLS := strings.EqualFold(forward.Scheme, "https")
 
 	var tlsCfg *tls.Config
 	if useTLS {
-		tlsCfg = &tls.Config{
-			InsecureSkipVerify: cfg.Insecure,
+		tc, err := ctls.ClientConfig(*forward, cfg.Insecure, ctls.ClientOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("http dialer tls config: %w", err)
 		}
-		if p.Host != "" {
-			tlsCfg.ServerName = p.Host
-		}
+		tlsCfg = tc
 	}
 
 	var authHeader string
-	if user, pass, ok := p.UserPass(); ok {
+	if user, pass, ok := forward.UserPass(); ok {
 		creds := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
 		authHeader = "Proxy-Authorization: Basic " + creds + "\r\n"
 	}
 
 	return &Dialer{
-		proxy:      p.Address(),
+		forward:    forward.Address(),
 		useTLS:     useTLS,
 		timeout:    cfg.DialTimeout,
 		authHeader: authHeader,
 		tlsConfig:  tlsCfg,
+		base:       dialer.NewDirect(cfg),
 	}, nil
 }
 
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if !strings.HasPrefix(network, "tcp") {
-		return nil, fmt.Errorf("http proxy supports tcp only")
+		return nil, fmt.Errorf("http forward supports tcp only")
 	}
 
 	var base net.Conn
 	var err error
 
-	var nd net.Dialer
-	nd.Timeout = d.timeout
-	nd.KeepAlive = 30 * time.Second
+	// Use unified NetDialer from config
+	base, err = d.base.DialContext(ctx, "tcp", d.forward)
+	if err != nil {
+		return nil, err
+	}
 
 	if d.useTLS {
-		// Use DialContext + HandshakeContext to support cancellation
-		base, err = nd.DialContext(ctx, "tcp", d.proxy)
-		if err != nil {
-			return nil, err
-		}
 		tlsConn := tls.Client(base, d.tlsConfig)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = base.Close()
 			return nil, err
 		}
 		base = tlsConn
-	} else {
-		base, err = nd.DialContext(ctx, "tcp", d.proxy)
-	}
-	if err != nil {
-		return nil, err
 	}
 
 	if deadline, ok := ctx.Deadline(); ok {

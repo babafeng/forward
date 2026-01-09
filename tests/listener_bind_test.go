@@ -67,6 +67,7 @@ func TestListenerBindAddress(t *testing.T) {
 				Listen:  listenEP,
 				Forward: &forwardEP,
 				Logger:  testLogger(),
+				Mode:    config.ModePortForward,
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())
