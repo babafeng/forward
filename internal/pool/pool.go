@@ -19,10 +19,8 @@ func Get() []byte {
 
 func Put(b []byte) {
 	if cap(b) < defaultSize {
-		// Don't put back small buffers
 		return
 	}
-	// Reset length to full capacity before putting back
 	pool.Put(b[:cap(b)])
 }
 

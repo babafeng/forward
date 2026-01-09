@@ -8,10 +8,10 @@ import (
 )
 
 const (
-	DefaultDialTimeout    = 10 * time.Second
-	DefaultDialKeepAlive  = 30 * time.Second
-	DefaultUDPIdleTimeout = 2 * time.Minute
-	DefaultReadDeadline   = 1 * time.Second
+	DefaultDialTimeout       = 10 * time.Second
+	DefaultDialKeepAlive     = 30 * time.Second
+	DefaultUDPIdleTimeout    = 2 * time.Minute
+	DefaultReadDeadline      = 1 * time.Second
 	DefaultReadHeaderTimeout = 10 * time.Second
 
 	DefaultBufferSize = 64 * 1024 // 64KB
@@ -61,18 +61,28 @@ func (m RunMode) String() string {
 	}
 }
 
+type NodeConfig struct {
+	Name      string
+	Listen    endpoint.Endpoint
+	Listeners []endpoint.Endpoint
+	Forward   *endpoint.Endpoint
+	Insecure  bool
+}
+
 type Config struct {
+	NodeName  string
 	Listen    endpoint.Endpoint
 	Listeners []endpoint.Endpoint
 	LogLevel  logging.Level
 
 	Forward *endpoint.Endpoint
+	Nodes   []NodeConfig
 
 	Logger *logging.Logger
 
-	UDPIdleTimeout time.Duration
-	DialTimeout    time.Duration
-	DialKeepAlive  time.Duration
+	UDPIdleTimeout    time.Duration
+	DialTimeout       time.Duration
+	DialKeepAlive     time.Duration
 	ReadHeaderTimeout time.Duration
 	MaxHeaderBytes    int
 

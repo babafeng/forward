@@ -197,14 +197,15 @@ func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn
 		}
 
 		ctx, cancel := context.WithTimeout(ctx, c.cfg.DialTimeout)
-		defer cancel()
 
 		qconn, err := quic.DialAddr(ctx, ep.Address(), tlsCfg, nil)
 		if err != nil {
+			cancel()
 			return nil, err
 		}
 		stream, err := qconn.OpenStreamSync(ctx)
 		if err != nil {
+			cancel()
 			_ = qconn.CloseWithError(0, "")
 			return nil, err
 		}
@@ -214,6 +215,7 @@ func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn
 			Remote:    qconn.RemoteAddr(),
 			Closer:    qconn,
 			CloseOnce: &sync.Once{},
+			Cancel:    cancel,
 		}, nil
 	default:
 		return nil, fmt.Errorf("reverse client: unsupported forward scheme %s", ep.Scheme)

@@ -132,3 +132,49 @@ You can start multiple services at once.
 ```bash
 forward -L tcp://:8080/1.2.3.4:80 -L socks5://:1080
 ```
+
+### JSON Config File
+
+Use a JSON config file instead of command-line arguments.
+
+```bash
+# Use config file
+forward -C config.json
+
+# Default config paths (auto-detected when no arguments):
+#   ~/.forward/forward.json
+#   ~/forward.json
+```
+
+**Simple config format:**
+
+```json
+{
+  "listeners": ["http://:1080", "socks5://:1081"],
+  "forward": "tls://user:pass@remote.com:443",
+  "insecure": false,
+  "debug": false
+}
+```
+
+**Multi-node config format:**
+
+```json
+{
+  "nodes": [
+    {
+      "name": "proxy_server",
+      "listeners": ["http://:8080"],
+      "forward": "tls://user:pass@remote.com:443",
+      "insecure": false
+    },
+    {
+      "name": "port_forward",
+      "listeners": ["tcp://:2222/10.0.0.1:22"]
+    }
+  ],
+  "debug": true
+}
+```
+
+Each node has independent `listeners`, `forward`, and `insecure` settings.
