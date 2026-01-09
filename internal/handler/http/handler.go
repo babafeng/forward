@@ -71,7 +71,7 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if !r.URL.IsAbs() && !h.transparent {
-			writeSimple(w, stdhttp.StatusForbidden, "403 Forbidden")
+			writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 			return
 		}
 	}
@@ -120,7 +120,7 @@ func (h *Handler) handleConnect(cid string, w stdhttp.ResponseWriter, r *stdhttp
 		} else {
 			h.log.Error("[%s] Forward HTTP connect dial error: %v", cid, err)
 		}
-		writeSimple(w, stdhttp.StatusForbidden, "403 Forbidden")
+		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 		return
 	}
 
@@ -177,7 +177,7 @@ func (h *Handler) handleForward(cid string, w stdhttp.ResponseWriter, r *stdhttp
 	resp, err := h.transportClient().RoundTrip(req)
 	if err != nil {
 		h.log.Debug("[%s] Forward HTTP dial failed %s: %v", cid, req.URL.String(), err)
-		writeSimple(w, stdhttp.StatusForbidden, err.Error())
+		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 		return
 	}
 	defer resp.Body.Close()
