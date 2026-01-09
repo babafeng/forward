@@ -16,8 +16,11 @@ const (
 	DefaultBufferSize = 64 * 1024 // 64KB
 	DefaultCopyBuffer = 32 * 1024 // 32KB
 
-	DefaultInitialBackoff = 2 * time.Second
-	DefaultMaxBackoff     = 30 * time.Second
+	DefaultInitialBackoff   = 2 * time.Second
+	DefaultMaxBackoff       = 30 * time.Second
+	DefaultHandshakeTimeout = 5 * time.Second
+	DefaultMaxConnections   = 4096
+	DefaultMaxUDPSessions   = 1024
 
 	CamouflageRealm     = `Authorization Required`
 	CamouflagePageTitle = "403 Forbidden"

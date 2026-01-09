@@ -20,6 +20,7 @@ type Listener struct {
 	log         *logging.Logger
 	wg          sync.WaitGroup
 	forwardDesc string
+	sem         chan struct{}
 }
 
 func New(cfg config.Config, h Handler) *Listener {
@@ -33,6 +34,7 @@ func New(cfg config.Config, h Handler) *Listener {
 		handler:     h,
 		log:         cfg.Logger,
 		forwardDesc: forward,
+		sem:         make(chan struct{}, config.DefaultMaxConnections),
 	}
 }
 
@@ -63,9 +65,13 @@ func (l *Listener) Run(ctx context.Context) error {
 
 		l.log.Debug("Forward TCP New accept from %s", conn.RemoteAddr().String())
 
+		l.sem <- struct{}{}
 		l.wg.Add(1)
 		go func(c net.Conn) {
-			defer l.wg.Done()
+			defer func() {
+				<-l.sem
+				l.wg.Done()
+			}()
 			l.handler.Handle(ctx, c)
 		}(conn)
 	}

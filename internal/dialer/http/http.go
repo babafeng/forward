@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"forward/internal/config"
+	ctls "forward/internal/config/tls"
 	"forward/internal/dialer"
 )
 
@@ -23,6 +24,7 @@ type Dialer struct {
 
 	authHeader string
 	tlsConfig  *tls.Config
+	base       dialer.Dialer
 }
 
 func New(cfg config.Config) (dialer.Dialer, error) {
@@ -31,12 +33,11 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 
 	var tlsCfg *tls.Config
 	if useTLS {
-		tlsCfg = &tls.Config{
-			InsecureSkipVerify: cfg.Insecure,
+		tc, err := ctls.ClientConfig(*forward, cfg.Insecure, ctls.ClientOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("http dialer tls config: %w", err)
 		}
-		if forward.Host != "" {
-			tlsCfg.ServerName = forward.Host
-		}
+		tlsCfg = tc
 	}
 
 	var authHeader string
@@ -51,6 +52,7 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 		timeout:    cfg.DialTimeout,
 		authHeader: authHeader,
 		tlsConfig:  tlsCfg,
+		base:       dialer.NewDirect(cfg),
 	}, nil
 }
 
@@ -62,27 +64,19 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	var base net.Conn
 	var err error
 
-	var nd net.Dialer
-	nd.Timeout = d.timeout
-	nd.KeepAlive = 30 * time.Second
+	// Use unified NetDialer from config
+	base, err = d.base.DialContext(ctx, "tcp", d.forward)
+	if err != nil {
+		return nil, err
+	}
 
 	if d.useTLS {
-		// Use DialContext + HandshakeContext to support cancellation
-		base, err = nd.DialContext(ctx, "tcp", d.forward)
-		if err != nil {
-			return nil, err
-		}
 		tlsConn := tls.Client(base, d.tlsConfig)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = base.Close()
 			return nil, err
 		}
 		base = tlsConn
-	} else {
-		base, err = nd.DialContext(ctx, "tcp", d.forward)
-	}
-	if err != nil {
-		return nil, err
 	}
 
 	if deadline, ok := ctx.Deadline(); ok {

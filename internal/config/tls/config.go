@@ -45,7 +45,7 @@ func ServerConfig(cfg config.Config, opts ServerOptions) (*tls.Config, error) {
 			cfg.Logger.Error("Failed to generate tls certificate: %v", err)
 			return nil, fmt.Errorf("Failed to generate tls certificate: %w", err)
 		}
-		cfg.Logger.Warn("Generated self-signed tls certificate...")
+		cfg.Logger.Warn("Generated self-signed tls certificate, just for development testing and debugging...")
 	} else {
 		cert, err = loadCertificate(certFile, keyFile)
 		if err != nil {

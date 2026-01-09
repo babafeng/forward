@@ -159,8 +159,6 @@ func parseArgs(args []string) (config.Config, error) {
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isVersion := fs.Bool("version", false, "Show version information")
-	dialTimeout := fs.Duration("dial-timeout", 10*time.Second, "Dial timeout")
-	dialKeepAlive := fs.Duration("dial-keepalive", 30*time.Second, "Dial keepalive")
 
 	fs.Usage = func() { Usage(fs) }
 
@@ -183,7 +181,7 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 
-	logger.Info("Forward %s (%s %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	logger.Info("Forward %s (%s %s/%s)", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
 		return config.Config{}, nil
 	}
@@ -212,8 +210,8 @@ func parseArgs(args []string) (config.Config, error) {
 
 	cfg.UDPIdleTimeout = 2 * time.Minute
 	cfg.Insecure = *insecure
-	cfg.DialTimeout = *dialTimeout
-	cfg.DialKeepAlive = *dialKeepAlive
+	cfg.DialTimeout = 10 * time.Second
+	cfg.DialKeepAlive = 30 * time.Second
 
 	return cfg, nil
 }

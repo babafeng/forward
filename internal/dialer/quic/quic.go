@@ -55,6 +55,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if !strings.HasPrefix(strings.ToLower(network), "tcp") {
 		return nil, fmt.Errorf("quic forward supports tcp only")
 	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d.timeout)
+		defer cancel()
+	}
 
 	forwardURL := fmt.Sprintf("https://%s", d.target)
 

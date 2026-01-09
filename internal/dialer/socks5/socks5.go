@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"forward/internal/config"
+	"forward/internal/dialer"
 	"forward/internal/endpoint"
 	socks5util "forward/internal/utils/socks5"
 )
@@ -35,6 +36,7 @@ type Dialer struct {
 
 	// Timeout is used when ctx has no deadline.
 	Timeout time.Duration
+	base    dialer.Dialer
 }
 
 func New(cfg config.Config) (*Dialer, error) {
@@ -49,6 +51,7 @@ func New(cfg config.Config) (*Dialer, error) {
 		username: user,
 		password: pass,
 		Timeout:  cfg.DialTimeout,
+		base:     dialer.NewDirect(cfg),
 	}, nil
 }
 
@@ -91,10 +94,7 @@ func (d *Dialer) dialTCP(ctx context.Context, target string) (net.Conn, error) {
 }
 
 func (d *Dialer) dialForwardTCP(ctx context.Context) (net.Conn, error) {
-	var nd net.Dialer
-	nd.Timeout = d.Timeout
-	nd.KeepAlive = 30 * time.Second
-	return nd.DialContext(ctx, "tcp", d.forward.Address())
+	return d.base.DialContext(ctx, "tcp", d.forward.Address())
 }
 
 func (d *Dialer) handshake(ctx context.Context, conn net.Conn) error {
