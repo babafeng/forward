@@ -55,10 +55,10 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if !strings.HasPrefix(strings.ToLower(network), "tcp") {
 		return nil, fmt.Errorf("quic forward supports tcp only")
 	}
+
+	var cancel context.CancelFunc
 	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, d.timeout)
-		defer cancel()
 	}
 
 	forwardURL := fmt.Sprintf("https://%s", d.target)
@@ -67,6 +67,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, forwardURL, nil)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 	req.Body = pr
@@ -79,11 +82,17 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 
 	resp, err := d.rt.RoundTrip(req)
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("forward connect failed: %s", resp.Status)
 	}
 
@@ -92,5 +101,6 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 			r: resp.Body,
 			w: pw,
 		},
+		cancel: cancel,
 	}, nil
 }

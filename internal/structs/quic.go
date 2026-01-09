@@ -1,6 +1,7 @@
 package structs
 
 import (
+	"context"
 	"net"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ type QuicStreamConn struct {
 	Remote    net.Addr
 	Closer    closer
 	CloseOnce *sync.Once
+	Cancel    context.CancelFunc
 }
 
 func (c *QuicStreamConn) Close() error {
@@ -26,6 +28,9 @@ func (c *QuicStreamConn) Close() error {
 		err = c.Stream.Close()
 		if c.Closer != nil {
 			_ = c.Closer.CloseWithError(0, "")
+		}
+		if c.Cancel != nil {
+			c.Cancel()
 		}
 	})
 	return err
