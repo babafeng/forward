@@ -27,13 +27,12 @@ type Listener struct {
 	xaddr          xnet.Address
 	xport          xnet.Port
 
-	url       string
-	base64URL string
+	url string
 }
 
 func (l *Listener) Run(ctx context.Context) error {
 	ls, err := internet.ListenTCP(ctx, l.xaddr, l.xport, l.streamSettings, func(conn stat.Connection) {
-		go l.handleConn(conn)
+		go l.handleConn(ctx, conn)
 	})
 	if err != nil {
 		return fmt.Errorf("listen reality failed: %w", err)
@@ -51,7 +50,7 @@ func (l *Listener) Run(ctx context.Context) error {
 	return nil
 }
 
-func (l *Listener) handleConn(conn net.Conn) {
+func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
 	req, err := vless.ReadRequest(conn)
@@ -67,7 +66,7 @@ func (l *Listener) handleConn(conn net.Conn) {
 
 	l.log.Info("VLESS connect %s -> %s", conn.RemoteAddr(), req.Address)
 
-	targetConn, err := l.dialer.DialContext(context.Background(), req.Network, req.Address)
+	targetConn, err := l.dialer.DialContext(ctx, req.Network, req.Address)
 	if err != nil {
 		l.log.Error("Dial target %s failed: %v", req.Address, err)
 		return
@@ -78,5 +77,5 @@ func (l *Listener) handleConn(conn net.Conn) {
 		return
 	}
 
-	inet.Bidirectional(context.Background(), conn, targetConn)
+	inet.Bidirectional(ctx, conn, targetConn)
 }
