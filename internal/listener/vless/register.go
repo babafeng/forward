@@ -18,7 +18,6 @@ import (
 )
 
 func init() {
-	listener.Register("vless", newRunner)
 	listener.Register("vless+reality", newRunner)
 }
 

@@ -16,6 +16,8 @@ import (
 	"forward/internal/endpoint"
 	"forward/internal/logging"
 	rc "forward/internal/reverse/client"
+
+	xlog "github.com/xtls/xray-core/common/log"
 )
 
 func Main() int {
@@ -203,6 +205,12 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 
+	if llevel == logging.LevelDebug {
+		xlog.ReplaceWithSeverityLogger(xlog.Severity_Debug)
+	} else {
+		xlog.ReplaceWithSeverityLogger(xlog.Severity_Error)
+	}
+
 	logger.Info("Forward %s (%s %s/%s)", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
 		return config.Config{}, nil
@@ -293,7 +301,7 @@ func isPortForward(cfg config.Config) bool {
 func isReverseForwardServer(cfg config.Config) bool {
 	// remote server: -L tls://user:pass@0.0.0.0:443?bind=true or -L tls://user:pass@:443?bind=true
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "tls", "http3", "https", "quic", "vless", "vless+reality":
+	case "tls", "http3", "https", "quic":
 		return cfg.Listen.Query.Get("bind") == "true"
 	default:
 		return false
@@ -343,6 +351,8 @@ Examples:
      forward -L socks5://:1080
      forward -L tls://:1080?cert=server.crt&key=server.key
      forward -L quic://:1080?cert=server.crt&key=server.key
+     forward -L vless://user@:1080
+     forward -L "vless+reality://user@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key"
 
      # With Forward Chain
      forward -L socks5://user:pass@:1080 -F tls://user:pass@remote.com:443
