@@ -1,7 +1,6 @@
 package vless
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"forward/internal/config"
@@ -144,6 +143,5 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 		xaddr:          xnet.ParseAddress(hostStr),
 		xport:          xnet.Port(port),
 		url:            shadowrocketURL,
-		base64URL:      base64.StdEncoding.EncodeToString([]byte(shadowrocketURL)),
 	}, nil
 }

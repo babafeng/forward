@@ -349,16 +349,17 @@ func (s *udpSession) run(ctx context.Context) {
 }
 
 func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.UDPAddr) *udpPeer {
+	key := dest + "|" + src.String()
 	s.mu.Lock()
-	if p := s.sessions[dest]; p != nil {
+	if p := s.sessions[key]; p != nil {
 		s.mu.Unlock()
 		return p
 	}
 	s.mu.Unlock()
 
-	result, _, _ := s.sf.Do(dest, func() (interface{}, error) {
+	result, _, _ := s.sf.Do(key, func() (interface{}, error) {
 		s.mu.Lock()
-		if p := s.sessions[dest]; p != nil {
+		if p := s.sessions[key]; p != nil {
 			s.mu.Unlock()
 			return p, nil
 		}
@@ -378,10 +379,10 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 		}
 		p.lastSeen.Store(time.Now().UnixNano())
 
-		go s.readUpstream(ctx, p, src)
+		go s.readUpstream(ctx, p, src, key)
 
 		s.mu.Lock()
-		s.sessions[dest] = p
+		s.sessions[key] = p
 		s.mu.Unlock()
 		return p, nil
 	})
@@ -392,10 +393,10 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 	return result.(*udpPeer)
 }
 
-func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.UDPAddr) {
+func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.UDPAddr, key string) {
 	defer func() {
 		s.mu.Lock()
-		delete(s.sessions, p.dest)
+		delete(s.sessions, key)
 		s.mu.Unlock()
 		p.conn.Close()
 	}()
