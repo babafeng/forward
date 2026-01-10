@@ -81,10 +81,14 @@ forward -L udp://:5353 -F udp://8.8.8.8:53
 
 ### Proxy Server
 
-Start a proxy server supporting http / socks5 / https / quic / tls
+Start a proxy server supporting http / socks5 / https / quic / tls / vless+reality(vless)
 
 ```bash
 forward -L http://:1080
+forward -L vless://:443
+
+# Optional parameters: uuid / dest / sni / sid / key
+forward -L vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key
 ```
 
 Advanced usage

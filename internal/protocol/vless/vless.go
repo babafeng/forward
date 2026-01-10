@@ -14,7 +14,6 @@ const (
 	CommandUDP = 0x02
 )
 
-// Xray VLESS UUID is 16 bytes
 type UUID [16]byte
 
 func ParseUUID(s string) (UUID, error) {
