@@ -205,11 +205,8 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 
-	if llevel == logging.LevelDebug {
-		xlog.ReplaceWithSeverityLogger(xlog.Severity_Debug)
-	} else {
-		xlog.ReplaceWithSeverityLogger(xlog.Severity_Error)
-	}
+	// Register custom Xray log handler to route logs to our logger
+	xlog.RegisterHandler(&xrayLogHandler{logger: logger})
 
 	if *isVersion {
 		return config.Config{}, nil
@@ -395,4 +392,36 @@ func (s *stringSlice) String() string {
 func (s *stringSlice) Set(value string) error {
 	*s = append(*s, value)
 	return nil
+}
+
+type xrayLogHandler struct {
+	logger *logging.Logger
+}
+
+func (h *xrayLogHandler) Handle(msg xlog.Message) {
+	var severity xlog.Severity
+	var content interface{}
+
+	if gm, ok := msg.(*xlog.GeneralMessage); ok {
+		severity = gm.Severity
+		content = gm.Content
+	} else {
+		severity = xlog.Severity_Info
+		content = msg.String()
+	}
+
+	txt := fmt.Sprint(content)
+
+	switch severity {
+	case xlog.Severity_Debug:
+		h.logger.Debug(txt)
+	case xlog.Severity_Info:
+		h.logger.Info(txt)
+	case xlog.Severity_Warning:
+		h.logger.Warn(txt)
+	case xlog.Severity_Error:
+		h.logger.Error(txt)
+	default:
+		h.logger.Info(txt)
+	}
 }
