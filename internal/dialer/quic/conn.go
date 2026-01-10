@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -11,6 +12,7 @@ type RWCConn struct {
 	io.ReadWriteCloser
 	local  net.Addr
 	remote net.Addr
+	cancel context.CancelFunc
 
 	mu    sync.Mutex
 	timer *time.Timer
@@ -30,11 +32,18 @@ func (c *RWCConn) RemoteAddr() net.Addr {
 	return &net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 0}
 }
 
+func (c *RWCConn) Close() error {
+	err := c.ReadWriteCloser.Close()
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return err
+}
+
 func (c *RWCConn) SetDeadline(t time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Stop existing timer if any
 	if c.timer != nil {
 		c.timer.Stop()
 		c.timer = nil

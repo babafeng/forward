@@ -81,10 +81,14 @@ forward -L udp://:5353 -F udp://8.8.8.8:53
 
 ### Proxy Server
 
-Start a proxy server supporting http / socks5 / https / quic / tls
+Start a proxy server supporting http / socks5 / https / quic / tls / vless+reality
 
 ```bash
 forward -L http://:1080
+forward -L vless+reality://:443
+
+# Optional parameters: uuid / dest / sni / sid / key
+forward -L vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key
 ```
 
 Advanced usage
@@ -132,3 +136,49 @@ You can start multiple services at once.
 ```bash
 forward -L tcp://:8080/1.2.3.4:80 -L socks5://:1080
 ```
+
+### JSON Config File
+
+Use a JSON config file instead of command-line arguments.
+
+```bash
+# Use config file
+forward -C config.json
+
+# Default config paths (auto-detected when no arguments):
+#   ~/.forward/forward.json
+#   ~/forward.json
+```
+
+**Simple config format:**
+
+```json
+{
+  "listeners": ["http://:1080", "socks5://:1081"],
+  "forward": "tls://user:pass@remote.com:443",
+  "insecure": false,
+  "debug": false
+}
+```
+
+**Multi-node config format:**
+
+```json
+{
+  "nodes": [
+    {
+      "name": "proxy_server",
+      "listeners": ["http://:8080"],
+      "forward": "tls://user:pass@remote.com:443",
+      "insecure": false
+    },
+    {
+      "name": "port_forward",
+      "listeners": ["tcp://:2222/10.0.0.1:22"]
+    }
+  ],
+  "debug": true
+}
+```
+
+Each node has independent `listeners`, `forward`, and `insecure` settings.

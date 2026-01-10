@@ -10,12 +10,14 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"forward/internal/config"
+	cjson "forward/internal/config/json"
 	"forward/internal/endpoint"
 	"forward/internal/logging"
 	rc "forward/internal/reverse/client"
+
+	xlog "github.com/xtls/xray-core/common/log"
 )
 
 func Main() int {
@@ -36,25 +38,32 @@ func Main() int {
 		return 2
 	}
 
-	if cfg.Insecure {
-		logger.Warn("The --insecure is enabled will trust any cert: TLS verification is disabled")
+	for _, node := range cfg.Nodes {
+		if node.Insecure {
+			logger.Warn("Node %s: --insecure is enabled, TLS verification is disabled", node.Name)
+		}
 	}
 
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(cfg.Listeners))
+	listenerCount := 0
+	for _, node := range cfg.Nodes {
+		listenerCount += len(node.Listeners)
+	}
+	errChan := make(chan error, listenerCount)
 
-	for _, l := range cfg.Listeners {
-		wg.Add(1)
-		subCfg := cfg
-		subCfg.Listen = l
-		go func(c config.Config) {
-			defer wg.Done()
-			if err := runOne(ctx, c); err != nil {
-				logger.Error("Error running listener %s: %v", c.Listen.String(), err)
-				errChan <- err
-				stop()
-			}
-		}(subCfg)
+	for _, node := range cfg.Nodes {
+		for _, l := range node.Listeners {
+			wg.Add(1)
+			subCfg := buildNodeConfig(cfg, node, l)
+			go func(c config.Config) {
+				defer wg.Done()
+				if err := runOne(ctx, c); err != nil {
+					logger.Error("[%s] Error running listener %s: %v", c.NodeName, c.Listen.String(), err)
+					errChan <- err
+					stop()
+				}
+			}(subCfg)
+		}
 	}
 
 	wg.Wait()
@@ -65,6 +74,16 @@ func Main() int {
 	}
 
 	return 0
+}
+
+func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoint.Endpoint) config.Config {
+	cfg := global
+	cfg.NodeName = node.Name
+	cfg.Listen = listen
+	cfg.Listeners = node.Listeners
+	cfg.Forward = node.Forward
+	cfg.Insecure = node.Insecure
+	return cfg
 }
 
 func runOne(ctx context.Context, cfg config.Config) error {
@@ -156,6 +175,7 @@ func parseArgs(args []string) (config.Config, error) {
 	var listenFlags stringSlice
 	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. https://127.0.0.1:443 (can be repeated)")
 	forward := fs.String("F", "", "Forward target endpoint, e.g. https://remote.com:443")
+	configFile := fs.String("C", "", "Path to JSON config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isVersion := fs.Bool("version", false, "Show version information")
@@ -164,6 +184,10 @@ func parseArgs(args []string) (config.Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return config.Config{}, err
+	}
+
+	if *configFile != "" {
+		return parseConfigFile(*configFile, *isVersion)
 	}
 
 	logLevel := "info"
@@ -181,14 +205,24 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 
+	if llevel == logging.LevelDebug {
+		xlog.ReplaceWithSeverityLogger(xlog.Severity_Debug)
+	} else {
+		xlog.ReplaceWithSeverityLogger(xlog.Severity_Error)
+	}
+
 	logger.Info("Forward %s (%s %s/%s)", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
 		return config.Config{}, nil
 	}
 
 	if len(listenFlags) == 0 {
-		fs.Usage()
-		return cfg, fmt.Errorf("-L is required")
+		defaultPath, err := cjson.FindDefaultConfig()
+		if err != nil {
+			fs.Usage()
+			return cfg, err
+		}
+		return parseConfigFile(defaultPath, *isVersion)
 	}
 
 	for _, l := range listenFlags {
@@ -208,19 +242,37 @@ func parseArgs(args []string) (config.Config, error) {
 		cfg.Forward = &ef
 	}
 
-	cfg.UDPIdleTimeout = 2 * time.Minute
 	cfg.Insecure = *insecure
-	cfg.DialTimeout = 10 * time.Second
-	cfg.DialKeepAlive = 30 * time.Second
-	cfg.ReadHeaderTimeout = config.DefaultReadHeaderTimeout
-	cfg.MaxHeaderBytes = config.DefaultMaxHeaderBytes
+
+	cfg.Nodes = []config.NodeConfig{{
+		Name:      "default",
+		Listeners: cfg.Listeners,
+		Forward:   cfg.Forward,
+		Insecure:  cfg.Insecure,
+	}}
+
+	config.ApplyDefaults(&cfg)
+
+	return cfg, nil
+}
+
+func parseConfigFile(path string, isVersion bool) (config.Config, error) {
+	cfg, err := cjson.ParseFile(path)
+	if err != nil {
+		return config.Config{}, err
+	}
+
+	cfg.Logger.Info("Forward %s (%s %s/%s)", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	if isVersion {
+		return config.Config{}, nil
+	}
 
 	return cfg, nil
 }
 
 func isProxyServer(cfg config.Config) bool {
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h":
+	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h", "vless", "vless+reality":
 		return true
 	default:
 		return false
@@ -299,6 +351,8 @@ Examples:
      forward -L socks5://:1080
      forward -L tls://:1080?cert=server.crt&key=server.key
      forward -L quic://:1080?cert=server.crt&key=server.key
+     forward -L vless://user@:1080
+     forward -L "vless+reality://user@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key"
 
      # With Forward Chain
      forward -L socks5://user:pass@:1080 -F tls://user:pass@remote.com:443
@@ -317,6 +371,17 @@ Examples:
 
   5. Authentication - use basic auth mode
      forward -L socks5://user:pass@:1080
+
+  6. JSON Config File
+     forward -C config.json
+
+     # config.json format:
+     # {
+     #   "listeners": ["tcp://:8080/1.2.3.4:80", "socks5://user:pass@:1080"],
+     #   "forward": "tls://user:pass@remote.com:443",
+     #   "insecure": false,
+     #   "debug": false
+     # }
 
 Flags:
 `)

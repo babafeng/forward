@@ -3,8 +3,6 @@ package reverse
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -116,24 +114,16 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 
 	s.log.Info("Reverse server bound %s (%s), bridging to client %s", bindAddr, network, conn.RemoteAddr())
 
-	// Generate Session ID
-	sidBuf := make([]byte, 8)
-	if _, err := rand.Read(sidBuf); err != nil {
-		s.log.Error("Reverse server init error: %v", err)
-		return
-	}
-	sid := hex.EncodeToString(sidBuf)
-
 	conf := yamux.DefaultConfig()
 	conf.KeepAliveInterval = 10 * time.Second
 	conf.LogOutput = nil
-	conf.Logger = log.New(s.log.Writer(logging.LevelDebug), fmt.Sprintf("[yamux][%s] ", sid), 0)
+	conf.Logger = log.New(s.log.Writer(logging.LevelDebug), "[yamux] ", 0)
 
 	_ = conn.SetReadDeadline(time.Time{})
 
 	session, err := yamux.Client(conn, conf)
 	if err != nil {
-		s.log.Error("[%s] Reverse server yamux error: %v", sid, err)
+		s.log.Error("Reverse server yamux error: %v", err)
 		return
 	}
 	defer session.Close()
@@ -153,10 +143,10 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 	}()
 
-	s.log.Info("[%s] Reverse session established for %s", sid, bindAddr)
+	s.log.Info("Reverse session established for %s", bindAddr)
 
 	if isUDP {
-		s.handleBoundUDP(ctx, session, udpLn, sid)
+		s.handleBoundUDP(ctx, session, udpLn)
 	} else {
 		for {
 			lc, err := ln.Accept()
@@ -164,15 +154,15 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 				if ctx.Err() != nil {
 					return
 				}
-				s.log.Error("[%s] Reverse server accept bound error: %v", sid, err)
+				s.log.Error("Reverse server accept bound error: %v", err)
 				return
 			}
-			go s.handleBoundConn(ctx, session, lc, sid)
+			go s.handleBoundConn(ctx, session, lc)
 		}
 	}
 }
 
-func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, clientConn net.Conn, sid string) {
+func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, clientConn net.Conn) {
 	defer clientConn.Close()
 
 	src := clientConn.RemoteAddr().String()
@@ -181,26 +171,26 @@ func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, cl
 	// session.RemoteAddr is the Client's addr (tunnel end)
 	tunnelRemote := session.RemoteAddr().String()
 
-	s.log.Info("[%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, src, bound, tunnelRemote)
+	s.log.Info("Forward Reverse Client Received connection %s --> %s --> %s", src, bound, tunnelRemote)
 
 	stream, err := session.Open()
 	if err != nil {
-		s.log.Error("[%s] Reverse server open stream error: %v", sid, err)
+		s.log.Error("Reverse server open stream error: %v", err)
 		return
 	}
 	defer stream.Close()
 
 	dst := stream.RemoteAddr().String()
-	s.log.Debug("[%s] Reverse TCP Connected to upstream %s --> %s", sid, src, dst)
+	s.log.Debug("Reverse TCP Connected to upstream %s --> %s", src, dst)
 
 	bytes, dur, err := inet.Bidirectional(ctx, clientConn, stream)
 	if err != nil && ctx.Err() == nil {
-		s.log.Error("[%s] Reverse server transfer error: %v", sid, err)
+		s.log.Error("Reverse server transfer error: %v", err)
 	}
-	s.log.Debug("[%s] Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", sid, src, dst, bytes, dur)
+	s.log.Debug("Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", src, dst, bytes, dur)
 }
 
-func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, conn *net.UDPConn, sid string) {
+func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, conn *net.UDPConn) {
 	type udpSession struct {
 		stream   net.Conn
 		ps       *inet.PacketStream
@@ -223,7 +213,7 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 			if now.Sub(sess.lastSeen) > idleTimeout {
 				_ = sess.stream.Close()
 				delete(activeSessions, k)
-				s.log.Debug("[%s] Reverse UDP session %s idle timeout", sid, k)
+				s.log.Debug("Reverse UDP session %s idle timeout", k)
 			}
 		}
 	}
@@ -239,7 +229,7 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 				cleanupIdle()
 				continue
 			}
-			s.log.Error("[%s] Reverse UDP Read error: %v", sid, err)
+			s.log.Error("Reverse UDP Read error: %v", err)
 			return
 		}
 
@@ -249,16 +239,16 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 			if len(activeSessions) >= config.DefaultMaxUDPSessions {
 				cleanupIdle()
 				if len(activeSessions) >= config.DefaultMaxUDPSessions {
-					s.log.Warn("[%s] Reverse UDP max sessions reached, dropping packet from %s", sid, srcKey)
+					s.log.Warn("Reverse UDP max sessions reached, dropping packet from %s", srcKey)
 					continue
 				}
 			}
 
-			s.log.Info("[%s] Forward Reverse Client Received connection %s --> %s --> %s", sid, srcKey, bound, tunnelRemote)
+			s.log.Info("Forward Reverse Client Received connection %s --> %s --> %s", srcKey, bound, tunnelRemote)
 
 			stream, err := session.Open()
 			if err != nil {
-				s.log.Error("[%s] Reverse UDP Open stream error: %v", sid, err)
+				s.log.Error("Reverse UDP Open stream error: %v", err)
 				continue
 			}
 
@@ -289,7 +279,7 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 		}
 
 		if _, err := sess.ps.Write(pkt[:n]); err != nil {
-			s.log.Error("[%s] Reverse UDP Write to stream error: %v", sid, err)
+			s.log.Error("Reverse UDP Write to stream error: %v", err)
 			sess.stream.Close()
 			delete(activeSessions, srcKey)
 		}

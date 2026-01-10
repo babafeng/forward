@@ -20,7 +20,6 @@ import (
 	"forward/internal/dialer"
 	netio "forward/internal/io/net"
 	"forward/internal/logging"
-	"forward/internal/utils"
 	socks5util "forward/internal/utils/socks5"
 )
 
@@ -60,9 +59,8 @@ func New(cfg config.Config, d dialer.Dialer) *Handler {
 
 func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	cid := utils.NewID()
 
-	h.log.Debug("[%s] Forward SOCKS5 Received connection from %s", cid, conn.RemoteAddr())
+	h.log.Debug("Forward SOCKS5 Received connection from %s", conn.RemoteAddr())
 
 	_ = conn.SetReadDeadline(time.Now().Add(config.DefaultHandshakeTimeout))
 
@@ -71,24 +69,24 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 
 	if err := h.negotiateAuth(br, bw); err != nil {
 		if ctx.Err() == nil {
-			h.log.Error("[%s] Forward SOCKS5 error: negotiate: %v", cid, err)
+			h.log.Error("Forward SOCKS5 error: negotiate: %v", err)
 		}
 		return
 	}
 
-	cmd, dest, err := h.readRequest(cid, br, bw)
+	cmd, dest, err := h.readRequest(br, bw)
 	if err != nil {
 		if ctx.Err() == nil {
-			h.log.Error("[%s] Forward SOCKS5 error: request: %v", cid, err)
+			h.log.Error("Forward SOCKS5 error: request: %v", err)
 		}
 		return
 	}
 
 	switch cmd {
 	case cmdConnect:
-		h.handleConnect(ctx, cid, conn, bw, dest)
+		h.handleConnect(ctx, conn, bw, dest)
 	case cmdUDPAssociate:
-		h.handleUDP(ctx, cid, conn, bw)
+		h.handleUDP(ctx, conn, bw)
 	default:
 		_ = h.writeReply(bw, 0x07, "") // command not supported
 	}
@@ -182,7 +180,7 @@ func (h *Handler) handleUserPass(br *bufio.Reader, bw *bufio.Writer) error {
 	return fmt.Errorf("auth failed for user %q", string(uname))
 }
 
-func (h *Handler) readRequest(cid string, br *bufio.Reader, bw *bufio.Writer) (byte, string, error) {
+func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string, error) {
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(br, head); err != nil {
 		return 0, "", err
@@ -198,17 +196,17 @@ func (h *Handler) readRequest(cid string, br *bufio.Reader, bw *bufio.Writer) (b
 		return 0, "", err
 	}
 	dest := net.JoinHostPort(addr, strconv.Itoa(port))
-	h.log.Debug("[%s] Forward SOCKS5 request cmd=%d dst=%s", cid, cmd, dest)
+	h.log.Debug("Forward SOCKS5 request cmd=%d dst=%s", cmd, dest)
 	return cmd, dest, nil
 }
 
-func (h *Handler) handleConnect(ctx context.Context, cid string, conn net.Conn, bw *bufio.Writer, dest string) {
+func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Writer, dest string) {
 	_ = conn.SetReadDeadline(time.Time{})
 
-	h.log.Info("[%s] Forward SOCKS5 Received connection %s --> %s", cid, conn.RemoteAddr(), dest)
+	h.log.Info("Forward SOCKS5 Received connection %s --> %s", conn.RemoteAddr(), dest)
 	up, err := h.dialer.DialContext(ctx, "tcp", dest)
 	if err != nil {
-		h.log.Error("[%s] Forward SOCKS5 connect dial error: %v", cid, err)
+		h.log.Error("Forward SOCKS5 connect dial error: %v", err)
 		_ = h.writeReply(bw, 0x05, "") // connection refused
 		return
 	}
@@ -217,16 +215,16 @@ func (h *Handler) handleConnect(ctx context.Context, cid string, conn net.Conn, 
 	bind := hostPortFromAddr(up.LocalAddr())
 	_ = h.writeReply(bw, 0x00, bind)
 
-	h.log.Debug("[%s] Forward SOCKS5 CONNECT Connected to upstream %s --> %s", cid, conn.RemoteAddr(), dest)
+	h.log.Debug("Forward SOCKS5 CONNECT Connected to upstream %s --> %s", conn.RemoteAddr(), dest)
 
 	bytes, dur, err := netio.Bidirectional(ctx, conn, up)
 	if err != nil && ctx.Err() == nil {
-		h.log.Error("[%s] Forward SOCKS5 connect transfer error: %v", cid, err)
+		h.log.Error("Forward SOCKS5 connect transfer error: %v", err)
 	}
-	h.log.Debug("[%s] Forward SOCKS5 CONNECT Closed connection %s --> %s transferred %d bytes in %s", cid, conn.RemoteAddr(), dest, bytes, dur)
+	h.log.Debug("Forward SOCKS5 CONNECT Closed connection %s --> %s transferred %d bytes in %s", conn.RemoteAddr(), dest, bytes, dur)
 }
 
-func (h *Handler) handleUDP(ctx context.Context, cid string, conn net.Conn, bw *bufio.Writer) {
+func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer) {
 	_ = conn.SetReadDeadline(time.Time{})
 
 	laddr := conn.LocalAddr()
@@ -236,7 +234,7 @@ func (h *Handler) handleUDP(ctx context.Context, cid string, conn net.Conn, bw *
 	}
 	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: 0})
 	if err != nil {
-		h.log.Error("[%s] Forward SOCKS5 udp listen error: %v", cid, err)
+		h.log.Error("Forward SOCKS5 udp listen error: %v", err)
 		_ = h.writeReply(bw, 0x01, "")
 		return
 	}
@@ -247,21 +245,18 @@ func (h *Handler) handleUDP(ctx context.Context, cid string, conn net.Conn, bw *
 		return
 	}
 
-	h.log.Debug("[%s] Forward SOCKS5 UDP relay at %s", cid, bind)
+	h.log.Debug("Forward SOCKS5 UDP relay at %s", bind)
 
-	// Create a context that will be canceled when the TCP connection is closed
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Monitor the TCP connection for closure
 	go func() {
 		defer cancel()
 		buf := make([]byte, 1)
 		_, _ = conn.Read(buf)
-		// Any return from Read (including EOF) means the connection is closed or broken
 	}()
 
-	sess := newUDPSession(cid, h.dialer, h.log, udpLn, h.udpIdle)
+	sess := newUDPSession(h.dialer, h.log, udpLn, h.udpIdle)
 	sess.run(ctx)
 }
 
@@ -285,7 +280,6 @@ func (h *Handler) writeReply(bw *bufio.Writer, rep byte, bind string) error {
 }
 
 type udpSession struct {
-	cid    string
 	dialer dialer.Dialer
 	log    *logging.Logger
 
@@ -304,9 +298,8 @@ type udpPeer struct {
 	lastSeen atomic.Int64
 }
 
-func newUDPSession(cid string, d dialer.Dialer, log *logging.Logger, relay *net.UDPConn, idle time.Duration) *udpSession {
+func newUDPSession(d dialer.Dialer, log *logging.Logger, relay *net.UDPConn, idle time.Duration) *udpSession {
 	return &udpSession{
-		cid:      cid,
 		dialer:   d,
 		log:      log,
 		relay:    relay,
@@ -329,7 +322,7 @@ func (s *udpSession) run(ctx context.Context) {
 				s.cleanupIdle()
 				continue
 			}
-			s.log.Error("[%s] Forward SOCKS5 UDP read error: %v", s.cid, err)
+			s.log.Error("Forward SOCKS5 UDP read error: %v", err)
 			continue
 		}
 		if n == 0 {
@@ -338,7 +331,7 @@ func (s *udpSession) run(ctx context.Context) {
 
 		dest, payload, err := parseUDPRequest(buf[:n])
 		if err != nil {
-			s.log.Debug("[%s] Forward SOCKS5 UDP parse error: %v", s.cid, err)
+			s.log.Debug("Forward SOCKS5 UDP parse error: %v", err)
 			continue
 		}
 
@@ -349,24 +342,24 @@ func (s *udpSession) run(ctx context.Context) {
 		peer.lastSeen.Store(time.Now().UnixNano())
 
 		if _, err := peer.conn.Write(payload); err != nil {
-			s.log.Error("[%s] Forward SOCKS5 UDP write upstream error: %v", s.cid, err)
+			s.log.Error("Forward SOCKS5 UDP write upstream error: %v", err)
 			continue
 		}
 	}
 }
 
 func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.UDPAddr) *udpPeer {
-	// 快速路径
+	key := dest + "|" + src.String()
 	s.mu.Lock()
-	if p := s.sessions[dest]; p != nil {
+	if p := s.sessions[key]; p != nil {
 		s.mu.Unlock()
 		return p
 	}
 	s.mu.Unlock()
 
-	result, _, _ := s.sf.Do(dest, func() (interface{}, error) {
+	result, _, _ := s.sf.Do(key, func() (interface{}, error) {
 		s.mu.Lock()
-		if p := s.sessions[dest]; p != nil {
+		if p := s.sessions[key]; p != nil {
 			s.mu.Unlock()
 			return p, nil
 		}
@@ -374,11 +367,11 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 
 		c, err := s.dialer.DialContext(ctx, "udp", dest)
 		if err != nil {
-			s.log.Error("[%s] Forward SOCKS5 UDP dial %s error: %v", s.cid, dest, err)
+			s.log.Error("Forward SOCKS5 UDP dial %s error: %v", dest, err)
 			return nil, err
 		}
 
-		s.log.Info("[%s] Forward SOCKS5 UDP Received connection %s --> %s", s.cid, src, dest)
+		s.log.Info("Forward SOCKS5 UDP Received connection %s --> %s", src, dest)
 
 		p := &udpPeer{
 			conn: c,
@@ -386,10 +379,10 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 		}
 		p.lastSeen.Store(time.Now().UnixNano())
 
-		go s.readUpstream(ctx, p, src)
+		go s.readUpstream(ctx, p, src, key)
 
 		s.mu.Lock()
-		s.sessions[dest] = p
+		s.sessions[key] = p
 		s.mu.Unlock()
 		return p, nil
 	})
@@ -400,10 +393,10 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 	return result.(*udpPeer)
 }
 
-func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.UDPAddr) {
+func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.UDPAddr, key string) {
 	defer func() {
 		s.mu.Lock()
-		delete(s.sessions, p.dest)
+		delete(s.sessions, key)
 		s.mu.Unlock()
 		p.conn.Close()
 	}()
@@ -423,7 +416,6 @@ func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.U
 				return
 			}
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				// check idle
 				if time.Since(time.Unix(0, p.lastSeen.Load())) > s.idle {
 					return
 				}
