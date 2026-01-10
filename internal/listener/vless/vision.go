@@ -61,3 +61,31 @@ func (c *VisionConn) Read(b []byte) (n int, err error) {
 		}
 	}
 }
+
+func (c *VisionConn) Write(b []byte) (int, error) {
+	total := len(b)
+	offset := 0
+
+	for offset < total {
+		remaining := total - offset
+		chunkSize := remaining
+		if chunkSize > 65535 {
+			chunkSize = 65535
+		}
+
+		header := []byte{0x01, 0x00, 0x00}
+		binary.BigEndian.PutUint16(header[1:], uint16(chunkSize))
+
+		if _, err := c.Conn.Write(header); err != nil {
+			return offset, err
+		}
+
+		if _, err := c.Conn.Write(b[offset : offset+chunkSize]); err != nil {
+			return offset, err
+		}
+
+		offset += chunkSize
+	}
+
+	return total, nil
+}

@@ -97,3 +97,39 @@ func TestVisionConn_Read(t *testing.T) {
 		t.Errorf("Expected ' world', got '%s'", got)
 	}
 }
+
+func TestVisionConn_Write(t *testing.T) {
+	buf := new(bytes.Buffer)
+	mock := &mockConn{w: buf}
+	vc := vless.NewVisionConn(mock)
+
+	payload := []byte("hello vision")
+	n, err := vc.Write(payload)
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	if n != len(payload) {
+		t.Errorf("Write length mismatch: got %d, want %d", n, len(payload))
+	}
+
+	// Verify wire format
+	// 0x01 | Len(hi) | Len(lo) | payload
+	wantLen := 3 + len(payload)
+	if buf.Len() != wantLen {
+		t.Fatalf("Wire length mismatch: got %d, want %d", buf.Len(), wantLen)
+	}
+
+	wire := buf.Bytes()
+	if wire[0] != 0x01 {
+		t.Errorf("Wrong context: %x", wire[0])
+	}
+
+	plen := int(wire[1])<<8 | int(wire[2])
+	if plen != len(payload) {
+		t.Errorf("Wrong payload length: %d", plen)
+	}
+
+	if string(wire[3:]) != string(payload) {
+		t.Errorf("Wrong payload: %s", string(wire[3:]))
+	}
+}
