@@ -7,24 +7,16 @@ import (
 
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport/internet"
-	_ "github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
-	_ "github.com/xtls/xray-core/transport/internet/tcp"
 
-	"forward/internal/dialer"
-	inet "forward/internal/io/net"
+	vhandler "forward/internal/handler/vless"
 	"forward/internal/logging"
-	"forward/internal/protocol/vless"
-
-	"github.com/xtls/xray-core/proxy/vless/encoding"
-	"google.golang.org/protobuf/proto"
 )
 
 type Listener struct {
 	addr           string
 	listener       internet.Listener
-	dialer         dialer.Dialer
-	uuid           vless.UUID
+	handler        *vhandler.Handler
 	log            *logging.Logger
 	streamSettings *internet.MemoryStreamConfig
 	xaddr          xnet.Address
@@ -54,41 +46,5 @@ func (l *Listener) Run(ctx context.Context) error {
 }
 
 func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
-
-	req, err := vless.ReadRequest(conn)
-	if err != nil {
-		l.log.Debug("Read VLESS request failed: %v", err)
-		return
-	}
-
-	if req.UUID != l.uuid {
-		l.log.Debug("Invalid UUID from %s", conn.RemoteAddr())
-		return
-	}
-
-	l.log.Info("VLESS connect %s -> %s", conn.RemoteAddr(), req.Address)
-
-	targetConn, err := l.dialer.DialContext(ctx, req.Network, req.Address)
-	if err != nil {
-		l.log.Error("Dial target %s failed: %v", req.Address, err)
-		return
-	}
-	defer targetConn.Close()
-
-	if err := vless.WriteResponse(conn, vless.Version, nil); err != nil {
-		return
-	}
-
-	if len(req.Addons) > 0 {
-		var addons encoding.Addons
-		if err := proto.Unmarshal(req.Addons, &addons); err != nil {
-			l.log.Debug("Unmarshal addons failed: %v", err)
-		} else if addons.Flow == vless.AddonFlowVision {
-			l.log.Info("VLESS Vision flow detected from %s", conn.RemoteAddr())
-			conn = NewVisionConn(conn)
-		}
-	}
-
-	inet.Bidirectional(ctx, conn, targetConn)
+	l.handler.Handle(ctx, conn)
 }

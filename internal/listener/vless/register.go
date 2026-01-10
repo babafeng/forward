@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"forward/internal/config"
 	"forward/internal/dialer"
+	vhandler "forward/internal/handler/vless"
 	"forward/internal/listener"
 	"forward/internal/protocol/vless"
 	"forward/internal/utils/crypto"
 	"net/url"
 	"strings"
 
+	"github.com/xtls/xray-core/common/protocol"
+	xuuid "github.com/xtls/xray-core/common/uuid"
 	"github.com/xtls/xray-core/infra/conf"
+	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/transport/internet"
 
 	xnet "github.com/xtls/xray-core/common/net"
@@ -101,6 +105,23 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 		}
 	}
 
+	parsedUUID, err := xuuid.ParseBytes(uuid[:])
+	if err != nil {
+		return nil, fmt.Errorf("invalid vless uuid: %w", err)
+	}
+	memUser := &protocol.MemoryUser{
+		Account: &xvless.MemoryAccount{
+			ID: protocol.NewID(parsedUUID),
+		},
+	}
+	if flow != "" {
+		memUser.Account.(*xvless.MemoryAccount).Flow = flow
+	}
+	validator := &xvless.MemoryValidator{}
+	if err := validator.Add(memUser); err != nil {
+		return nil, fmt.Errorf("init vless user failed: %w", err)
+	}
+
 	pbStreamSettings, err := streamConf.Build()
 	if err != nil {
 		return nil, fmt.Errorf("build stream config failed: %w", err)
@@ -133,10 +154,11 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 			username, hostStr, port, params.Encode())
 	}
 
+	handler := vhandler.NewHandler(d, cfg.Logger, validator)
+
 	return &Listener{
 		addr:           listen.Address(),
-		dialer:         d,
-		uuid:           uuid,
+		handler:        handler,
 		log:            cfg.Logger,
 		streamSettings: memStreamSettings,
 		xaddr:          xnet.ParseAddress(hostStr),
