@@ -15,6 +15,9 @@ import (
 	inet "forward/internal/io/net"
 	"forward/internal/logging"
 	"forward/internal/protocol/vless"
+
+	"github.com/xtls/xray-core/proxy/vless/encoding"
+	"google.golang.org/protobuf/proto"
 )
 
 type Listener struct {
@@ -75,6 +78,16 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 
 	if err := vless.WriteResponse(conn, vless.Version, nil); err != nil {
 		return
+	}
+
+	if len(req.Addons) > 0 {
+		var addons encoding.Addons
+		if err := proto.Unmarshal(req.Addons, &addons); err != nil {
+			l.log.Debug("Unmarshal addons failed: %v", err)
+		} else if addons.Flow == vless.AddonFlowVision {
+			l.log.Info("VLESS Vision flow detected from %s", conn.RemoteAddr())
+			conn = NewVisionConn(conn)
+		}
 	}
 
 	inet.Bidirectional(ctx, conn, targetConn)
