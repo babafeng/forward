@@ -88,7 +88,7 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 
 		flow = q.Get("flow")
 		if flow == "" {
-			flow = "xtls-rprx-vision"
+			flow = vless.AddonFlowVision
 		}
 
 		streamConf.REALITYSettings = &conf.REALITYConfig{
