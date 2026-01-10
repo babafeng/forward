@@ -211,7 +211,6 @@ func parseArgs(args []string) (config.Config, error) {
 		xlog.ReplaceWithSeverityLogger(xlog.Severity_Error)
 	}
 
-	logger.Info("Forward %s (%s %s/%s)", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
 		return config.Config{}, nil
 	}
