@@ -12,6 +12,8 @@ const (
 	Version    = 0x00
 	CommandTCP = 0x01
 	CommandUDP = 0x02
+
+	AddonFlowVision = "xtls-rprx-vision"
 )
 
 type UUID [16]byte
