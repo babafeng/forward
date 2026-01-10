@@ -40,6 +40,7 @@ type Request struct {
 	Addons  []byte
 	Command byte
 	Port    uint16
+	Host    string
 	Address string
 	Network string // "tcp" or "udp"
 }
@@ -114,6 +115,7 @@ func ReadRequest(r io.Reader) (*Request, error) {
 	}
 
 	req.Address = fmt.Sprintf("%s:%d", host, req.Port)
+	req.Host = host
 
 	switch req.Command {
 	case CommandTCP:
