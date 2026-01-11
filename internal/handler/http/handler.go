@@ -140,7 +140,11 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 		bytes, dur, err := inet.Bidirectional(r.Context(), conn, up)
 		if err != nil && r.Context().Err() == nil {
-			h.log.Error("Forward HTTP connect transfer error: %v", err)
+			if errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection") {
+				h.log.Debug("Forward HTTP connect transfer closed: %v", err)
+			} else {
+				h.log.Error("Forward HTTP connect transfer error: %v", err)
+			}
 		}
 		h.log.Debug("Forward HTTP CONNECT Closed connection %s --> %s transferred %d bytes in %s", r.RemoteAddr, target, bytes, dur)
 		return
