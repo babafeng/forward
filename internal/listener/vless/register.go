@@ -84,6 +84,7 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 			pbk = pk
 		}
 
+		println(111111, q.Get("sid"))
 		shortIds := strings.Split(q.Get("sid"), ",")
 		if len(shortIds) == 0 || shortIds[0] == "" {
 			shortIds = []string{crypto.GenerateShortID(4)}

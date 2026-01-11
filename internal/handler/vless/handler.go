@@ -86,8 +86,11 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 		h.log.Debug("Write VLESS response failed: %v", err)
 		return
 	}
+	if err := bufferWriter.SetBuffered(false); err != nil {
+		h.log.Debug("Flush VLESS response failed: %v", err)
+		return
+	}
 	clientWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, false, ctx, conn, nil)
-	bufferWriter.SetFlushNext()
 
 	targetReader := buf.NewReader(targetConn)
 	targetWriter := buf.NewWriter(targetConn)
