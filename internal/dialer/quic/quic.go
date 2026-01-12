@@ -58,7 +58,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 
 	var cancel context.CancelFunc
 	if _, ok := ctx.Deadline(); !ok {
-		ctx, cancel = context.WithTimeout(ctx, d.timeout)
+		timeout := d.timeout
+		if timeout <= 0 {
+			timeout = config.DefaultDialTimeout
+		}
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 
 	forwardURL := fmt.Sprintf("https://%s", d.target)

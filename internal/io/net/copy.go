@@ -6,6 +6,7 @@ import (
 	"forward/internal/config"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +61,9 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 		}
 	}
 
+	if first != nil && (errors.Is(first, net.ErrClosed) || strings.Contains(first.Error(), "use of closed network connection")) {
+		first = nil
+	}
 	return total.Load(), time.Since(start), first
 }
 
