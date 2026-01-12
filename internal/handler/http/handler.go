@@ -20,6 +20,7 @@ import (
 	"forward/internal/dialer"
 	inet "forward/internal/io/net"
 	"forward/internal/logging"
+	"forward/internal/route"
 )
 
 type Handler struct {
@@ -29,10 +30,15 @@ type Handler struct {
 	requireAuth bool
 	insecureTLS bool
 	transparent bool
+	routeStore  *route.Store
 
 	transportOnce sync.Once
 	transport     *stdhttp.Transport
 }
+
+type routeContextKey int
+
+const routeKey routeContextKey = iota
 
 func New(cfg config.Config, d dialer.Dialer) *Handler {
 	user, pass, ok := cfg.Listen.UserPass()
@@ -43,6 +49,7 @@ func New(cfg config.Config, d dialer.Dialer) *Handler {
 		requireAuth: ok,
 		insecureTLS: cfg.Insecure,
 		transparent: strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
+		routeStore:  cfg.RouteStore,
 	}
 }
 
@@ -53,7 +60,7 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 		}
 		h.transport = &stdhttp.Transport{
 			Proxy:               nil,
-			DialContext:         h.dialer.DialContext,
+			DialContext:         h.routeDialContext,
 			ForceAttemptHTTP2:   true,
 			TLSClientConfig:     tlsCfg,
 			DisableCompression:  true,
@@ -64,11 +71,20 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 	return h.transport
 }
 
+func (h *Handler) Close() error {
+	if h.transport != nil {
+		h.transport.CloseIdleConnections()
+	}
+	return nil
+}
+
 // ServeHTTP implements net/http Handler to support HTTP/1.1, HTTP/2, HTTP/3 entrypoints.
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	h.log.Debug("Forward HTTP request %s %s from %s host=%s", r.Method, r.URL.String(), r.RemoteAddr, r.Host)
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if !r.URL.IsAbs() && !h.transparent {
+			h.log.Debug("Forward HTTP reject non-absolute request from %s: %s", r.RemoteAddr, r.URL.String())
 			writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 			return
 		}
@@ -109,8 +125,19 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		target += ":443"
 	}
 
+	via, err := route.RouteVia(r.Context(), h.routeStore, h.log, r.RemoteAddr, target)
+	if err != nil {
+		h.log.Error("Forward HTTP route error: %v", err)
+		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+	if route.IsReject(via) {
+		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+
 	h.log.Info("Forward HTTP CONNECT Received connection %s --> %s", r.RemoteAddr, target)
-	up, err := h.dialer.DialContext(r.Context(), "tcp", target)
+	up, err := dialer.DialContextVia(r.Context(), h.dialer, "tcp", target, via)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
 			(r.Context().Err() != nil && (errors.Is(r.Context().Err(), context.Canceled) || errors.Is(r.Context().Err(), context.DeadlineExceeded))) {
@@ -140,7 +167,11 @@ func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 		bytes, dur, err := inet.Bidirectional(r.Context(), conn, up)
 		if err != nil && r.Context().Err() == nil {
-			h.log.Error("Forward HTTP connect transfer error: %v", err)
+			if errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection") {
+				h.log.Debug("Forward HTTP connect transfer closed: %v", err)
+			} else {
+				h.log.Error("Forward HTTP connect transfer error: %v", err)
+			}
 		}
 		h.log.Debug("Forward HTTP CONNECT Closed connection %s --> %s transferred %d bytes in %s", r.RemoteAddr, target, bytes, dur)
 		return
@@ -166,9 +197,22 @@ func (h *Handler) handleForward(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	ctx := r.Context()
 	req, err := h.prepareUpstreamRequest(ctx, r)
 	if err != nil {
+		h.log.Debug("Forward HTTP bad request from %s: %v", r.RemoteAddr, err)
 		writeSimple(w, stdhttp.StatusBadRequest, "bad request")
 		return
 	}
+
+	via, err := route.RouteVia(ctx, h.routeStore, h.log, r.RemoteAddr, req.URL.Host)
+	if err != nil {
+		h.log.Error("Forward HTTP route error: %v", err)
+		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+	if route.IsReject(via) {
+		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+	req = req.WithContext(context.WithValue(req.Context(), routeKey, via))
 
 	h.log.Info("Forward HTTP Received connection %s --> %s", r.RemoteAddr, req.URL.Host)
 
@@ -212,6 +256,11 @@ func (h *Handler) prepareUpstreamRequest(ctx context.Context, r *stdhttp.Request
 		return nil, fmt.Errorf("missing host")
 	}
 	return req, nil
+}
+
+func (h *Handler) routeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	via, _ := ctx.Value(routeKey).(string)
+	return dialer.DialContextVia(ctx, h.dialer, network, address, via)
 }
 
 func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {

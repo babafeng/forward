@@ -20,6 +20,8 @@ import (
 	"forward/internal/dialer"
 	netio "forward/internal/io/net"
 	"forward/internal/logging"
+	"forward/internal/pool"
+	"forward/internal/route"
 	socks5util "forward/internal/utils/socks5"
 )
 
@@ -39,7 +41,8 @@ type Handler struct {
 	auth        auth.Authenticator
 	requireAuth bool
 
-	udpIdle time.Duration
+	udpIdle    time.Duration
+	routeStore *route.Store
 }
 
 func New(cfg config.Config, d dialer.Dialer) *Handler {
@@ -54,6 +57,7 @@ func New(cfg config.Config, d dialer.Dialer) *Handler {
 		auth:        auth.FromUserPass(user, pass),
 		requireAuth: ok,
 		udpIdle:     idle,
+		routeStore:  cfg.RouteStore,
 	}
 }
 
@@ -203,8 +207,19 @@ func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string,
 func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Writer, dest string) {
 	_ = conn.SetReadDeadline(time.Time{})
 
+	via, err := route.RouteVia(ctx, h.routeStore, h.log, conn.RemoteAddr().String(), dest)
+	if err != nil {
+		h.log.Error("Forward SOCKS5 route error: %v", err)
+		_ = h.writeReply(bw, 0x05, "")
+		return
+	}
+	if route.IsReject(via) {
+		_ = h.writeReply(bw, 0x05, "")
+		return
+	}
+
 	h.log.Info("Forward SOCKS5 Received connection %s --> %s", conn.RemoteAddr(), dest)
-	up, err := h.dialer.DialContext(ctx, "tcp", dest)
+	up, err := dialer.DialContextVia(ctx, h.dialer, "tcp", dest, via)
 	if err != nil {
 		h.log.Error("Forward SOCKS5 connect dial error: %v", err)
 		_ = h.writeReply(bw, 0x05, "") // connection refused
@@ -256,7 +271,7 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 		_, _ = conn.Read(buf)
 	}()
 
-	sess := newUDPSession(h.dialer, h.log, udpLn, h.udpIdle)
+	sess := newUDPSession(h.dialer, h.routeStore, h.log, udpLn, h.udpIdle)
 	sess.run(ctx)
 }
 
@@ -280,8 +295,9 @@ func (h *Handler) writeReply(bw *bufio.Writer, rep byte, bind string) error {
 }
 
 type udpSession struct {
-	dialer dialer.Dialer
-	log    *logging.Logger
+	dialer     dialer.Dialer
+	routeStore *route.Store
+	log        *logging.Logger
 
 	relay *net.UDPConn
 
@@ -298,18 +314,20 @@ type udpPeer struct {
 	lastSeen atomic.Int64
 }
 
-func newUDPSession(d dialer.Dialer, log *logging.Logger, relay *net.UDPConn, idle time.Duration) *udpSession {
+func newUDPSession(d dialer.Dialer, routeStore *route.Store, log *logging.Logger, relay *net.UDPConn, idle time.Duration) *udpSession {
 	return &udpSession{
-		dialer:   d,
-		log:      log,
-		relay:    relay,
-		idle:     idle,
-		sessions: make(map[string]*udpPeer),
+		dialer:     d,
+		routeStore: routeStore,
+		log:        log,
+		relay:      relay,
+		idle:       idle,
+		sessions:   make(map[string]*udpPeer),
 	}
 }
 
 func (s *udpSession) run(ctx context.Context) {
-	buf := make([]byte, 64*1024)
+	buf := pool.Get()
+	defer pool.Put(buf)
 
 	for {
 		_ = s.relay.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -365,7 +383,16 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 		}
 		s.mu.Unlock()
 
-		c, err := s.dialer.DialContext(ctx, "udp", dest)
+		via, err := route.RouteVia(ctx, s.routeStore, s.log, src.String(), dest)
+		if err != nil {
+			s.log.Error("Forward SOCKS5 UDP route error: %v", err)
+			return nil, err
+		}
+		if route.IsReject(via) {
+			return nil, fmt.Errorf("route rejected")
+		}
+
+		c, err := dialer.DialContextVia(ctx, s.dialer, "udp", dest, via)
 		if err != nil {
 			s.log.Error("Forward SOCKS5 UDP dial %s error: %v", dest, err)
 			return nil, err
@@ -401,7 +428,8 @@ func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.U
 		p.conn.Close()
 	}()
 
-	buf := make([]byte, 64*1024)
+	buf := pool.Get()
+	defer pool.Put(buf)
 	host, portStr, err := net.SplitHostPort(p.dest)
 	if err != nil {
 		return

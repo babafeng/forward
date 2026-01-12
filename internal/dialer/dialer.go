@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"forward/internal/config"
+	"forward/internal/endpoint"
 )
 
 type Dialer interface {
@@ -40,17 +41,28 @@ func New(cfg config.Config) (Dialer, error) {
 		return NewDirect(cfg), nil
 	}
 
+	if cfg.RouteStore != nil {
+		return NewRouteDialer(cfg, cfg.RouteStore)
+	}
+
 	if cfg.Forward == nil {
 		return NewDirect(cfg), nil
 	}
 
-	scheme := strings.ToLower(cfg.Forward.Scheme)
+	return newDialerWithForward(cfg, *cfg.Forward)
+}
+
+func newDialerWithForward(cfg config.Config, forward endpoint.Endpoint) (Dialer, error) {
+	scheme := strings.ToLower(forward.Scheme)
 	mu.RLock()
 	f, ok := factories[scheme]
 	mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("unsupported forward scheme: %s", cfg.Forward.Scheme)
+		return nil, fmt.Errorf("unsupported forward scheme: %s", forward.Scheme)
 	}
+	cfg.Forward = &forward
+	cfg.Route = nil
+	cfg.RouteStore = nil
 	return f(cfg)
 }
 
