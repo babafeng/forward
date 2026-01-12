@@ -154,7 +154,7 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 			username, hostStr, port, params.Encode())
 	}
 
-	handler := vhandler.NewHandler(d, cfg.Logger, validator)
+	handler := vhandler.NewHandler(d, cfg.Logger, cfg.RouteStore, validator)
 
 	return &Listener{
 		addr:           listen.Address(),

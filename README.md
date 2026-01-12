@@ -7,6 +7,7 @@ forward is a security & lightweight & high-performance port forwarding and proxy
 * **Port Forwarding**: TCP/UDP forwarding with support for proxy chains.
 * **Intranet Penetration (Reverse Proxy)**: Expose local services to the internet via a reverse tunnel.
 * **Proxy Server**: HTTP/SOCKS5/TLS proxy server.
+* **Proxy Routing**: Rule-based routing to multiple upstream proxies (INI config).
 * **Multiplexing**: Uses Yamux for TCP and QUIC for UDP (planned) to improve performance.
 
 ## Installation
@@ -182,3 +183,38 @@ forward -C config.json
 ```
 
 Each node has independent `listeners`, `forward`, and `insecure` settings.
+
+### Proxy Route (INI)
+
+Start a rule-based proxy router with a dedicated INI config file. This mode listens locally and routes traffic to different upstream proxies.
+
+```bash
+forward -R proxy-route.conf
+```
+
+**Example config:**
+
+```
+[General]
+listen = socks5://0.0.0.0:1080, http://0.0.0.0:8080
+skip-proxy = 192.168.0.0/16, 127.0.0.1/32
+dns-server = 8.8.8.8, 8.8.4.4
+mmdb-path = ~/.forward/Country.mmdb
+mmdb-link = https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb
+
+[Proxy]
+PROXY_JP = vless+reality://uuid@jp.example.com:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=...&security=reality&sid=...&sni=swscan.apple.com&type=tcp
+PROXY_SG = socks5://user:pass@sg.example.com:1080
+
+[Rule]
+DOMAIN,ifconfig.me,PROXY_JP
+DOMAIN-SUFFIX,google.com,PROXY_SG
+IP-CIDR,1.1.1.0/24,PROXY_SG
+GEOIP,CN,DIRECT
+FINAL,DIRECT
+```
+
+Notes:
+* Rules are matched top-to-bottom; first match wins.
+* Use `socks5h://` on clients if you want domain-based rules to match before local DNS resolution.
+* The router auto-reloads when the INI file changes (polled every second).

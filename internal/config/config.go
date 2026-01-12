@@ -5,6 +5,7 @@ import (
 
 	"forward/internal/endpoint"
 	"forward/internal/logging"
+	"forward/internal/route"
 )
 
 const (
@@ -77,6 +78,10 @@ type Config struct {
 
 	Forward *endpoint.Endpoint
 	Nodes   []NodeConfig
+
+	Route      *route.Config
+	RouteStore *route.Store
+	RoutePath  string
 
 	Logger *logging.Logger
 

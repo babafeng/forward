@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -21,18 +22,21 @@ import (
 
 	"forward/internal/dialer"
 	"forward/internal/logging"
+	"forward/internal/route"
 )
 
 type Handler struct {
 	dialer    dialer.Dialer
 	log       *logging.Logger
 	validator xvless.Validator
+	routeStore *route.Store
 }
 
-func NewHandler(d dialer.Dialer, log *logging.Logger, validator xvless.Validator) *Handler {
+func NewHandler(d dialer.Dialer, log *logging.Logger, routeStore *route.Store, validator xvless.Validator) *Handler {
 	return &Handler{
 		dialer:    d,
 		log:       log,
+		routeStore: routeStore,
 		validator: validator,
 	}
 }
@@ -62,7 +66,16 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 		}
 	}
 
-	targetConn, err := h.dialer.DialContext(ctx, network, targetAddr)
+	via, err := h.routeVia(ctx, conn.RemoteAddr().String(), targetAddr)
+	if err != nil {
+		h.log.Error("VLESS route error: %v", err)
+		return
+	}
+	if strings.EqualFold(via, "REJECT") {
+		return
+	}
+
+	targetConn, err := dialer.DialContextVia(ctx, h.dialer, network, targetAddr, via)
 	if err != nil {
 		h.log.Error("Dial target %s failed: %v", targetAddr, err)
 		return
@@ -86,8 +99,11 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 		h.log.Debug("Write VLESS response failed: %v", err)
 		return
 	}
+	if err := bufferWriter.SetBuffered(false); err != nil {
+		h.log.Debug("Flush VLESS response failed: %v", err)
+		return
+	}
 	clientWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, false, ctx, conn, nil)
-	bufferWriter.SetFlushNext()
 
 	targetReader := buf.NewReader(targetConn)
 	targetWriter := buf.NewWriter(targetConn)
@@ -201,4 +217,16 @@ func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.
 		}
 	}
 	return first
+}
+
+func (h *Handler) routeVia(ctx context.Context, src, dst string) (string, error) {
+	if h.routeStore == nil {
+		return "DIRECT", nil
+	}
+	decision, err := h.routeStore.Decide(ctx, dst)
+	if err != nil {
+		return "DIRECT", err
+	}
+	h.log.Info("Forward Route %s --> %s via %s", src, dst, decision.Via)
+	return decision.Via, nil
 }
