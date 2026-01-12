@@ -8,6 +8,7 @@ import (
 	"net"
 	"reflect"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -38,6 +39,7 @@ type Dialer struct {
 	proxyDest      xnet.Destination
 	userID         *protocol.ID
 	flow           string
+	encryption     string
 	streamSettings *internet.MemoryStreamConfig
 }
 
@@ -85,19 +87,37 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 		Security: security,
 	}
 
-	if security == "reality" {
+	alpn := strings.Split(q.Get("alpn"), ",")
+	if len(alpn) == 1 && alpn[0] == "" {
+		alpn = nil
+	}
+	fpOrDefault := func(fp string) string {
+		if fp == "" {
+			return "chrome"
+		}
+		return fp
+	}
+
+	switch security {
+	case "reality":
 		streamConf.REALITYSettings = &conf.REALITYConfig{
 			Show:        false,
-			Fingerprint: q.Get("fp"),
+			Fingerprint: fpOrDefault(q.Get("fp")),
 			ServerName:  q.Get("sni"),
 			PublicKey:   q.Get("pbk"),
 			ShortId:     q.Get("sid"),
 			SpiderX:     q.Get("u"),
 		}
-	} else if security == "tls" {
+	case "tls":
+		var alpnList *conf.StringList
+		if len(alpn) > 0 {
+			sl := conf.StringList(alpn)
+			alpnList = &sl
+		}
 		streamConf.TLSSettings = &conf.TLSConfig{
 			ServerName:  q.Get("sni"),
-			Fingerprint: q.Get("fp"),
+			Fingerprint: fpOrDefault(q.Get("fp")),
+			ALPN:        alpnList,
 		}
 		if q.Get("insecure") == "true" || cfg.Insecure {
 			streamConf.TLSSettings.Insecure = true
@@ -118,6 +138,7 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 		proxyDest:      proxyDest,
 		userID:         protocol.NewID(parsedUUID),
 		flow:           strings.TrimSpace(q.Get("flow")),
+		encryption:     strings.TrimSpace(q.Get("encryption")),
 		streamSettings: memStreamSettings,
 	}, nil
 }
@@ -134,35 +155,32 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		return nil, err
 	}
 
-	if err := encoding.EncodeRequestHeader(conn, request, requestAddons); err != nil {
+	trafficState := proxy.NewTrafficState(d.userID.Bytes())
+	bufferWriter := buf.NewBufferedWriter(buf.NewWriter(conn))
+	if err := encoding.EncodeRequestHeader(bufferWriter, request, requestAddons); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("vless request encode failed: %w", err)
 	}
-
-	responseAddons, err := encoding.DecodeResponseHeader(conn, request)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("vless response decode failed: %w", err)
-	}
-
-	trafficState := proxy.NewTrafficState(d.userID.Bytes())
-	clientReader := encoding.DecodeBodyAddons(conn, request, responseAddons)
+	clientWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, true, ctx, conn, nil)
 	if requestAddons.Flow == xvless.XRV {
-		input, rawInput, err := visionInputBuffers(conn)
-		if err != nil {
+		if err := clientWriter.WriteMultiBuffer(make(buf.MultiBuffer, 1)); err != nil {
 			conn.Close()
-			return nil, err
+			return nil, fmt.Errorf("vless vision padding failed: %w", err)
 		}
-		clientReader = proxy.NewVisionReader(clientReader, trafficState, false, ctx, conn, input, rawInput, nil)
 	}
-
-	clientWriter := encoding.EncodeBodyAddons(buf.NewWriter(conn), request, requestAddons, trafficState, true, ctx, conn, nil)
-	reader := &buf.BufferedReader{Reader: clientReader}
+	if err := bufferWriter.SetBuffered(false); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("vless flush failed: %w", err)
+	}
 
 	return &vlessConn{
 		Conn:   conn,
-		reader: reader,
+		reader: nil,
 		writer: clientWriter,
+		ctx:    ctx,
+		req:    request,
+		addons: requestAddons,
+		state:  trafficState,
 	}, nil
 }
 
@@ -170,9 +188,26 @@ type vlessConn struct {
 	net.Conn
 	reader *buf.BufferedReader
 	writer buf.Writer
+
+	ctx   context.Context
+	req   *protocol.RequestHeader
+	addons *encoding.Addons
+	state *proxy.TrafficState
+
+	initOnce sync.Once
+	initErr  error
+	directReader bool
 }
 
 func (c *vlessConn) Read(p []byte) (int, error) {
+	if err := c.initReader(); err != nil {
+		return 0, err
+	}
+	if c.state != nil && c.state.Outbound.DownlinkReaderDirectCopy && !c.directReader {
+		rawConn, _, _ := proxy.UnwrapRawConn(c.Conn)
+		c.reader = &buf.BufferedReader{Reader: buf.NewReader(rawConn)}
+		c.directReader = true
+	}
 	return c.reader.Read(p)
 }
 
@@ -195,6 +230,28 @@ func (c *vlessConn) Write(p []byte) (int, error) {
 		written += n
 	}
 	return written, nil
+}
+
+func (c *vlessConn) initReader() error {
+	c.initOnce.Do(func() {
+		responseAddons, err := encoding.DecodeResponseHeader(c.Conn, c.req)
+		if err != nil {
+			c.initErr = fmt.Errorf("vless response decode failed: %w", err)
+			return
+		}
+
+		reader := encoding.DecodeBodyAddons(c.Conn, c.req, responseAddons)
+		if c.addons != nil && c.addons.Flow == xvless.XRV {
+			input, rawInput, err := visionInputBuffers(c.Conn)
+			if err != nil {
+				c.initErr = err
+				return
+			}
+			reader = proxy.NewVisionReader(reader, c.state, false, c.ctx, c.Conn, input, rawInput, nil)
+		}
+		c.reader = &buf.BufferedReader{Reader: reader}
+	})
+	return c.initErr
 }
 
 func (d *Dialer) buildRequest(network, address string) (*protocol.RequestHeader, *encoding.Addons, error) {
@@ -226,8 +283,9 @@ func (d *Dialer) buildRequest(network, address string) (*protocol.RequestHeader,
 
 	user := &protocol.MemoryUser{
 		Account: &xvless.MemoryAccount{
-			ID:   d.userID,
-			Flow: flow,
+			ID:         d.userID,
+			Flow:       flow,
+			Encryption: encryptionValue(d.encryption),
 		},
 	}
 
@@ -240,6 +298,14 @@ func (d *Dialer) buildRequest(network, address string) (*protocol.RequestHeader,
 	}
 	addons := &encoding.Addons{Flow: flow}
 	return request, addons, nil
+}
+
+func encryptionValue(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "none"
+	}
+	return v
 }
 
 func visionInputBuffers(conn net.Conn) (*bytes.Reader, *bytes.Buffer, error) {
@@ -256,9 +322,17 @@ func visionInputBuffers(conn net.Conn) (*bytes.Reader, *bytes.Buffer, error) {
 		if c.ConnectionState().Version != gotls.VersionTLS13 {
 			return nil, nil, fmt.Errorf("xtls-rprx-vision requires TLS 1.3")
 		}
-		return xtlsBuffers(c.Conn)
+		if c.UConn == nil || c.UConn.Conn == nil {
+			return nil, nil, fmt.Errorf("xtls-rprx-vision requires valid tls uconn")
+		}
+		return xtlsBuffers(c.UConn.Conn)
 	case *reality.UConn:
-		return xtlsBuffers(c.Conn)
+		if c.UConn == nil || c.UConn.Conn == nil {
+			return nil, nil, fmt.Errorf("xtls-rprx-vision requires valid reality uconn")
+		}
+		return xtlsBuffers(c.UConn.Conn)
+	case *reality.Conn:
+		return xtlsBuffers(c)
 	default:
 		return nil, nil, fmt.Errorf("xtls-rprx-vision requires TLS or REALITY")
 	}
@@ -282,5 +356,8 @@ func xtlsBuffers(conn any) (*bytes.Reader, *bytes.Buffer, error) {
 	p := unsafe.Pointer(val.Pointer())
 	input := (*bytes.Reader)(unsafe.Pointer(uintptr(p) + inputField.Offset))
 	rawInput := (*bytes.Buffer)(unsafe.Pointer(uintptr(p) + rawInputField.Offset))
+	if input == nil || rawInput == nil {
+		return nil, nil, fmt.Errorf("xtls input buffers not initialized")
+	}
 	return input, rawInput, nil
 }

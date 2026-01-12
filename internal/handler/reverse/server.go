@@ -16,6 +16,7 @@ import (
 	"forward/internal/config"
 	inet "forward/internal/io/net"
 	"forward/internal/logging"
+	"forward/internal/pool"
 	rproto "forward/internal/reverse/proto"
 )
 
@@ -203,7 +204,8 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 		idleTimeout = config.DefaultUDPIdleTimeout
 	}
 
-	pkt := make([]byte, 64*1024)
+	pkt := pool.Get()
+	defer pool.Put(pkt)
 	bound := conn.LocalAddr().String()
 	tunnelRemote := session.RemoteAddr().String()
 
@@ -262,7 +264,8 @@ func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, con
 
 			go func(uSess *udpSession, addr *net.UDPAddr) {
 				defer uSess.stream.Close()
-				buf := make([]byte, 64*1024)
+				buf := pool.Get()
+				defer pool.Put(buf)
 				for {
 					_ = uSess.stream.SetReadDeadline(time.Now().Add(idleTimeout))
 					n, err := uSess.ps.Read(buf)
