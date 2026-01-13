@@ -74,15 +74,15 @@ func TestHandler_Camouflage(t *testing.T) {
 			name:           "Proxy Request (Absolute URI)",
 			method:         "GET",
 			target:         "http://example.com/",
-			expectedStatus: http.StatusForbidden, // Dial fails (mock) -> 403
-			expectedTitle:  "mock dial error",
+			expectedStatus: http.StatusForbidden,
+			expectedTitle:  "403 Forbidden",
 		},
 		{
 			name:           "CONNECT Request",
 			method:         "CONNECT",
 			target:         "example.com:443",
-			expectedStatus: http.StatusForbidden, // Dial fails (mock) -> 403
-			expectedTitle:  "mock dial error",
+			expectedStatus: http.StatusForbidden,
+			expectedTitle:  "403 Forbidden",
 		},
 	}
 

@@ -1,6 +1,9 @@
 package config
 
 func ApplyDefaults(cfg *Config) {
+	if cfg.MaxUDPSessions <= 0 {
+		cfg.MaxUDPSessions = DefaultMaxUDPSessions
+	}
 	if cfg.UDPIdleTimeout == 0 {
 		cfg.UDPIdleTimeout = DefaultUDPIdleTimeout
 	}

@@ -127,6 +127,7 @@ type Dialer interface {
 ```
 
 **工厂注册**：
+
 ```go
 // 在 init() 中注册
 dialer.Register("http", newDialer)
@@ -231,6 +232,7 @@ type Runner interface {
 ```
 
 **通信流程**：
+
 1. 内网客户端连接公网服务器建立隧道
 2. 使用 SOCKS5 BIND 协议注册要暴露的端口
 3. 使用 Yamux 多路复用处理多个并发连接
@@ -316,12 +318,14 @@ forward -L socks5://:1080 -F "vless://uuid@remote.com:443?security=reality&..."
 ### 5. 内网穿透
 
 **服务端（公网）**：
+
 ```bash
 # 启动反向代理服务器
 forward -L "tls://user:pass@:443?bind=true&cert=server.crt&key=server.key"
 ```
 
 **客户端（内网）**：
+
 ```bash
 # 将远程 2222 端口映射到本地 22
 forward -L tcp://:2222/127.0.0.1:22 -F tls://user:pass@server.com:443
@@ -373,6 +377,7 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
 ```
 
 **多节点格式**：
+
 ```json
 {
   "nodes": [
@@ -391,6 +396,7 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
 ```
 
 **使用方式**：
+
 ```bash
 forward -C config.json
 ```
@@ -398,6 +404,7 @@ forward -C config.json
 ### INI 路由配置
 
 **格式**：
+
 ```ini
 [General]
 debug = true
@@ -423,6 +430,7 @@ FINAL, PROXY_JP
 ```
 
 **使用方式**：
+
 ```bash
 forward -R route.conf
 ```
@@ -433,7 +441,7 @@ forward -R route.conf
 
 ### 规则语法
 
-```
+```text
 类型, 匹配值, 动作
 ```
 
