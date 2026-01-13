@@ -85,6 +85,7 @@ type Config struct {
 
 	Logger *logging.Logger
 
+	MaxUDPSessions    int
 	UDPIdleTimeout    time.Duration
 	DialTimeout       time.Duration
 	DialKeepAlive     time.Duration
