@@ -21,19 +21,20 @@
 
 ### 核心功能
 
-| 功能           | 描述                                |
-| -------------- | ----------------------------------- |
-| **端口转发**   | TCP/UDP 端口转发，支持代理链        |
-| **代理服务器** | HTTP/SOCKS5/TLS/QUIC/VLESS 代理协议 |
-| **内网穿透**   | 反向代理，将内网服务暴露到公网      |
-| **智能路由**   | 基于规则的流量分流（域名/IP/GeoIP） |
+| 功能           | 描述                                        |
+| -------------- | ------------------------------------------- |
+| **端口转发**   | TCP/UDP 端口转发，支持代理链                |
+| **代理服务器** | HTTP/SOCKS5/TLS/QUIC/VLESS+Reality 代理协议 |
+| **内网穿透**   | 反向代理，将内网服务暴露到公网 TCP/UDP      |
+| **智能路由**   | 基于规则的流量分流（域名/IP/GeoIP）         |
 
 ### 设计原则
 
-1. **模块化设计**：Dialer 和 Listener 使用工厂模式，易于扩展新协议
-2. **零配置启动**：支持命令行参数快速启动
-3. **安全优先**：认证使用 constant-time 比较，TLS 默认验证证书
-4. **高性能**：使用连接池、缓冲区复用、多路复用（Yamux/QUIC）
+1. **结构分层**: Listener / Handler / Dialer
+2. **模块化设计**：Dialer 和 Listener 使用工厂模式，易于扩展新协议
+3. **零配置启动**：支持命令行参数快速启动
+4. **安全优先**：认证使用 constant-time 比较，TLS 默认验证证书
+5. **高性能**：使用连接池、缓冲区复用、多路复用（Yamux/QUIC）
 
 ---
 
@@ -137,15 +138,15 @@ dialer.Register("socks5", newDialer)
 
 **支持的 Scheme**：
 
-| Scheme   | 实现            | 说明              |
-| -------- | --------------- | ----------------- |
-| `direct` | `dialer/direct` | 直接连接          |
-| `http`   | `dialer/http`   | HTTP CONNECT 代理 |
-| `https`  | `dialer/http`   | HTTPS 代理（TLS） |
-| `socks5` | `dialer/socks5` | SOCKS5 代理       |
-| `tls`    | `dialer/tls`    | TLS 加密连接      |
-| `quic`   | `dialer/quic`   | QUIC/HTTP3 连接   |
-| `vless`  | `dialer/vless`  | VLESS 协议        |
+| Scheme          | 实现            | 说明              |
+| --------------- | --------------- | ----------------- |
+| `direct`        | `dialer/direct` | 直接连接          |
+| `http`          | `dialer/http`   | HTTP CONNECT 代理 |
+| `https`         | `dialer/http`   | HTTPS 代理（TLS） |
+| `socks5`        | `dialer/socks5` | SOCKS5 代理       |
+| `tls`           | `dialer/tls`    | TLS 加密连接      |
+| `quic`          | `dialer/quic`   | QUIC/HTTP3 连接   |
+| `vless+reality` | `dialer/vless`  | VLESS 协议        |
 
 ---
 
@@ -154,6 +155,7 @@ dialer.Register("socks5", newDialer)
 **功能**：接收入站连接并分发给 Handler 处理
 
 **接口定义**：
+
 ```go
 type Runner interface {
     Run(ctx context.Context) error
@@ -162,15 +164,15 @@ type Runner interface {
 
 **支持的 Scheme**：
 
-| Scheme          | 实现              | 说明               |
-| --------------- | ----------------- | ------------------ |
-| `tcp`           | `listener/tcp`    | TCP 端口转发       |
-| `udp`           | `listener/udp`    | UDP 端口转发       |
-| `http`          | `listener/http`   | HTTP 代理服务      |
-| `https`         | `listener/http`   | HTTPS 代理服务     |
-| `socks5`        | `listener/socks5` | SOCKS5 代理服务    |
-| `http3`         | `listener/http3`  | HTTP/3 代理服务    |
-| `vless+reality` | `listener/vless`  | VLESS+REALITY 服务 |
+| Scheme   | 实现              | 说明               |
+| -------- | ----------------- | ------------------ |
+| `tcp`    | `listener/tcp`    | TCP 端口转发       |
+| `udp`    | `listener/udp`    | UDP 端口转发       |
+| `http`   | `listener/http`   | HTTP 代理服务      |
+| `https`  | `listener/http`   | HTTPS 代理服务     |
+| `socks5` | `listener/socks5` | SOCKS5 代理服务    |
+| `http3`  | `listener/http3`  | HTTP/3 代理服务    |
+| `vless`  | `listener/vless`  | VLESS+REALITY 服务 |
 
 ---
 
@@ -217,16 +219,16 @@ type Runner interface {
 
 ```
 ┌─────────────────┐         ┌─────────────────┐
-│   内网客户端     │         │   公网服务器     │
+│   内网客户端      │         │   公网服务器     │
 │                 │   TLS   │                 │
 │  reverse/client │◀───────▶│ reverse/server  │
 │                 │  Yamux  │                 │
 └────────┬────────┘         └────────┬────────┘
          │                           │
-         │ 拨号本地目标               │ 绑定公网端口
+         │ 拨号本地目标                │ 绑定公网端口
          ▼                           ▼
    ┌───────────┐              ┌───────────┐
-   │ 内网服务   │              │ 外部客户端 │
+   │ 内网服务   │              │ 外部客户端  │
    │ (SSH/Web) │              │ (用户访问) │
    └───────────┘              └───────────┘
 ```
@@ -335,6 +337,7 @@ forward -L tcp://:8080/127.0.0.1:80 -F tls://user:pass@server.com:443
 ```
 
 **访问方式**：
+
 ```bash
 # 通过公网服务器访问内网 SSH
 ssh -p 2222 server.com
@@ -367,10 +370,12 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
 ### JSON 配置
 
 **简单格式**：
+
 ```json
 {
-  "listeners": ["http://:8080", "socks5://:1080"],
-  "forward": "tls://user:pass@remote.com:443",
+  "listen": "http://:8080",  // 监听单个
+  "forward": "tls://user:pass@remote.com:443", // 监听单个时使用，如果监听多个，使用多节点格式
+  "listeners": ["http://:8080", "socks5://:1080"],  // 监听多个
   "insecure": false,
   "debug": false
 }
@@ -383,7 +388,7 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
   "nodes": [
     {
       "name": "proxy_server",
-      "listeners": ["http://:8080"],
+      "listen": "http://:8080",
       "forward": "tls://remote.com:443"
     },
     {
@@ -398,30 +403,32 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
 **使用方式**：
 
 ```bash
+# 默认读取 ~/.forward/forward.json or ~/forward.json
 forward -C config.json
 ```
 
-### INI 路由配置
+### 路由配置
 
 **格式**：
 
 ```ini
 [General]
-debug = true
-listeners = http://:8080
+listen = http://0.0.0.0:8000, socks5://0.0.0.0:1080
+skip-proxy = 192.168.0.0/16, 127.0.0.1/32
+dns-server = 8.8.8.8,8.8.4.4
+mmdb-path=~/.forward/Country.mmdb
+mmdb-link=https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb
 
-[DNS]
-servers = 8.8.8.8, 1.1.1.1
-
-[MMDB]
-path = ~/.forward/Country.mmdb
-link = https://github.com/.../Country.mmdb
-
+DOMAIN,ifconfig.me,PROXY_JP
 [Proxy]
 PROXY_SG = vless://uuid@sg.example.com:443?...
 PROXY_JP = vless://uuid@jp.example.com:443?...
+PROXY_01 = https://user:pass@:443?...
 
 [Rule]
+# - Rules type: DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR / GEOIP
+# - Action: PROXY_NAME DIRECT REJECT FINAL
+
 DOMAIN-SUFFIX, google.com, PROXY_SG
 DOMAIN-KEYWORD, youtube, PROXY_SG
 GEOIP, CN, DIRECT
@@ -564,4 +571,4 @@ func (l *Listener) Run(ctx context.Context) error {
 
 ---
 
-*文档版本：1.0 | 最后更新：2026-01-12*
+**文档版本：1.0 | 最后更新：2026-01-12**

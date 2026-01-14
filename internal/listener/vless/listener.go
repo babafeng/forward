@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"net"
 
+	"time"
+
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/stat"
 
 	vhandler "forward/internal/handler/vless"
 	"forward/internal/logging"
+)
+
+const (
+	maxConnections   = 2048
+	handshakeTimeout = 4 * time.Second
 )
 
 type Listener struct {
@@ -22,10 +29,13 @@ type Listener struct {
 	xaddr          xnet.Address
 	xport          xnet.Port
 
-	url string
+	url              string
+	limit            chan struct{}
+	handshakeTimeout time.Duration
 }
 
 func (l *Listener) Run(ctx context.Context) error {
+	l.limit = make(chan struct{}, maxConnections)
 	ls, err := internet.ListenTCP(ctx, l.xaddr, l.xport, l.streamSettings, func(conn stat.Connection) {
 		go l.handleConn(ctx, conn)
 	})
@@ -36,15 +46,29 @@ func (l *Listener) Run(ctx context.Context) error {
 	defer ls.Close()
 
 	l.log.Info("VLESS Reality listening on %s", l.addr)
-	if l.url != "" {
-		l.log.Info("Shadowrocket URL: %s", l.url)
-		l.log.Info("Replace 0.0.0.0 with your real IP in Shadowrocket URL")
-	}
 
 	<-ctx.Done()
 	return nil
 }
 
 func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
+	select {
+	case l.limit <- struct{}{}:
+		defer func() { <-l.limit }()
+	default:
+		conn.Close()
+		return
+	}
+
+	timeout := l.handshakeTimeout
+	if timeout <= 0 {
+		timeout = handshakeTimeout
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		conn.Close()
+		return
+	}
+
 	l.handler.Handle(ctx, conn)
 }

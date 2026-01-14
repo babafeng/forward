@@ -104,6 +104,42 @@ func (e Endpoint) String() string {
 	return u.String()
 }
 
+func (e Endpoint) RedactedString() string {
+	u := url.URL{
+		Scheme: e.Scheme,
+		Host:   e.Address(),
+	}
+	if e.User != nil {
+		if _, hasPass := e.User.Password(); hasPass {
+			u.User = url.UserPassword(e.User.Username(), "redacted")
+		} else {
+			u.User = e.User
+		}
+	}
+	if len(e.Query) > 0 {
+		q := url.Values{}
+		sensitiveKeys := []string{"key", "private_key", "pbk", "sid", "uuid", "token", "psk", "password", "secret", "ca"}
+		for k, v := range e.Query {
+			isSensitive := false
+			for _, sk := range sensitiveKeys {
+				if strings.EqualFold(k, sk) {
+					isSensitive = true
+					break
+				}
+			}
+			if isSensitive {
+				q.Set(k, "redacted")
+			} else {
+				for _, val := range v {
+					q.Add(k, val)
+				}
+			}
+		}
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
+}
+
 func (e Endpoint) HasUserPass() bool {
 	if e.User == nil {
 		return false

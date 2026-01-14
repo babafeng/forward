@@ -3,6 +3,7 @@ package route
 import (
 	"net/netip"
 	"strings"
+	"time"
 
 	"forward/internal/endpoint"
 )
@@ -42,6 +43,7 @@ type Config struct {
 	Rules      []Rule
 	SkipProxy  []netip.Prefix
 	DNSServers []string
+	DNSTimeout time.Duration
 	MMDBPath   string
 	MMDBLink   string
 }

@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 func ApplyDefaults(cfg *Config) {
 	if cfg.MaxUDPSessions <= 0 {
 		cfg.MaxUDPSessions = DefaultMaxUDPSessions
@@ -18,5 +20,14 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.MaxHeaderBytes == 0 {
 		cfg.MaxHeaderBytes = DefaultMaxHeaderBytes
+	}
+	if cfg.HandshakeTimeout == 0 {
+		cfg.HandshakeTimeout = DefaultHandshakeTimeout
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = DefaultIdleTimeout
+	}
+	if cfg.DNSParameters.Timeout == 0 {
+		cfg.DNSParameters.Timeout = 5 * time.Second
 	}
 }

@@ -130,6 +130,15 @@ func (l *Listener) handleQUICConn(ctx context.Context, qconn *quic.Conn) {
 		_ = qconn.CloseWithError(0, "")
 		return
 	}
+	go func() {
+		for {
+			s, err := qconn.AcceptStream(ctx)
+			if err != nil {
+				return
+			}
+			_ = s.Close()
+		}
+	}()
 
 	conn := &structs.QuicStreamConn{
 		Stream:    stream,

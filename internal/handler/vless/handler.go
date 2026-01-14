@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -26,18 +27,18 @@ import (
 )
 
 type Handler struct {
-	dialer    dialer.Dialer
-	log       *logging.Logger
-	validator xvless.Validator
+	dialer     dialer.Dialer
+	log        *logging.Logger
+	validator  xvless.Validator
 	routeStore *route.Store
 }
 
 func NewHandler(d dialer.Dialer, log *logging.Logger, routeStore *route.Store, validator xvless.Validator) *Handler {
 	return &Handler{
-		dialer:    d,
-		log:       log,
+		dialer:     d,
+		log:        log,
 		routeStore: routeStore,
-		validator: validator,
+		validator:  validator,
 	}
 }
 
@@ -49,6 +50,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 		h.log.Debug("Read VLESS request failed: %v", err)
 		return
 	}
+	conn.SetReadDeadline(time.Time{})
 
 	network := "tcp"
 	if request.Command == protocol.RequestCommandUDP {
@@ -177,6 +179,11 @@ func xtlsBuffers(conn any) (*bytes.Reader, *bytes.Buffer, error) {
 	p := unsafe.Pointer(val.Pointer())
 	input := (*bytes.Reader)(unsafe.Pointer(uintptr(p) + inputField.Offset))
 	rawInput := (*bytes.Buffer)(unsafe.Pointer(uintptr(p) + rawInputField.Offset))
+
+	if input == nil || rawInput == nil {
+		return nil, nil, fmt.Errorf("xtls buffers are nil")
+	}
+
 	return input, rawInput, nil
 }
 

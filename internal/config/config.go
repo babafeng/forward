@@ -23,6 +23,7 @@ const (
 	DefaultInitialBackoff   = 2 * time.Second
 	DefaultMaxBackoff       = 30 * time.Second
 	DefaultHandshakeTimeout = 5 * time.Second
+	DefaultIdleTimeout      = 2 * time.Minute
 	DefaultMaxConnections   = 4096
 	DefaultMaxUDPSessions   = 1024
 
@@ -92,11 +93,21 @@ type Config struct {
 	ReadHeaderTimeout time.Duration
 	MaxHeaderBytes    int
 
+	HandshakeTimeout time.Duration
+	IdleTimeout      time.Duration
+	DNSParameters    DNSConfig
+
 	Mode RunMode
 
 	Insecure bool
 }
 
+type DNSConfig struct {
+	Servers []string
+	Timeout time.Duration
+}
+
 func (c *Config) IsMode(m RunMode) bool {
 	return c.Mode == m
 }
+
