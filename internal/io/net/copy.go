@@ -61,7 +61,7 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 		}
 	}
 
-	if first != nil && (errors.Is(first, net.ErrClosed) || strings.Contains(first.Error(), "use of closed network connection")) {
+	if first != nil && (errors.Is(first, net.ErrClosed) || errors.Is(first, io.ErrClosedPipe) || strings.Contains(first.Error(), "use of closed network connection")) {
 		first = nil
 	}
 	return total.Load(), time.Since(start), first
@@ -72,5 +72,4 @@ func closeWrite(c net.Conn) {
 		_ = cw.CloseWrite()
 		return
 	}
-	_ = c.Close()
 }

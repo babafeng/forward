@@ -113,7 +113,7 @@ func Main() int {
 			go func(c config.Config) {
 				defer wg.Done()
 				if err := runOne(ctx, c); err != nil {
-					logger.Error("[%s] Error running listener %s: %v", c.NodeName, c.Listen.String(), err)
+					logger.Error("[%s] Error running listener %s: %v", c.NodeName, c.Listen.RedactedString(), err)
 					errChan <- err
 					stop()
 				}

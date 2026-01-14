@@ -25,19 +25,35 @@ type Server struct {
 	log         *logging.Logger
 	auth        auth.Authenticator
 	requireAuth bool
+	limit       chan struct{}
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
 	user, pass, ok := cfg.Listen.UserPass()
+	isBind := cfg.Listen.Query.Get("bind") == "true"
+	if isBind && (!ok || (user == "" && pass == "")) {
+		return nil, fmt.Errorf("reverse server with bind=true requires authentication (user/pass)")
+	}
+
 	return &Server{
 		cfg:         cfg,
 		log:         cfg.Logger,
 		auth:        auth.FromUserPass(user, pass),
 		requireAuth: ok && (user != "" || pass != ""),
+		limit:       make(chan struct{}, 1024),
 	}, nil
 }
 
 func (s *Server) Handle(ctx context.Context, conn net.Conn) {
+	select {
+	case s.limit <- struct{}{}:
+		defer func() { <-s.limit }()
+	default:
+		s.log.Warn("Reverse server connection limit reached, rejecting %s", conn.RemoteAddr())
+		conn.Close()
+		return
+	}
+
 	defer conn.Close()
 
 	br := bufio.NewReader(conn)

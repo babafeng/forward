@@ -28,7 +28,10 @@ func init() {
 func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 	listen := cfg.Listen
 	user := listen.User
-	username := user.Username()
+	var username string
+	if user != nil {
+		username = user.Username()
+	}
 	if username == "" {
 		username = crypto.GenerateUUID()
 	}
@@ -157,12 +160,13 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 	handler := vhandler.NewHandler(d, cfg.Logger, cfg.RouteStore, validator)
 
 	return &Listener{
-		addr:           listen.Address(),
-		handler:        handler,
-		log:            cfg.Logger,
-		streamSettings: memStreamSettings,
-		xaddr:          xnet.ParseAddress(hostStr),
-		xport:          xnet.Port(port),
-		url:            shadowrocketURL,
+		addr:             listen.Address(),
+		handler:          handler,
+		log:              cfg.Logger,
+		streamSettings:   memStreamSettings,
+		xaddr:            xnet.ParseAddress(hostStr),
+		xport:            xnet.Port(port),
+		url:              shadowrocketURL,
+		handshakeTimeout: cfg.HandshakeTimeout,
 	}, nil
 }

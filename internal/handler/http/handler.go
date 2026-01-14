@@ -326,9 +326,9 @@ func cleanProxyHeaders(r *stdhttp.Request) {
 		"Proxy-Authenticate",
 		"Proxy-Authorization",
 		"Te",
-		"Trailers",
+		"Trailer",
 		"Transfer-Encoding",
-		"Upgrade",
+		// "Upgrade", // Do not remove Upgrade for websocket
 		"Proxy-Connection", // Non-standard but common
 	}
 
@@ -394,7 +394,7 @@ func copyHeaders(dst, src stdhttp.Header) {
 		"Proxy-Authenticate":  {},
 		"Proxy-Authorization": {},
 		"Te":                  {},
-		"Trailers":            {},
+		"Trailer":             {},
 		"Transfer-Encoding":   {},
 		"Upgrade":             {},
 		"Proxy-Connection":    {},
