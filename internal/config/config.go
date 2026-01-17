@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	DefaultRealitySNI        = "swscan.apple.com"
 	DefaultDialTimeout       = 10 * time.Second
 	DefaultDialKeepAlive     = 30 * time.Second
 	DefaultUDPIdleTimeout    = 2 * time.Minute
@@ -110,4 +111,3 @@ type DNSConfig struct {
 func (c *Config) IsMode(m RunMode) bool {
 	return c.Mode == m
 }
-
