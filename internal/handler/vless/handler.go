@@ -7,18 +7,19 @@ import (
 	"fmt"
 	"net"
 	"reflect"
-	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/proxy"
-	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vless/encoding"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
+
+	xvless "github.com/xtls/xray-core/proxy/vless"
 
 	"forward/internal/dialer"
 	"forward/internal/logging"
@@ -26,18 +27,18 @@ import (
 )
 
 type Handler struct {
-	dialer    dialer.Dialer
-	log       *logging.Logger
-	validator xvless.Validator
+	dialer     dialer.Dialer
+	log        *logging.Logger
+	validator  xvless.Validator
 	routeStore *route.Store
 }
 
 func NewHandler(d dialer.Dialer, log *logging.Logger, routeStore *route.Store, validator xvless.Validator) *Handler {
 	return &Handler{
-		dialer:    d,
-		log:       log,
+		dialer:     d,
+		log:        log,
 		routeStore: routeStore,
-		validator: validator,
+		validator:  validator,
 	}
 }
 
@@ -49,6 +50,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 		h.log.Debug("Read VLESS request failed: %v", err)
 		return
 	}
+	conn.SetReadDeadline(time.Time{})
 
 	network := "tcp"
 	if request.Command == protocol.RequestCommandUDP {
@@ -66,12 +68,12 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 		}
 	}
 
-	via, err := h.routeVia(ctx, conn.RemoteAddr().String(), targetAddr)
+	via, err := route.RouteVia(ctx, h.routeStore, h.log, conn.RemoteAddr().String(), targetAddr)
 	if err != nil {
 		h.log.Error("VLESS route error: %v", err)
 		return
 	}
-	if strings.EqualFold(via, "REJECT") {
+	if route.IsReject(via) {
 		return
 	}
 
@@ -177,6 +179,11 @@ func xtlsBuffers(conn any) (*bytes.Reader, *bytes.Buffer, error) {
 	p := unsafe.Pointer(val.Pointer())
 	input := (*bytes.Reader)(unsafe.Pointer(uintptr(p) + inputField.Offset))
 	rawInput := (*bytes.Buffer)(unsafe.Pointer(uintptr(p) + rawInputField.Offset))
+
+	if input == nil || rawInput == nil {
+		return nil, nil, fmt.Errorf("xtls buffers are nil")
+	}
+
 	return input, rawInput, nil
 }
 
@@ -217,16 +224,4 @@ func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.
 		}
 	}
 	return first
-}
-
-func (h *Handler) routeVia(ctx context.Context, src, dst string) (string, error) {
-	if h.routeStore == nil {
-		return "DIRECT", nil
-	}
-	decision, err := h.routeStore.Decide(ctx, dst)
-	if err != nil {
-		return "DIRECT", err
-	}
-	h.log.Info("Forward Route %s --> %s via %s", src, dst, decision.Via)
-	return decision.Via, nil
 }

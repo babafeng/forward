@@ -38,6 +38,13 @@ func Register(scheme string, f Factory) {
 
 func New(cfg config.Config) (Dialer, error) {
 	if cfg.Mode == config.ModePortForward {
+		if cfg.Forward != nil {
+			scheme := strings.ToLower(cfg.Forward.Scheme)
+			if scheme != "tcp" && scheme != "udp" {
+				return newDialerWithForward(cfg, *cfg.Forward)
+			}
+		}
+
 		return NewDirect(cfg), nil
 	}
 

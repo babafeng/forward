@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	DefaultRealitySNI        = "swscan.apple.com"
 	DefaultDialTimeout       = 10 * time.Second
 	DefaultDialKeepAlive     = 30 * time.Second
 	DefaultUDPIdleTimeout    = 2 * time.Minute
@@ -23,6 +24,7 @@ const (
 	DefaultInitialBackoff   = 2 * time.Second
 	DefaultMaxBackoff       = 30 * time.Second
 	DefaultHandshakeTimeout = 5 * time.Second
+	DefaultIdleTimeout      = 2 * time.Minute
 	DefaultMaxConnections   = 4096
 	DefaultMaxUDPSessions   = 1024
 
@@ -85,15 +87,25 @@ type Config struct {
 
 	Logger *logging.Logger
 
+	MaxUDPSessions    int
 	UDPIdleTimeout    time.Duration
 	DialTimeout       time.Duration
 	DialKeepAlive     time.Duration
 	ReadHeaderTimeout time.Duration
 	MaxHeaderBytes    int
 
+	HandshakeTimeout time.Duration
+	IdleTimeout      time.Duration
+	DNSParameters    DNSConfig
+
 	Mode RunMode
 
 	Insecure bool
+}
+
+type DNSConfig struct {
+	Servers []string
+	Timeout time.Duration
 }
 
 func (c *Config) IsMode(m RunMode) bool {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"strconv"
 	"time"
@@ -14,9 +13,11 @@ import (
 
 	"forward/internal/auth"
 	"forward/internal/config"
-	inet "forward/internal/io/net"
 	"forward/internal/logging"
 	"forward/internal/pool"
+
+	inet "forward/internal/io/net"
+	irev "forward/internal/reverse"
 	rproto "forward/internal/reverse/proto"
 )
 
@@ -25,19 +26,35 @@ type Server struct {
 	log         *logging.Logger
 	auth        auth.Authenticator
 	requireAuth bool
+	limit       chan struct{}
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
 	user, pass, ok := cfg.Listen.UserPass()
+	isBind := cfg.Listen.Query.Get("bind") == "true"
+	if isBind && (!ok || (user == "" && pass == "")) {
+		return nil, fmt.Errorf("reverse server with bind=true requires authentication (user/pass)")
+	}
+
 	return &Server{
 		cfg:         cfg,
 		log:         cfg.Logger,
 		auth:        auth.FromUserPass(user, pass),
 		requireAuth: ok && (user != "" || pass != ""),
+		limit:       make(chan struct{}, 1024),
 	}, nil
 }
 
 func (s *Server) Handle(ctx context.Context, conn net.Conn) {
+	select {
+	case s.limit <- struct{}{}:
+		defer func() { <-s.limit }()
+	default:
+		s.log.Warn("Reverse server connection limit reached, rejecting %s", conn.RemoteAddr())
+		conn.Close()
+		return
+	}
+
 	defer conn.Close()
 
 	br := bufio.NewReader(conn)
@@ -76,9 +93,6 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	if host == "" {
-		host = "0.0.0.0"
-	}
 	bindAddr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	var ln net.Listener
@@ -115,10 +129,7 @@ func (s *Server) Handle(ctx context.Context, conn net.Conn) {
 
 	s.log.Info("Reverse server bound %s (%s), bridging to client %s", bindAddr, network, conn.RemoteAddr())
 
-	conf := yamux.DefaultConfig()
-	conf.KeepAliveInterval = 10 * time.Second
-	conf.LogOutput = nil
-	conf.Logger = log.New(s.log.Writer(logging.LevelDebug), "[yamux] ", 0)
+	conf := irev.NewYamuxConfig(s.log)
 
 	_ = conn.SetReadDeadline(time.Time{})
 

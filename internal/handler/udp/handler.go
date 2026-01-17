@@ -19,6 +19,7 @@ type Handler struct {
 	target      string
 	dialer      dialer.Dialer
 	log         *logging.Logger
+	maxSessions int
 	idleTimeout time.Duration
 
 	mu       sync.Mutex
@@ -31,10 +32,15 @@ func New(cfg config.Config, d dialer.Dialer) *Handler {
 	if idle <= 0 {
 		idle = 2 * time.Minute
 	}
+	maxSessions := cfg.MaxUDPSessions
+	if maxSessions <= 0 {
+		maxSessions = config.DefaultMaxUDPSessions
+	}
 	return &Handler{
 		target:      cfg.Forward.Address(),
 		dialer:      d,
 		log:         cfg.Logger,
+		maxSessions: maxSessions,
 		idleTimeout: idle,
 		sessions:    make(map[string]*session),
 	}
@@ -73,6 +79,13 @@ func (h *Handler) getOrCreateSession(ctx context.Context, lconn *net.UDPConn, sr
 		h.mu.Unlock()
 		return s
 	}
+
+	// 检查是否超出最大 session 限制
+	if len(h.sessions) >= h.maxSessions {
+		h.mu.Unlock()
+		h.log.Warn("Forward UDP: Too many sessions (%d), dropping packet from %s", h.maxSessions, key)
+		return nil
+	}
 	h.mu.Unlock()
 
 	// 使用 singleflight 确保同一 key 只创建一个 session
@@ -82,6 +95,12 @@ func (h *Handler) getOrCreateSession(ctx context.Context, lconn *net.UDPConn, sr
 		if s := h.sessions[key]; s != nil {
 			h.mu.Unlock()
 			return s, nil
+		}
+
+		// 再次检查限制（在 lock 内部）
+		if len(h.sessions) >= h.maxSessions {
+			h.mu.Unlock()
+			return nil, nil
 		}
 		h.mu.Unlock()
 

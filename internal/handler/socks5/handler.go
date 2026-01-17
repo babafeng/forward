@@ -41,8 +41,10 @@ type Handler struct {
 	auth        auth.Authenticator
 	requireAuth bool
 
-	udpIdle    time.Duration
-	routeStore *route.Store
+	handshakeTimeout time.Duration
+	udpIdle          time.Duration
+	maxUDPSessions   int
+	routeStore       *route.Store
 }
 
 func New(cfg config.Config, d dialer.Dialer) *Handler {
@@ -51,13 +53,19 @@ func New(cfg config.Config, d dialer.Dialer) *Handler {
 	if idle <= 0 {
 		idle = 2 * time.Minute
 	}
+	maxSessions := cfg.MaxUDPSessions
+	if maxSessions <= 0 {
+		maxSessions = config.DefaultMaxUDPSessions
+	}
 	return &Handler{
-		dialer:      d,
-		log:         cfg.Logger,
-		auth:        auth.FromUserPass(user, pass),
-		requireAuth: ok,
-		udpIdle:     idle,
-		routeStore:  cfg.RouteStore,
+		dialer:           d,
+		log:              cfg.Logger,
+		auth:             auth.FromUserPass(user, pass),
+		requireAuth:      ok,
+		handshakeTimeout: cfg.HandshakeTimeout,
+		udpIdle:          idle,
+		maxUDPSessions:   maxSessions,
+		routeStore:       cfg.RouteStore,
 	}
 }
 
@@ -66,7 +74,11 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 
 	h.log.Debug("Forward SOCKS5 Received connection from %s", conn.RemoteAddr())
 
-	_ = conn.SetReadDeadline(time.Now().Add(config.DefaultHandshakeTimeout))
+	handshakeTimeout := h.handshakeTimeout
+	if handshakeTimeout <= 0 {
+		handshakeTimeout = config.DefaultHandshakeTimeout
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
@@ -271,7 +283,12 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 		_, _ = conn.Read(buf)
 	}()
 
-	sess := newUDPSession(h.dialer, h.routeStore, h.log, udpLn, h.udpIdle)
+	var expectedIP net.IP
+	if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		expectedIP = tcpAddr.IP
+	}
+
+	sess := newUDPSession(h.dialer, h.routeStore, h.log, udpLn, h.udpIdle, expectedIP, h.maxUDPSessions)
 	sess.run(ctx)
 }
 
@@ -301,7 +318,9 @@ type udpSession struct {
 
 	relay *net.UDPConn
 
-	idle time.Duration
+	idle        time.Duration
+	expectedIP  net.IP
+	maxSessions int
 
 	mu       sync.Mutex
 	sessions map[string]*udpPeer
@@ -314,14 +333,16 @@ type udpPeer struct {
 	lastSeen atomic.Int64
 }
 
-func newUDPSession(d dialer.Dialer, routeStore *route.Store, log *logging.Logger, relay *net.UDPConn, idle time.Duration) *udpSession {
+func newUDPSession(d dialer.Dialer, routeStore *route.Store, log *logging.Logger, relay *net.UDPConn, idle time.Duration, expectedIP net.IP, maxSessions int) *udpSession {
 	return &udpSession{
-		dialer:     d,
-		routeStore: routeStore,
-		log:        log,
-		relay:      relay,
-		idle:       idle,
-		sessions:   make(map[string]*udpPeer),
+		dialer:      d,
+		routeStore:  routeStore,
+		log:         log,
+		relay:       relay,
+		idle:        idle,
+		expectedIP:  expectedIP,
+		maxSessions: maxSessions,
+		sessions:    make(map[string]*udpPeer),
 	}
 }
 
@@ -344,6 +365,10 @@ func (s *udpSession) run(ctx context.Context) {
 			continue
 		}
 		if n == 0 {
+			continue
+		}
+
+		if len(s.expectedIP) > 0 && !src.IP.Equal(s.expectedIP) {
 			continue
 		}
 
@@ -373,6 +398,11 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 		s.mu.Unlock()
 		return p
 	}
+	if len(s.sessions) >= s.maxSessions {
+		s.mu.Unlock()
+		s.log.Warn("Forward SOCKS5 UDP session limit reached")
+		return nil
+	}
 	s.mu.Unlock()
 
 	result, _, _ := s.sf.Do(key, func() (interface{}, error) {
@@ -380,6 +410,10 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 		if p := s.sessions[key]; p != nil {
 			s.mu.Unlock()
 			return p, nil
+		}
+		if len(s.sessions) >= s.maxSessions {
+			s.mu.Unlock()
+			return nil, nil
 		}
 		s.mu.Unlock()
 
