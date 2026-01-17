@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -15,11 +14,12 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/proxy"
-	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vless/encoding"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
+
+	xvless "github.com/xtls/xray-core/proxy/vless"
 
 	"forward/internal/dialer"
 	"forward/internal/logging"
@@ -68,12 +68,12 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 		}
 	}
 
-	via, err := h.routeVia(ctx, conn.RemoteAddr().String(), targetAddr)
+	via, err := route.RouteVia(ctx, h.routeStore, h.log, conn.RemoteAddr().String(), targetAddr)
 	if err != nil {
 		h.log.Error("VLESS route error: %v", err)
 		return
 	}
-	if strings.EqualFold(via, "REJECT") {
+	if route.IsReject(via) {
 		return
 	}
 
@@ -224,16 +224,4 @@ func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.
 		}
 	}
 	return first
-}
-
-func (h *Handler) routeVia(ctx context.Context, src, dst string) (string, error) {
-	if h.routeStore == nil {
-		return "DIRECT", nil
-	}
-	decision, err := h.routeStore.Decide(ctx, dst)
-	if err != nil {
-		return "DIRECT", err
-	}
-	h.log.Info("Forward Route %s --> %s via %s", src, dst, decision.Via)
-	return decision.Via, nil
 }

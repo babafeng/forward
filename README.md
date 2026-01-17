@@ -5,8 +5,8 @@ forward is a security & lightweight & high-performance port forwarding and proxy
 ## Features
 
 * **Port Forwarding**: TCP/UDP forwarding with support for proxy chains.
-* **Intranet Penetration (Reverse Proxy)**: Expose local services to the internet via a reverse tunnel.
-* **Proxy Server**: HTTP/SOCKS5/TLS proxy server.
+* **Intranet Penetration (Reverse Proxy)**: Expose local services to the internet via a reverse tunnel (TLS/QUIC/VLESS+REALITY).
+* **Proxy Server**: HTTP/SOCKS5/TLS/QUIC/VLESS+REALITY proxy server.
 * **Proxy Routing**: Rule-based routing to multiple upstream proxies (INI config).
 * **Multiplexing**: Uses Yamux for TCP and QUIC for UDP (planned) to improve performance.
 
@@ -82,11 +82,12 @@ forward -L udp://:5353 -F udp://8.8.8.8:53
 
 ### Proxy Server
 
-Start a proxy server supporting http / socks5 / https / quic / tls / vless+reality
+Start a proxy server supporting http / socks5 / https / quic / tls / vless+reality (alias: reality)
 
 ```bash
 forward -L http://:1080
 forward -L vless+reality://:443
+forward -L reality://:443
 
 # Optional parameters: uuid / dest / sni / sid / key
 forward -L vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key
@@ -109,6 +110,9 @@ Start a reverse proxy server listening on port 2333.
 ```bash
 # support all proxy schemes, but recommend using secure ones below: tls / quic / https
 forward -L tls://user:passwd@:2333?bind=true
+
+# VLESS+REALITY (alias: reality)
+forward -L reality://uuid@:2333?bind=true&key=xxxx&sid=xxxxx&sni=swscan.apple.com
 ```
 
 **Client Side (Intranet):**
@@ -118,9 +122,18 @@ Connect to the server and map remote port 11080 to local 1080.
 ```bash
 # Map remote 2222 -> local 127.0.0.1:22
 forward -L tcp://:2222/127.0.0.1:22 -F tls://your.server.com:2333
+
+# VLESS+REALITY (target defaults to server address, override with target=host:port if needed)
+forward -L tcp://:2222/127.0.0.1:22 -F "reality://uuid@your.server.com:2333?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=xxx&security=reality&sid=xxxx&sni=swscan.apple.com&type=tcp"
 ```
 
 Now, accessing `your.server.com:2222` will reach the intranet machine's `127.0.0.1:22`.
+
+Notes:
+* `reality://` is an alias of `vless+reality://`.
+* Reverse server requires `bind=true`.
+* Reverse client `target=host:port` sets the VLESS request target (default: server host:port).
+* `key` is server private key; `pbk` is client public key; `sid` is short ID; `sni` is server name.
 
 ### Proxy Chaining
 

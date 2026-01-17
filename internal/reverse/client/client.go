@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"forward/internal/endpoint"
 	inet "forward/internal/io/net"
 	"forward/internal/logging"
+	rev "forward/internal/reverse"
 	rproto "forward/internal/reverse/proto"
 
 	"forward/internal/structs"
@@ -102,10 +102,7 @@ func (c *Client) connectOnce(ctx context.Context, network, bindHost string, bind
 		return fmt.Errorf("socks5 bind: %w", err)
 	}
 
-	conf := yamux.DefaultConfig()
-	conf.KeepAliveInterval = 10 * time.Second
-	conf.LogOutput = nil // Clear default LogOutput to allow setting Logger
-	conf.Logger = log.New(c.log.Writer(logging.LevelDebug), "[yamux] ", 0)
+	conf := rev.NewYamuxConfig(c.log)
 
 	session, err := yamux.Server(conn, conf)
 	if err != nil {
@@ -178,7 +175,7 @@ func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn
 	switch ep.Scheme {
 	case "tls", "https":
 		tlsCfg, err := ctls.ClientConfig(ep, c.cfg.Insecure, ctls.ClientOptions{
-			NextProtos: []string{"h2", "http/1.1"},
+			NextProtos: rev.NextProtosForScheme(ep.Scheme),
 		})
 		if err != nil {
 			return nil, err
@@ -188,9 +185,18 @@ func (c *Client) dialServer(ctx context.Context, ep endpoint.Endpoint) (net.Conn
 		return tls.DialWithDialer(baseDial, "tcp", ep.Address(), tlsCfg)
 	case "tcp":
 		return c.serverDial.DialContext(ctx, "tcp", ep.Address())
+	case "vless+reality", "reality":
+		target := ep.Query.Get("target")
+		if target == "" {
+			target = ep.Address()
+		}
+		if _, _, err := net.SplitHostPort(target); err != nil {
+			return nil, fmt.Errorf("reverse client: invalid vless target %q: %w", target, err)
+		}
+		return c.serverDial.DialContext(ctx, "tcp", target)
 	case "quic", "http3":
 		tlsCfg, err := ctls.ClientConfig(ep, c.cfg.Insecure, ctls.ClientOptions{
-			NextProtos: []string{"h3"},
+			NextProtos: rev.NextProtosForScheme(ep.Scheme),
 		})
 		if err != nil {
 			return nil, err

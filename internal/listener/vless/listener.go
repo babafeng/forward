@@ -11,6 +11,7 @@ import (
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/stat"
 
+	"forward/internal/config"
 	vhandler "forward/internal/handler/vless"
 	"forward/internal/logging"
 )
@@ -32,6 +33,19 @@ type Listener struct {
 	url              string
 	limit            chan struct{}
 	handshakeTimeout time.Duration
+}
+
+func NewListener(cfg config.Config, handler *vhandler.Handler, serverCfg *ServerConfig) *Listener {
+	return &Listener{
+		addr:             serverCfg.Address,
+		handler:          handler,
+		log:              cfg.Logger,
+		streamSettings:   serverCfg.StreamSettings,
+		xaddr:            xnet.ParseAddress(serverCfg.Host),
+		xport:            xnet.Port(serverCfg.Port),
+		url:              serverCfg.URL,
+		handshakeTimeout: cfg.HandshakeTimeout,
+	}
 }
 
 func (l *Listener) Run(ctx context.Context) error {

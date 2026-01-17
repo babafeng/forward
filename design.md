@@ -146,7 +146,9 @@ dialer.Register("socks5", newDialer)
 | `socks5`        | `dialer/socks5` | SOCKS5 代理       |
 | `tls`           | `dialer/tls`    | TLS 加密连接      |
 | `quic`          | `dialer/quic`   | QUIC/HTTP3 连接   |
-| `vless+reality` | `dialer/vless`  | VLESS 协议        |
+| `vless`         | `dialer/vless`  | VLESS 协议        |
+| `vless+reality` | `dialer/vless`  | VLESS+REALITY     |
+| `reality`       | `dialer/vless`  | `vless+reality` 别名 |
 
 ---
 
@@ -172,7 +174,8 @@ type Runner interface {
 | `https`  | `listener/http`   | HTTPS 代理服务     |
 | `socks5` | `listener/socks5` | SOCKS5 代理服务    |
 | `http3`  | `listener/http3`  | HTTP/3 代理服务    |
-| `vless`  | `listener/vless`  | VLESS+REALITY 服务 |
+| `vless+reality` | `listener/vless` | VLESS+REALITY 服务 |
+| `reality` | `listener/vless` | `vless+reality` 别名 |
 
 ---
 
@@ -220,7 +223,7 @@ type Runner interface {
 ```
 ┌─────────────────┐         ┌─────────────────┐
 │   内网客户端      │         │   公网服务器     │
-│                 │   TLS   │                 │
+│                 │ TLS/QUIC/REALITY │                 │
 │  reverse/client │◀───────▶│ reverse/server  │
 │                 │  Yamux  │                 │
 └────────┬────────┘         └────────┬────────┘
@@ -303,8 +306,17 @@ forward -L "tls://:443?cert=server.crt&key=server.key"
 # QUIC/HTTP3 代理
 forward -L "quic://:443?cert=server.crt&key=server.key"
 
-# VLESS+REALITY（高隐蔽性）
+# VLESS+REALITY（高隐蔽性，reality 为别名）
 forward -L "vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key"
+forward -L "reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key"
+
+# 参数说明
+# - key: 服务端私钥（可省略自动生成，建议保存）
+# - pbk: 客户端公钥（由服务端私钥派生）
+# - sid: Short ID，可用逗号分隔多个
+# - sni: 伪装域名（Server Name）
+# - dest: REALITY 回落目标（仅服务端）
+# - flow: 默认 xtls-rprx-vision
 ```
 
 ### 4. 代理链
@@ -324,6 +336,9 @@ forward -L socks5://:1080 -F "vless://uuid@remote.com:443?security=reality&..."
 ```bash
 # 启动反向代理服务器
 forward -L "tls://user:pass@:443?bind=true&cert=server.crt&key=server.key"
+
+# VLESS+REALITY 反向服务器（reality 为别名，需 bind=true）
+forward -L "reality://uuid@:2333?bind=true&key=xxxx&sid=xxxxx&sni=swscan.apple.com"
 ```
 
 **客户端（内网）**：
@@ -334,6 +349,13 @@ forward -L tcp://:2222/127.0.0.1:22 -F tls://user:pass@server.com:443
 
 # 将远程 8080 端口映射到本地 80
 forward -L tcp://:8080/127.0.0.1:80 -F tls://user:pass@server.com:443
+
+# VLESS+REALITY 反向客户端（target 默认使用服务端 host:port，可用 target=host:port 覆盖）
+forward -L tcp://:2222/127.0.0.1:22 -F "reality://uuid@server.com:2333?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=xxx&security=reality&sid=xxxx&sni=swscan.apple.com&type=tcp"
+
+# 说明：
+# - 反向服务端必须设置 bind=true
+# - target 用于指定 VLESS 请求目标，仅客户端使用（默认服务端 host:port）
 ```
 
 **访问方式**：
