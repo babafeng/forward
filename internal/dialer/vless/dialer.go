@@ -33,6 +33,7 @@ import (
 func init() {
 	dialer.Register("vless", New)
 	dialer.Register("vless+reality", New)
+	dialer.Register("reality", New)
 }
 
 type Dialer struct {

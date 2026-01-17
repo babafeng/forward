@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"forward/internal/config"
-	cini "forward/internal/config/ini"
-	cjson "forward/internal/config/json"
 	"forward/internal/endpoint"
 	"forward/internal/logging"
-	rc "forward/internal/reverse/client"
 	"forward/internal/route"
+
+	cini "forward/internal/config/ini"
+	cjson "forward/internal/config/json"
+
+	rc "forward/internal/reverse/client"
 
 	xlog "github.com/xtls/xray-core/common/log"
 )
@@ -113,7 +115,7 @@ func Main() int {
 			go func(c config.Config) {
 				defer wg.Done()
 				if err := runOne(ctx, c); err != nil {
-					logger.Error("[%s] Error running listener %s: %v", c.NodeName, c.Listen.String(), err)
+					logger.Error("[%s] Error running listener %s: %v", c.NodeName, c.Listen.RedactedString(), err)
 					errChan <- err
 					stop()
 				}
@@ -342,7 +344,7 @@ func parseRouteConfig(path string) (config.Config, error) {
 
 func isProxyServer(cfg config.Config) bool {
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h", "vless", "vless+reality":
+	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h", "vless", "vless+reality", "reality":
 		return true
 	default:
 		return false
@@ -370,8 +372,9 @@ func isPortForward(cfg config.Config) bool {
 
 func isReverseForwardServer(cfg config.Config) bool {
 	// remote server: -L tls://user:pass@0.0.0.0:443?bind=true or -L tls://user:pass@:443?bind=true
+	// remote server: -L reality://uuid@:2333?bind=true
 	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "tls", "http3", "https", "quic":
+	case "tls", "http3", "https", "quic", "vless+reality", "reality":
 		return cfg.Listen.Query.Get("bind") == "true"
 	default:
 		return false

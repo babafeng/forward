@@ -2,7 +2,9 @@ package route
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -42,9 +44,14 @@ func NewRouter(cfg *Config, log *logging.Logger) (*Router, error) {
 		return nil, nil
 	}
 
+	dnsTimeout := cfg.DNSTimeout
+	if dnsTimeout <= 0 {
+		dnsTimeout = 5 * time.Second
+	}
+
 	r := &Router{
 		skipProxy: append([]netip.Prefix(nil), cfg.SkipProxy...),
-		resolver:  newResolver(cfg.DNSServers),
+		resolver:  newResolver(cfg.DNSServers, dnsTimeout),
 	}
 
 	var hasGeoIP bool
@@ -247,7 +254,7 @@ type resolver struct {
 	timeout time.Duration
 }
 
-func newResolver(servers []string) *resolver {
+func newResolver(servers []string, timeout time.Duration) *resolver {
 	clean := make([]string, 0, len(servers))
 	for _, s := range servers {
 		s = strings.TrimSpace(s)
@@ -258,7 +265,7 @@ func newResolver(servers []string) *resolver {
 	}
 	return &resolver{
 		servers: clean,
-		timeout: 3 * time.Second,
+		timeout: timeout,
 	}
 }
 
@@ -337,7 +344,28 @@ func ensureMMDB(path, link string, log *logging.Logger) (string, error) {
 	if log != nil {
 		log.Info("Download mmdb from %s", link)
 	}
-	resp, err := http.Get(link)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("insecure redirect to %s", req.URL)
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", link, nil)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("download mmdb: %w", err)
 	}
@@ -351,7 +379,10 @@ func ensureMMDB(path, link string, log *logging.Logger) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create mmdb file: %w", err)
 	}
-	if _, err := f.ReadFrom(resp.Body); err != nil {
+
+	// Limit 50MB
+	limitReader := io.LimitReader(resp.Body, 50*1024*1024)
+	if _, err := io.Copy(f, limitReader); err != nil {
 		f.Close()
 		_ = os.Remove(tmp)
 		return "", fmt.Errorf("write mmdb file: %w", err)

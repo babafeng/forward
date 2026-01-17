@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 
 	quic "github.com/quic-go/quic-go"
@@ -12,6 +13,7 @@ import (
 	"forward/internal/config"
 	ctls "forward/internal/config/tls"
 	"forward/internal/logging"
+	rev "forward/internal/reverse"
 	"forward/internal/structs"
 )
 
@@ -24,23 +26,15 @@ type Listener struct {
 	handler Handler
 	log     *logging.Logger
 	tlsCfg  *tls.Config
-	isQuic  bool
+	scheme  string
 }
 
 func New(cfg config.Config, h Handler) (*Listener, error) {
 	var tlsCfg *tls.Config
 	var err error
-	switch cfg.Listen.Scheme {
-	case "tls", "https":
+	if protos := rev.NextProtosForScheme(cfg.Listen.Scheme); len(protos) > 0 {
 		tlsCfg, err = ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h2", "http/1.1"},
-		})
-		if err != nil {
-			return nil, err
-		}
-	case "quic", "http3":
-		tlsCfg, err = ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h3"},
+			NextProtos: protos,
 		})
 		if err != nil {
 			return nil, err
@@ -51,27 +45,19 @@ func New(cfg config.Config, h Handler) (*Listener, error) {
 		handler: h,
 		log:     cfg.Logger,
 		tlsCfg:  tlsCfg,
-		isQuic:  cfg.Listen.Scheme == "quic" || cfg.Listen.Scheme == "http3",
+		scheme:  strings.ToLower(cfg.Listen.Scheme),
 	}, nil
 }
 
 func (l *Listener) Run(ctx context.Context) error {
-	if l.isQuic {
-		return l.runQUIC(ctx)
-	}
-
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(ctx, "tcp", l.addr)
+	ln, err := l.listen(ctx)
 	if err != nil {
 		l.log.Error("Reverse server listen error: %v", err)
 		return err
 	}
-	if l.tlsCfg != nil {
-		ln = tls.NewListener(ln, l.tlsCfg)
-	}
 	defer ln.Close()
 
-	l.log.Info("Reverse server listening on %s (%s)", l.addr, schemeName(l.tlsCfg))
+	l.log.Info("Reverse server listening on %s (%s)", l.addr, l.schemeName())
 
 	go func() {
 		<-ctx.Done()
@@ -91,53 +77,78 @@ func (l *Listener) Run(ctx context.Context) error {
 	}
 }
 
-func schemeName(t *tls.Config) string {
-	if t != nil {
+func (l *Listener) listen(ctx context.Context) (net.Listener, error) {
+	if l.isQuic() {
+		qln, err := quic.ListenAddr(l.addr, l.tlsCfg, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &quicStreamListener{ctx: ctx, ln: qln}, nil
+	}
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", l.addr)
+	if err != nil {
+		return nil, err
+	}
+	if l.tlsCfg != nil {
+		ln = tls.NewListener(ln, l.tlsCfg)
+	}
+	return ln, nil
+}
+
+func (l *Listener) isQuic() bool {
+	return l.scheme == "quic" || l.scheme == "http3"
+}
+
+func (l *Listener) schemeName() string {
+	if l.isQuic() {
+		return "quic"
+	}
+	if l.tlsCfg != nil {
 		return "tls"
 	}
 	return "tcp"
 }
 
-func (l *Listener) runQUIC(ctx context.Context) error {
-	qln, err := quic.ListenAddr(l.addr, l.tlsCfg, nil)
-	if err != nil {
-		l.log.Error("Reverse server quic listen error: %v", err)
-		return err
-	}
-	l.log.Info("Reverse server listening on %s (quic)", l.addr)
-
-	go func() {
-		<-ctx.Done()
-		qln.Close()
-	}()
-
-	for {
-		qconn, err := qln.Accept(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			l.log.Error("Reverse server quic accept error: %v", err)
-			continue
-		}
-		go l.handleQUICConn(ctx, qconn)
-	}
+type quicStreamListener struct {
+	ctx context.Context
+	ln  *quic.Listener
 }
 
-func (l *Listener) handleQUICConn(ctx context.Context, qconn *quic.Conn) {
-	stream, err := qconn.AcceptStream(ctx)
+func (l *quicStreamListener) Accept() (net.Conn, error) {
+	qconn, err := l.ln.Accept(l.ctx)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := qconn.AcceptStream(l.ctx)
 	if err != nil {
 		_ = qconn.CloseWithError(0, "")
-		return
+		return nil, err
 	}
+	go func() {
+		for {
+			s, err := qconn.AcceptStream(l.ctx)
+			if err != nil {
+				return
+			}
+			_ = s.Close()
+		}
+	}()
 
-	conn := &structs.QuicStreamConn{
+	return &structs.QuicStreamConn{
 		Stream:    stream,
 		Local:     qconn.LocalAddr(),
 		Remote:    qconn.RemoteAddr(),
 		Closer:    qconn,
 		CloseOnce: &sync.Once{},
-	}
+	}, nil
+}
 
-	l.handler.Handle(ctx, conn)
+func (l *quicStreamListener) Close() error {
+	return l.ln.Close()
+}
+
+func (l *quicStreamListener) Addr() net.Addr {
+	return l.ln.Addr()
 }

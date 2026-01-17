@@ -32,9 +32,15 @@ func newRunner(cfg config.Config, d dialer.Dialer) (listener.Runner, error) {
 
 	h := hhttp.New(cfg, d)
 
+	maxHeaderBytes := cfg.MaxHeaderBytes
+	if maxHeaderBytes <= 0 {
+		maxHeaderBytes = config.DefaultMaxHeaderBytes
+	}
+
 	server := &http3.Server{
-		TLSConfig: http3.ConfigureTLSConfig(tlsCfg),
-		Handler:   h,
+		TLSConfig:      http3.ConfigureTLSConfig(tlsCfg),
+		Handler:        h,
+		MaxHeaderBytes: maxHeaderBytes,
 	}
 
 	return New(cfg, h, server), nil

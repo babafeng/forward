@@ -21,19 +21,20 @@
 
 ### 核心功能
 
-| 功能           | 描述                                |
-| -------------- | ----------------------------------- |
-| **端口转发**   | TCP/UDP 端口转发，支持代理链        |
-| **代理服务器** | HTTP/SOCKS5/TLS/QUIC/VLESS 代理协议 |
-| **内网穿透**   | 反向代理，将内网服务暴露到公网      |
-| **智能路由**   | 基于规则的流量分流（域名/IP/GeoIP） |
+| 功能           | 描述                                        |
+| -------------- | ------------------------------------------- |
+| **端口转发**   | TCP/UDP 端口转发，支持代理链                |
+| **代理服务器** | HTTP/SOCKS5/TLS/QUIC/VLESS+Reality 代理协议 |
+| **内网穿透**   | 反向代理，将内网服务暴露到公网 TCP/UDP      |
+| **智能路由**   | 基于规则的流量分流（域名/IP/GeoIP）         |
 
 ### 设计原则
 
-1. **模块化设计**：Dialer 和 Listener 使用工厂模式，易于扩展新协议
-2. **零配置启动**：支持命令行参数快速启动
-3. **安全优先**：认证使用 constant-time 比较，TLS 默认验证证书
-4. **高性能**：使用连接池、缓冲区复用、多路复用（Yamux/QUIC）
+1. **结构分层**: Listener / Handler / Dialer
+2. **模块化设计**：Dialer 和 Listener 使用工厂模式，易于扩展新协议
+3. **零配置启动**：支持命令行参数快速启动
+4. **安全优先**：认证使用 constant-time 比较，TLS 默认验证证书
+5. **高性能**：使用连接池、缓冲区复用、多路复用（Yamux/QUIC）
 
 ---
 
@@ -127,6 +128,7 @@ type Dialer interface {
 ```
 
 **工厂注册**：
+
 ```go
 // 在 init() 中注册
 dialer.Register("http", newDialer)
@@ -136,15 +138,17 @@ dialer.Register("socks5", newDialer)
 
 **支持的 Scheme**：
 
-| Scheme   | 实现            | 说明              |
-| -------- | --------------- | ----------------- |
-| `direct` | `dialer/direct` | 直接连接          |
-| `http`   | `dialer/http`   | HTTP CONNECT 代理 |
-| `https`  | `dialer/http`   | HTTPS 代理（TLS） |
-| `socks5` | `dialer/socks5` | SOCKS5 代理       |
-| `tls`    | `dialer/tls`    | TLS 加密连接      |
-| `quic`   | `dialer/quic`   | QUIC/HTTP3 连接   |
-| `vless`  | `dialer/vless`  | VLESS 协议        |
+| Scheme          | 实现            | 说明              |
+| --------------- | --------------- | ----------------- |
+| `direct`        | `dialer/direct` | 直接连接          |
+| `http`          | `dialer/http`   | HTTP CONNECT 代理 |
+| `https`         | `dialer/http`   | HTTPS 代理（TLS） |
+| `socks5`        | `dialer/socks5` | SOCKS5 代理       |
+| `tls`           | `dialer/tls`    | TLS 加密连接      |
+| `quic`          | `dialer/quic`   | QUIC/HTTP3 连接   |
+| `vless`         | `dialer/vless`  | VLESS 协议        |
+| `vless+reality` | `dialer/vless`  | VLESS+REALITY     |
+| `reality`       | `dialer/vless`  | `vless+reality` 别名 |
 
 ---
 
@@ -153,6 +157,7 @@ dialer.Register("socks5", newDialer)
 **功能**：接收入站连接并分发给 Handler 处理
 
 **接口定义**：
+
 ```go
 type Runner interface {
     Run(ctx context.Context) error
@@ -161,15 +166,16 @@ type Runner interface {
 
 **支持的 Scheme**：
 
-| Scheme          | 实现              | 说明               |
-| --------------- | ----------------- | ------------------ |
-| `tcp`           | `listener/tcp`    | TCP 端口转发       |
-| `udp`           | `listener/udp`    | UDP 端口转发       |
-| `http`          | `listener/http`   | HTTP 代理服务      |
-| `https`         | `listener/http`   | HTTPS 代理服务     |
-| `socks5`        | `listener/socks5` | SOCKS5 代理服务    |
-| `http3`         | `listener/http3`  | HTTP/3 代理服务    |
-| `vless+reality` | `listener/vless`  | VLESS+REALITY 服务 |
+| Scheme   | 实现              | 说明               |
+| -------- | ----------------- | ------------------ |
+| `tcp`    | `listener/tcp`    | TCP 端口转发       |
+| `udp`    | `listener/udp`    | UDP 端口转发       |
+| `http`   | `listener/http`   | HTTP 代理服务      |
+| `https`  | `listener/http`   | HTTPS 代理服务     |
+| `socks5` | `listener/socks5` | SOCKS5 代理服务    |
+| `http3`  | `listener/http3`  | HTTP/3 代理服务    |
+| `vless+reality` | `listener/vless` | VLESS+REALITY 服务 |
+| `reality` | `listener/vless` | `vless+reality` 别名 |
 
 ---
 
@@ -216,21 +222,22 @@ type Runner interface {
 
 ```
 ┌─────────────────┐         ┌─────────────────┐
-│   内网客户端     │         │   公网服务器     │
-│                 │   TLS   │                 │
+│   内网客户端      │         │   公网服务器     │
+│                 │ TLS/QUIC/REALITY │                 │
 │  reverse/client │◀───────▶│ reverse/server  │
 │                 │  Yamux  │                 │
 └────────┬────────┘         └────────┬────────┘
          │                           │
-         │ 拨号本地目标               │ 绑定公网端口
+         │ 拨号本地目标                │ 绑定公网端口
          ▼                           ▼
    ┌───────────┐              ┌───────────┐
-   │ 内网服务   │              │ 外部客户端 │
+   │ 内网服务   │              │ 外部客户端  │
    │ (SSH/Web) │              │ (用户访问) │
    └───────────┘              └───────────┘
 ```
 
 **通信流程**：
+
 1. 内网客户端连接公网服务器建立隧道
 2. 使用 SOCKS5 BIND 协议注册要暴露的端口
 3. 使用 Yamux 多路复用处理多个并发连接
@@ -299,8 +306,17 @@ forward -L "tls://:443?cert=server.crt&key=server.key"
 # QUIC/HTTP3 代理
 forward -L "quic://:443?cert=server.crt&key=server.key"
 
-# VLESS+REALITY（高隐蔽性）
+# VLESS+REALITY（高隐蔽性，reality 为别名）
 forward -L "vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key"
+forward -L "reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key"
+
+# 参数说明
+# - key: 服务端私钥（可省略自动生成，建议保存）
+# - pbk: 客户端公钥（由服务端私钥派生）
+# - sid: Short ID，可用逗号分隔多个
+# - sni: 伪装域名（Server Name）
+# - dest: REALITY 回落目标（仅服务端）
+# - flow: 默认 xtls-rprx-vision
 ```
 
 ### 4. 代理链
@@ -316,21 +332,34 @@ forward -L socks5://:1080 -F "vless://uuid@remote.com:443?security=reality&..."
 ### 5. 内网穿透
 
 **服务端（公网）**：
+
 ```bash
 # 启动反向代理服务器
 forward -L "tls://user:pass@:443?bind=true&cert=server.crt&key=server.key"
+
+# VLESS+REALITY 反向服务器（reality 为别名，需 bind=true）
+forward -L "reality://uuid@:2333?bind=true&key=xxxx&sid=xxxxx&sni=swscan.apple.com"
 ```
 
 **客户端（内网）**：
+
 ```bash
 # 将远程 2222 端口映射到本地 22
 forward -L tcp://:2222/127.0.0.1:22 -F tls://user:pass@server.com:443
 
 # 将远程 8080 端口映射到本地 80
 forward -L tcp://:8080/127.0.0.1:80 -F tls://user:pass@server.com:443
+
+# VLESS+REALITY 反向客户端（target 默认使用服务端 host:port，可用 target=host:port 覆盖）
+forward -L tcp://:2222/127.0.0.1:22 -F "reality://uuid@server.com:2333?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=xxx&security=reality&sid=xxxx&sni=swscan.apple.com&type=tcp"
+
+# 说明：
+# - 反向服务端必须设置 bind=true
+# - target 用于指定 VLESS 请求目标，仅客户端使用（默认服务端 host:port）
 ```
 
 **访问方式**：
+
 ```bash
 # 通过公网服务器访问内网 SSH
 ssh -p 2222 server.com
@@ -363,22 +392,25 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
 ### JSON 配置
 
 **简单格式**：
+
 ```json
 {
-  "listeners": ["http://:8080", "socks5://:1080"],
-  "forward": "tls://user:pass@remote.com:443",
+  "listen": "http://:8080",  // 监听单个
+  "forward": "tls://user:pass@remote.com:443", // 监听单个时使用，如果监听多个，使用多节点格式
+  "listeners": ["http://:8080", "socks5://:1080"],  // 监听多个
   "insecure": false,
   "debug": false
 }
 ```
 
 **多节点格式**：
+
 ```json
 {
   "nodes": [
     {
       "name": "proxy_server",
-      "listeners": ["http://:8080"],
+      "listen": "http://:8080",
       "forward": "tls://remote.com:443"
     },
     {
@@ -391,30 +423,34 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
 ```
 
 **使用方式**：
+
 ```bash
+# 默认读取 ~/.forward/forward.json or ~/forward.json
 forward -C config.json
 ```
 
-### INI 路由配置
+### 路由配置
 
 **格式**：
+
 ```ini
 [General]
-debug = true
-listeners = http://:8080
+listen = http://0.0.0.0:8000, socks5://0.0.0.0:1080
+skip-proxy = 192.168.0.0/16, 127.0.0.1/32
+dns-server = 8.8.8.8,8.8.4.4
+mmdb-path=~/.forward/Country.mmdb
+mmdb-link=https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb
 
-[DNS]
-servers = 8.8.8.8, 1.1.1.1
-
-[MMDB]
-path = ~/.forward/Country.mmdb
-link = https://github.com/.../Country.mmdb
-
+DOMAIN,ifconfig.me,PROXY_JP
 [Proxy]
 PROXY_SG = vless://uuid@sg.example.com:443?...
 PROXY_JP = vless://uuid@jp.example.com:443?...
+PROXY_01 = https://user:pass@:443?...
 
 [Rule]
+# - Rules type: DOMAIN / DOMAIN-SUFFIX / DOMAIN-KEYWORD / IP-CIDR / GEOIP
+# - Action: PROXY_NAME DIRECT REJECT FINAL
+
 DOMAIN-SUFFIX, google.com, PROXY_SG
 DOMAIN-KEYWORD, youtube, PROXY_SG
 GEOIP, CN, DIRECT
@@ -423,6 +459,7 @@ FINAL, PROXY_JP
 ```
 
 **使用方式**：
+
 ```bash
 forward -R route.conf
 ```
@@ -433,7 +470,7 @@ forward -R route.conf
 
 ### 规则语法
 
-```
+```text
 类型, 匹配值, 动作
 ```
 
@@ -556,4 +593,4 @@ func (l *Listener) Run(ctx context.Context) error {
 
 ---
 
-*文档版本：1.0 | 最后更新：2026-01-12*
+**文档版本：1.0 | 最后更新：2026-01-12**

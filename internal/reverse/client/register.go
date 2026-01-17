@@ -39,4 +39,10 @@ func init() {
 	Register("http3", func(cfg config.Config) (Runner, error) {
 		return NewRunner(cfg)
 	})
+	Register("vless+reality", func(cfg config.Config) (Runner, error) {
+		return NewRunner(cfg)
+	})
+	Register("reality", func(cfg config.Config) (Runner, error) {
+		return NewRunner(cfg)
+	})
 }
