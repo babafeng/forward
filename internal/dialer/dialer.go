@@ -16,6 +16,14 @@ type Dialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
+type BaseSetter interface {
+	SetBase(Dialer)
+}
+
+type PacketDialer interface {
+	ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error)
+}
+
 type Factory func(cfg config.Config) (Dialer, error)
 
 var (
@@ -38,6 +46,9 @@ func Register(scheme string, f Factory) {
 
 func New(cfg config.Config) (Dialer, error) {
 	if cfg.Mode == config.ModePortForward {
+		if len(cfg.ForwardChain) > 0 {
+			return newDialerWithForwardChain(cfg, cfg.ForwardChain)
+		}
 		if cfg.Forward != nil {
 			scheme := strings.ToLower(cfg.Forward.Scheme)
 			if scheme != "tcp" && scheme != "udp" {
@@ -50,6 +61,10 @@ func New(cfg config.Config) (Dialer, error) {
 
 	if cfg.RouteStore != nil {
 		return NewRouteDialer(cfg, cfg.RouteStore)
+	}
+
+	if len(cfg.ForwardChain) > 0 {
+		return newDialerWithForwardChain(cfg, cfg.ForwardChain)
 	}
 
 	if cfg.Forward == nil {
@@ -71,6 +86,40 @@ func newDialerWithForward(cfg config.Config, forward endpoint.Endpoint) (Dialer,
 	cfg.Route = nil
 	cfg.RouteStore = nil
 	return f(cfg)
+}
+
+func newDialerWithForwardChain(cfg config.Config, chain []endpoint.Endpoint) (Dialer, error) {
+	if len(chain) == 0 {
+		return NewDirect(cfg), nil
+	}
+
+	base := Dialer(NewDirect(cfg))
+	var current Dialer
+
+	for i, hop := range chain {
+		d, err := newDialerWithForward(cfg, hop)
+		if err != nil {
+			return nil, fmt.Errorf("forward chain hop %d (%s) init error: %w", i+1, hop.Scheme, err)
+		}
+		if i > 0 {
+			if scheme := strings.ToLower(hop.Scheme); scheme == "quic" || scheme == "http3" {
+				if _, ok := base.(PacketDialer); !ok {
+					return nil, fmt.Errorf("forward chain hop %d (%s) requires UDP-capable base", i+1, hop.Scheme)
+				}
+			}
+		}
+		if i > 0 {
+			setter, ok := d.(BaseSetter)
+			if !ok {
+				return nil, fmt.Errorf("forward chain hop %d (%s) does not support chaining", i+1, hop.Scheme)
+			}
+			setter.SetBase(base)
+		}
+		base = d
+		current = d
+	}
+
+	return current, nil
 }
 
 type Direct struct {
@@ -100,4 +149,12 @@ func NewDirect(cfg config.Config) *Direct {
 
 func (d *Direct) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return d.d.DialContext(ctx, network, address)
+}
+
+func (d *Direct) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
+	if address == "" {
+		address = ":0"
+	}
+	var lc net.ListenConfig
+	return lc.ListenPacket(ctx, network, address)
 }

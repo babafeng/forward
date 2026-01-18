@@ -55,6 +55,13 @@ func New(cfg config.Config) (*Dialer, error) {
 	}, nil
 }
 
+func (d *Dialer) SetBase(base dialer.Dialer) {
+	if base == nil {
+		return
+	}
+	d.base = base
+}
+
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	network = strings.ToLower(strings.TrimSpace(network))
 	switch {
@@ -65,6 +72,14 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	default:
 		return nil, fmt.Errorf("socks5: unsupported network: %s", network)
 	}
+}
+
+func (d *Dialer) ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error) {
+	network = strings.ToLower(strings.TrimSpace(network))
+	if !strings.HasPrefix(network, "udp") {
+		return nil, fmt.Errorf("socks5: unsupported packet network: %s", network)
+	}
+	return d.dialPacket(ctx, address)
 }
 
 func (d *Dialer) dialTCP(ctx context.Context, target string) (net.Conn, error) {
@@ -390,6 +405,56 @@ func (d *Dialer) dialUDP(ctx context.Context, target string) (net.Conn, error) {
 	}, nil
 }
 
+func (d *Dialer) dialPacket(ctx context.Context, localAddr string) (net.PacketConn, error) {
+	control, err := d.dialForwardTCP(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.handshake(ctx, control); err != nil {
+		_ = control.Close()
+		return nil, err
+	}
+
+	localIP := localIPFromConn(control)
+	udpLocal := &net.UDPAddr{IP: localIP, Port: 0}
+	if localAddr != "" {
+		if host, portStr, err := net.SplitHostPort(localAddr); err == nil {
+			port, _ := strconv.Atoi(portStr)
+			if host != "" {
+				if ip := net.ParseIP(host); ip != nil {
+					udpLocal.IP = ip
+				}
+			}
+			udpLocal.Port = port
+		}
+	}
+
+	udpSock, err := net.ListenUDP("udp", udpLocal)
+	if err != nil {
+		_ = control.Close()
+		return nil, fmt.Errorf("socks5: listen udp: %w", err)
+	}
+
+	relay, err := d.udpAssociate(ctx, control, udpSock.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		_ = udpSock.Close()
+		_ = control.Close()
+		return nil, err
+	}
+
+	if relay.IP == nil || relay.IP.IsUnspecified() {
+		relay.IP = proxyRemoteIP(control)
+	}
+
+	_ = control.SetDeadline(time.Time{})
+
+	return &udpPacketConn{
+		control: control,
+		udp:     udpSock,
+		relay:   relay,
+	}, nil
+}
+
 func proxyRemoteIP(control net.Conn) net.IP {
 	ra, ok := control.RemoteAddr().(*net.TCPAddr)
 	if ok && ra != nil && ra.IP != nil {
@@ -531,46 +596,155 @@ func (c *UDPConn) SetDeadline(t time.Time) error {
 func (c *UDPConn) SetReadDeadline(t time.Time) error  { return c.udp.SetReadDeadline(t) }
 func (c *UDPConn) SetWriteDeadline(t time.Time) error { return c.udp.SetWriteDeadline(t) }
 
+type udpPacketConn struct {
+	control net.Conn
+	udp     *net.UDPConn
+
+	relay *net.UDPAddr
+}
+
+func (c *udpPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	buf := make([]byte, 64*1024)
+	for {
+		n, from, err := c.udp.ReadFromUDP(buf)
+		if err != nil {
+			return 0, nil, err
+		}
+		if !udpAddrEqual(from, c.relay) {
+			continue
+		}
+		host, port, payload, err := parseUDPDatagramWithAddr(buf[:n])
+		if err != nil {
+			continue
+		}
+		addr := addrFromHostPort(host, port)
+		if len(payload) > len(p) {
+			copy(p, payload[:len(p)])
+			return len(p), addr, nil
+		}
+		copy(p, payload)
+		return len(payload), addr, nil
+	}
+}
+
+func (c *udpPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	host, port, err := hostPortFromAddr(addr)
+	if err != nil {
+		return 0, err
+	}
+	prefix, err := buildUDPPrefix(host, port)
+	if err != nil {
+		return 0, err
+	}
+	buf := make([]byte, 0, len(prefix)+len(p))
+	buf = append(buf, prefix...)
+	buf = append(buf, p...)
+
+	_, err = c.udp.WriteToUDP(buf, c.relay)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (c *udpPacketConn) Close() error {
+	var first error
+	if err := c.udp.Close(); err != nil {
+		first = err
+	}
+	if err := c.control.Close(); err != nil && first == nil {
+		first = err
+	}
+	return first
+}
+
+func (c *udpPacketConn) LocalAddr() net.Addr { return c.udp.LocalAddr() }
+
+func (c *udpPacketConn) SetDeadline(t time.Time) error {
+	if err := c.udp.SetDeadline(t); err != nil {
+		return err
+	}
+	return c.control.SetDeadline(t)
+}
+
+func (c *udpPacketConn) SetReadDeadline(t time.Time) error  { return c.udp.SetReadDeadline(t) }
+func (c *udpPacketConn) SetWriteDeadline(t time.Time) error { return c.udp.SetWriteDeadline(t) }
+
+func hostPortFromAddr(addr net.Addr) (string, int, error) {
+	if addr == nil {
+		return "", 0, fmt.Errorf("socks5: missing udp address")
+	}
+	if ua, ok := addr.(*net.UDPAddr); ok && ua.IP != nil && !ua.IP.IsUnspecified() {
+		return ua.IP.String(), ua.Port, nil
+	}
+	host, portStr, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "", 0, fmt.Errorf("socks5: invalid udp address: %w", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", 0, fmt.Errorf("socks5: invalid udp port: %w", err)
+	}
+	return host, port, nil
+}
+
+func addrFromHostPort(host string, port int) net.Addr {
+	if ip := net.ParseIP(host); ip != nil {
+		return &net.UDPAddr{IP: ip, Port: port}
+	}
+	return udpAddr{network: "udp", addr: net.JoinHostPort(host, strconv.Itoa(port))}
+}
+
 func parseUDPDatagram(b []byte) ([]byte, error) {
+	_, _, payload, err := parseUDPDatagramWithAddr(b)
+	return payload, err
+}
+
+func parseUDPDatagramWithAddr(b []byte) (string, int, []byte, error) {
 	if len(b) < 4 {
-		return nil, errors.New("short udp datagram")
+		return "", 0, nil, errors.New("short udp datagram")
 	}
 	if b[0] != 0x00 || b[1] != 0x00 {
-		return nil, errors.New("bad rsv")
+		return "", 0, nil, errors.New("bad rsv")
 	}
 	if b[2] != 0x00 {
-		return nil, errors.New("fragmentation not supported")
+		return "", 0, nil, errors.New("fragmentation not supported")
 	}
 	atyp := b[3]
 	off := 4
 	switch atyp {
 	case socks5util.AtypIPv4:
 		if len(b) < off+4+2 {
-			return nil, errors.New("short ipv4 header")
+			return "", 0, nil, errors.New("short ipv4 header")
 		}
+		host := net.IP(b[off : off+4]).String()
 		off += 4 + 2
+		port := int(binary.BigEndian.Uint16(b[off-2 : off]))
+		return host, port, b[off:], nil
 	case socks5util.AtypIPv6:
 		if len(b) < off+16+2 {
-			return nil, errors.New("short ipv6 header")
+			return "", 0, nil, errors.New("short ipv6 header")
 		}
+		host := net.IP(b[off : off+16]).String()
 		off += 16 + 2
+		port := int(binary.BigEndian.Uint16(b[off-2 : off]))
+		return host, port, b[off:], nil
 	case socks5util.AtypDomain:
 		if len(b) < off+1 {
-			return nil, errors.New("short domain header")
+			return "", 0, nil, errors.New("short domain header")
 		}
 		l := int(b[off])
 		off++
 		if len(b) < off+l+2 {
-			return nil, errors.New("short domain header")
+			return "", 0, nil, errors.New("short domain header")
 		}
+		host := string(b[off : off+l])
 		off += l + 2
+		port := int(binary.BigEndian.Uint16(b[off-2 : off]))
+		return host, port, b[off:], nil
 	default:
-		return nil, errors.New("unknown atyp")
+		return "", 0, nil, errors.New("unknown atyp")
 	}
-	if off > len(b) {
-		return nil, errors.New("bad header length")
-	}
-	return b[off:], nil
 }
 
 func udpAddrEqual(a, b *net.UDPAddr) bool {

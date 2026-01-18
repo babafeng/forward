@@ -62,6 +62,16 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 	}, nil
 }
 
+func (d *Dialer) SetBase(base dialer.Dialer) {
+	if base == nil {
+		return
+	}
+	d.h2Mu.Lock()
+	d.h2Client = nil
+	d.h2Mu.Unlock()
+	d.base = base
+}
+
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if !strings.HasPrefix(network, "tcp") {
 		return nil, fmt.Errorf("http forward supports tcp only")

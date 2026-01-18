@@ -43,6 +43,7 @@ type NodeFileConfig struct {
 	Listeners []string `json:"listeners"`
 	Listen    string   `json:"listen,omitempty"`
 	Forward   string   `json:"forward,omitempty"`
+	Forwards  []string `json:"forwards,omitempty"`
 	Insecure  bool     `json:"insecure,omitempty"`
 }
 
@@ -51,6 +52,7 @@ type FileConfig struct {
 	Listeners []string         `json:"listeners,omitempty"`
 	Listen    string           `json:"listen,omitempty"`
 	Forward   string           `json:"forward,omitempty"`
+	Forwards  []string         `json:"forwards,omitempty"`
 	Insecure  bool             `json:"insecure,omitempty"`
 	Debug     bool             `json:"debug,omitempty"`
 }
@@ -106,6 +108,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 		Listeners: fc.Listeners,
 		Listen:    fc.Listen,
 		Forward:   fc.Forward,
+		Forwards:  fc.Forwards,
 		Insecure:  fc.Insecure,
 	}, 0)
 	if err != nil {
@@ -116,6 +119,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	cfg.Listeners = node.Listeners
 	cfg.Listen = node.Listeners[0]
 	cfg.Forward = node.Forward
+	cfg.ForwardChain = node.ForwardChain
 	cfg.Insecure = node.Insecure
 
 	config.ApplyDefaults(&cfg)
@@ -151,12 +155,29 @@ func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 		node.Listeners = append(node.Listeners, ep)
 	}
 
-	if strings.TrimSpace(n.Forward) != "" {
+	if strings.TrimSpace(n.Forward) != "" && len(n.Forwards) > 0 {
+		return node, fmt.Errorf("node %s: forward and forwards are mutually exclusive", node.Name)
+	}
+
+	if len(n.Forwards) > 0 {
+		for _, raw := range n.Forwards {
+			ef, err := endpoint.Parse(raw)
+			if err != nil {
+				return node, fmt.Errorf("node %s: parse forward %s: %w", node.Name, raw, err)
+			}
+			node.ForwardChain = append(node.ForwardChain, ef)
+		}
+		if len(node.ForwardChain) > 0 {
+			last := node.ForwardChain[len(node.ForwardChain)-1]
+			node.Forward = &last
+		}
+	} else if strings.TrimSpace(n.Forward) != "" {
 		ef, err := endpoint.Parse(n.Forward)
 		if err != nil {
 			return node, fmt.Errorf("node %s: parse forward: %w", node.Name, err)
 		}
 		node.Forward = &ef
+		node.ForwardChain = []endpoint.Endpoint{ef}
 	}
 
 	return node, nil
