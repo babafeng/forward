@@ -2,6 +2,7 @@ package quic
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -10,10 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"forward/internal/config"
 	ctls "forward/internal/config/tls"
+	"forward/internal/dialer"
 )
 
 type Dialer struct {
@@ -21,6 +24,8 @@ type Dialer struct {
 	rt         *http3.Transport
 	timeout    time.Duration
 	authHeader string
+	base       dialer.PacketDialer
+	baseErr    error
 }
 
 func New(cfg config.Config) (*Dialer, error) {
@@ -51,9 +56,25 @@ func New(cfg config.Config) (*Dialer, error) {
 	}, nil
 }
 
+func (d *Dialer) SetBase(base dialer.Dialer) {
+	if base == nil {
+		return
+	}
+	packetDialer, ok := base.(dialer.PacketDialer)
+	if !ok {
+		d.baseErr = fmt.Errorf("quic forward requires UDP-capable base")
+		return
+	}
+	d.base = packetDialer
+	d.rt.Dial = d.dialWithBase
+}
+
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if !strings.HasPrefix(strings.ToLower(network), "tcp") {
 		return nil, fmt.Errorf("quic forward supports tcp only")
+	}
+	if d.baseErr != nil {
+		return nil, d.baseErr
 	}
 
 	var cancel context.CancelFunc
@@ -107,4 +128,30 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		},
 		cancel: cancel,
 	}, nil
+}
+
+func (d *Dialer) dialWithBase(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+	pc, err := d.base.ListenPacket(ctx, "udp", ":0")
+	if err != nil {
+		return nil, fmt.Errorf("quic forward udp init failed: %w", err)
+	}
+
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		_ = pc.Close()
+		return nil, fmt.Errorf("quic forward resolve addr failed: %w", err)
+	}
+
+	conn, err := quic.Dial(ctx, pc, udpAddr, tlsCfg, cfg)
+	if err != nil {
+		_ = pc.Close()
+		return nil, err
+	}
+
+	go func() {
+		<-conn.Context().Done()
+		_ = pc.Close()
+	}()
+
+	return conn, nil
 }

@@ -139,6 +139,7 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 	cfg.Listen = listen
 	cfg.Listeners = node.Listeners
 	cfg.Forward = node.Forward
+	cfg.ForwardChain = node.ForwardChain
 	cfg.Insecure = node.Insecure
 	return cfg
 }
@@ -231,7 +232,8 @@ func parseArgs(args []string) (config.Config, error) {
 
 	var listenFlags stringSlice
 	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. https://127.0.0.1:443 (can be repeated)")
-	forward := fs.String("F", "", "Forward target endpoint, e.g. https://remote.com:443")
+	var forwardFlags stringSlice
+	fs.Var(&forwardFlags, "F", "Forward target endpoint, e.g. https://remote.com:443 (can be repeated)")
 	configFile := fs.String("C", "", "Path to JSON config file")
 	routeFile := fs.String("R", "", "Path to proxy route config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
@@ -250,7 +252,7 @@ func parseArgs(args []string) (config.Config, error) {
 	}
 
 	if *routeFile != "" {
-		if *configFile != "" || len(listenFlags) > 0 || strings.TrimSpace(*forward) != "" {
+		if *configFile != "" || len(listenFlags) > 0 || len(forwardFlags) > 0 {
 			return config.Config{}, fmt.Errorf("-R cannot be used with -C/-L/-F")
 		}
 		cfg, err := parseRouteConfig(*routeFile)
@@ -301,21 +303,28 @@ func parseArgs(args []string) (config.Config, error) {
 	}
 	cfg.Listen = cfg.Listeners[0]
 
-	if strings.TrimSpace(*forward) != "" {
-		ef, err := endpoint.Parse(*forward)
-		if err != nil {
-			return cfg, fmt.Errorf("parse -F: %w", err)
+	if len(forwardFlags) > 0 {
+		for _, raw := range forwardFlags {
+			ef, err := endpoint.Parse(raw)
+			if err != nil {
+				return cfg, fmt.Errorf("parse -F %s: %w", raw, err)
+			}
+			cfg.ForwardChain = append(cfg.ForwardChain, ef)
 		}
-		cfg.Forward = &ef
+		if len(cfg.ForwardChain) > 0 {
+			last := cfg.ForwardChain[len(cfg.ForwardChain)-1]
+			cfg.Forward = &last
+		}
 	}
 
 	cfg.Insecure = *insecure
 
 	cfg.Nodes = []config.NodeConfig{{
-		Name:      "default",
-		Listeners: cfg.Listeners,
-		Forward:   cfg.Forward,
-		Insecure:  cfg.Insecure,
+		Name:         "default",
+		Listeners:    cfg.Listeners,
+		Forward:      cfg.Forward,
+		ForwardChain: cfg.ForwardChain,
+		Insecure:     cfg.Insecure,
 	}}
 
 	config.ApplyDefaults(&cfg)

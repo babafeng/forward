@@ -137,10 +137,25 @@ Notes:
 
 ### Proxy Chaining
 
-Forward traffic through a proxy chain.
+Forward traffic through a proxy chain (repeat `-F` for multi-hop).
 
 ```bash
+# Single hop
 forward -L http://127.0.0.1:1080 -F tls://proxy.com:1080
+
+# Multi-hop (S2 -> S1)
+forward -L http://127.0.0.1:8080 -F http://S2:8080 -F http://S1:8080
+```
+
+Notes:
+* Multi-hop chaining is supported for http/https/tls/socks5.
+* QUIC/HTTP3 chaining requires a UDP-capable base (e.g. socks5).
+* VLESS chaining only supports TCP transport (`type=tcp`).
+
+```bash
+# QUIC/HTTP/3 多跳：本地 -> SOCKS5(S2) -> QUIC(S1)
+forward -L http://127.0.0.1:8080 -F socks5://S2:1080 -F quic://S1:443
+forward -L socks5://127.0.0.1:1080 -F quic://S2:1080 -F quic://S1:443
 ```
 
 ### Multiple Listeners
@@ -175,6 +190,18 @@ forward -C config.json
 }
 ```
 
+**Chained forward example:**
+
+```json
+{
+  "listeners": ["http://:8080"],
+  "forwards": ["http://S2:8080", "http://S1:8080"]
+}
+```
+
+Notes:
+* `forward` and `forwards` are mutually exclusive; `forwards` order is closest to farthest.
+
 **Multi-node config format:**
 
 ```json
@@ -187,6 +214,11 @@ forward -C config.json
       "insecure": false
     },
     {
+      "name": "proxy_chain",
+      "listeners": ["http://:8081"],
+      "forwards": ["http://S2:8080", "http://S1:8080"]
+    },
+    {
       "name": "port_forward",
       "listeners": ["tcp://:2222/10.0.0.1:22"]
     }
@@ -195,7 +227,7 @@ forward -C config.json
 }
 ```
 
-Each node has independent `listeners`, `forward`, and `insecure` settings.
+Each node has independent `listeners`, `forward`/`forwards`, and `insecure` settings.
 
 ### Proxy Route (INI)
 
@@ -210,6 +242,7 @@ forward -R proxy-route.conf
 ```
 [General]
 listen = socks5://0.0.0.0:1080, http://0.0.0.0:8080
+debug = false
 skip-proxy = 192.168.0.0/16, 127.0.0.1/32
 dns-server = 8.8.8.8, 8.8.4.4
 mmdb-path = ~/.forward/Country.mmdb

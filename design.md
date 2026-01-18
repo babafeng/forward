@@ -322,12 +322,18 @@ forward -L "reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&s
 ### 4. 代理链
 
 ```bash
-# HTTP 代理 -> TLS 上游
+# 单跳
 forward -L http://:8080 -F tls://user:pass@remote.com:443
 
-# SOCKS5 代理 -> VLESS 上游
-forward -L socks5://:1080 -F "vless://uuid@remote.com:443?security=reality&..."
+# 多跳（S2 -> S1）
+forward -L http://:8080 -F http://S2:8080 -F http://S1:8080
 ```
+
+说明：
+* `-F` 可重复，顺序从近到远。
+* 多跳链仅支持 http/https/tls/socks5 作为中继协议。
+* QUIC/HTTP3 多跳需要 UDP-capable base（如 socks5）。
+* VLESS 多跳仅支持 TCP 传输（`type=tcp`）。
 
 ### 5. 内网穿透
 
@@ -396,7 +402,8 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
 ```json
 {
   "listen": "http://:8080",  // 监听单个
-  "forward": "tls://user:pass@remote.com:443", // 监听单个时使用，如果监听多个，使用多节点格式
+  "forward": "tls://user:pass@remote.com:443", // 单跳转发
+  "forwards": ["http://S2:8080", "http://S1:8080"], // 多跳转发（与 forward 互斥）
   "listeners": ["http://:8080", "socks5://:1080"],  // 监听多个
   "insecure": false,
   "debug": false
@@ -412,6 +419,11 @@ forward -L http://:8080 -F tls://server.com:443 -insecure
       "name": "proxy_server",
       "listen": "http://:8080",
       "forward": "tls://remote.com:443"
+    },
+    {
+      "name": "proxy_chain",
+      "listeners": ["http://:8081"],
+      "forwards": ["http://S2:8080", "http://S1:8080"]
     },
     {
       "name": "port_forward",
@@ -436,6 +448,7 @@ forward -C config.json
 ```ini
 [General]
 listen = http://0.0.0.0:8000, socks5://0.0.0.0:1080
+debug = false
 skip-proxy = 192.168.0.0/16, 127.0.0.1/32
 dns-server = 8.8.8.8,8.8.4.4
 mmdb-path=~/.forward/Country.mmdb

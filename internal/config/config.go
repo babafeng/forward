@@ -65,11 +65,12 @@ func (m RunMode) String() string {
 }
 
 type NodeConfig struct {
-	Name      string
-	Listen    endpoint.Endpoint
-	Listeners []endpoint.Endpoint
-	Forward   *endpoint.Endpoint
-	Insecure  bool
+	Name         string
+	Listen       endpoint.Endpoint
+	Listeners    []endpoint.Endpoint
+	Forward      *endpoint.Endpoint
+	ForwardChain []endpoint.Endpoint
+	Insecure     bool
 }
 
 type Config struct {
@@ -78,8 +79,9 @@ type Config struct {
 	Listeners []endpoint.Endpoint
 	LogLevel  logging.Level
 
-	Forward *endpoint.Endpoint
-	Nodes   []NodeConfig
+	Forward      *endpoint.Endpoint
+	ForwardChain []endpoint.Endpoint
+	Nodes        []NodeConfig
 
 	Route      *route.Config
 	RouteStore *route.Store

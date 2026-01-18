@@ -42,6 +42,8 @@ type Dialer struct {
 	flow           string
 	encryption     string
 	streamSettings *internet.MemoryStreamConfig
+	streamNetwork  string
+	base           dialer.Dialer
 }
 
 func New(cfg config.Config) (dialer.Dialer, error) {
@@ -141,13 +143,14 @@ func New(cfg config.Config) (dialer.Dialer, error) {
 		flow:           strings.TrimSpace(q.Get("flow")),
 		encryption:     strings.TrimSpace(q.Get("encryption")),
 		streamSettings: memStreamSettings,
+		streamNetwork:  network,
 	}, nil
 }
 
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	conn, err := internet.Dial(ctx, d.proxyDest, d.streamSettings)
+	conn, err := d.dialProxy(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("dial proxy failed: %w", err)
+		return nil, err
 	}
 
 	request, requestAddons, err := d.buildRequest(network, address)
@@ -185,18 +188,74 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	}, nil
 }
 
+func (d *Dialer) SetBase(base dialer.Dialer) {
+	if base == nil {
+		return
+	}
+	d.base = base
+}
+
+func (d *Dialer) dialProxy(ctx context.Context) (net.Conn, error) {
+	if d.base == nil {
+		conn, err := internet.Dial(ctx, d.proxyDest, d.streamSettings)
+		if err != nil {
+			return nil, fmt.Errorf("dial proxy failed: %w", err)
+		}
+		return conn, nil
+	}
+
+	transport := strings.ToLower(strings.TrimSpace(d.streamSettings.ProtocolName))
+	if transport == "" {
+		transport = strings.ToLower(strings.TrimSpace(d.streamNetwork))
+	}
+	if transport != "tcp" {
+		return nil, fmt.Errorf("vless chain only supports tcp transport, got %s", transport)
+	}
+
+	conn, err := d.base.DialContext(ctx, "tcp", d.proxyDest.NetAddr())
+	if err != nil {
+		return nil, fmt.Errorf("dial proxy failed: %w", err)
+	}
+
+	if tlsConfig := tls.ConfigFromStreamSettings(d.streamSettings); tlsConfig != nil {
+		tlsConf := tlsConfig.GetTLSConfig(tls.WithDestination(d.proxyDest))
+		if fingerprint := tls.GetFingerprint(tlsConfig.Fingerprint); fingerprint != nil {
+			conn = tls.UClient(conn, tlsConf, fingerprint)
+			if err := conn.(*tls.UConn).HandshakeContext(ctx); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("vless tls handshake failed: %w", err)
+			}
+		} else {
+			conn = tls.Client(conn, tlsConf)
+			if err := conn.(*tls.Conn).HandshakeContext(ctx); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("vless tls handshake failed: %w", err)
+			}
+		}
+	} else if realityConfig := reality.ConfigFromStreamSettings(d.streamSettings); realityConfig != nil {
+		var err error
+		conn, err = reality.UClient(conn, realityConfig, ctx, d.proxyDest)
+		if err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("vless reality handshake failed: %w", err)
+		}
+	}
+
+	return conn, nil
+}
+
 type vlessConn struct {
 	net.Conn
 	reader *buf.BufferedReader
 	writer buf.Writer
 
-	ctx   context.Context
-	req   *protocol.RequestHeader
+	ctx    context.Context
+	req    *protocol.RequestHeader
 	addons *encoding.Addons
-	state *proxy.TrafficState
+	state  *proxy.TrafficState
 
-	initOnce sync.Once
-	initErr  error
+	initOnce     sync.Once
+	initErr      error
 	directReader bool
 }
 
