@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/config"
-	"forward/internal/dialer"
-	"forward/internal/logging"
+	"forward/inner/config"
+	"forward/inner/dialer"
+	"forward/inner/logging"
 )
 
 func TestDirectDialerTCP(t *testing.T) {

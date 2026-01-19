@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/config"
-	"forward/internal/endpoint"
-	"forward/internal/logging"
+	"forward/inner/config"
+	"forward/inner/endpoint"
+	"forward/inner/logging"
 
-	dialerquic "forward/internal/dialer/quic"
+	dialerquic "forward/inner/dialer/quic"
 )
 
 func TestQuicDialer_DefaultTimeout(t *testing.T) {

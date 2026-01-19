@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/config"
-	"forward/internal/endpoint"
-	"forward/internal/handler/udp"
-	"forward/internal/logging"
+	"forward/inner/config"
+	"forward/inner/endpoint"
+	"forward/inner/handler/udp"
+	"forward/inner/logging"
 )
 
 type udpLimitMockConn struct {
@@ -22,9 +22,9 @@ func (m *udpLimitMockConn) Read(b []byte) (n int, err error) {
 	return 0, nil
 }
 func (m *udpLimitMockConn) Write(b []byte) (n int, err error)  { return len(b), nil }
-func (m *udpLimitMockConn) Close() error                     { return nil }
-func (m *udpLimitMockConn) SetDeadline(t time.Time) error    { return nil }
-func (m *udpLimitMockConn) SetReadDeadline(t time.Time) error { return nil }
+func (m *udpLimitMockConn) Close() error                       { return nil }
+func (m *udpLimitMockConn) SetDeadline(t time.Time) error      { return nil }
+func (m *udpLimitMockConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *udpLimitMockConn) SetWriteDeadline(t time.Time) error { return nil }
 
 type udpLimitMockDialer struct {

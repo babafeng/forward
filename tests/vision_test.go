@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/listener/vless"
+	"forward/inner/listener/vless"
 )
 
 type mockConn struct {

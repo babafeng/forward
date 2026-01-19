@@ -1,81 +1,97 @@
 package tcp
 
 import (
-	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"sync"
 
-	"forward/internal/config"
-	"forward/internal/logging"
+	"forward/internal/listener"
+	"forward/internal/metadata"
+	"forward/internal/registry"
 )
 
-type Handler interface {
-	Handle(ctx context.Context, conn net.Conn)
+func init() {
+	registry.ListenerRegistry().Register("tcp", NewListener)
+	registry.ListenerRegistry().Register("http", NewListener)
+	registry.ListenerRegistry().Register("https", NewListener)
+	registry.ListenerRegistry().Register("socks5", NewListener)
+	registry.ListenerRegistry().Register("socks5h", NewListener)
 }
 
 type Listener struct {
-	addr        string
-	handler     Handler
-	log         *logging.Logger
-	wg          sync.WaitGroup
-	forwardDesc string
-	sem         chan struct{}
+	addr      string
+	tlsConfig *tls.Config
+
+	ln net.Listener
+	mu sync.Mutex
 }
 
-func New(cfg config.Config, h Handler) *Listener {
-	forward := "direct"
-	if cfg.Forward != nil && cfg.Mode != config.ModePortForward {
-		forward = cfg.Forward.Address()
+func NewListener(opts ...listener.Option) listener.Listener {
+	options := listener.Options{}
+	for _, opt := range opts {
+		opt(&options)
 	}
 
 	return &Listener{
-		addr:        cfg.Listen.Address(),
-		handler:     h,
-		log:         cfg.Logger,
-		forwardDesc: forward,
-		sem:         make(chan struct{}, config.DefaultMaxConnections),
+		addr:      options.Addr,
+		tlsConfig: options.TLSConfig,
 	}
 }
 
-func (l *Listener) Run(ctx context.Context) error {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(ctx, "tcp", l.addr)
+func (l *Listener) Init(_ metadata.Metadata) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ln != nil {
+		return nil
+	}
+	if l.addr == "" {
+		return listener.NewBindError(errMissingAddr)
+	}
+	ln, err := net.Listen("tcp", l.addr)
 	if err != nil {
-		return err
+		return listener.NewBindError(err)
 	}
-	defer ln.Close()
-
-	l.log.Info("Forward TCP listening on %s via %s", l.addr, l.forwardDesc)
-
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				break
-			}
-			l.log.Error("Forward TCP error: accept: %v", err)
-			continue
-		}
-
-		l.log.Debug("Forward TCP New accept from %s", conn.RemoteAddr().String())
-
-		l.sem <- struct{}{}
-		l.wg.Add(1)
-		go func(c net.Conn) {
-			defer func() {
-				<-l.sem
-				l.wg.Done()
-			}()
-			l.handler.Handle(ctx, c)
-		}(conn)
+	if l.tlsConfig != nil {
+		ln = tls.NewListener(ln, l.tlsConfig)
 	}
-
-	l.wg.Wait()
+	l.ln = ln
 	return nil
 }
+
+func (l *Listener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	ln := l.ln
+	l.mu.Unlock()
+	if ln == nil {
+		return nil, listener.ErrClosed
+	}
+	conn, err := ln.Accept()
+	if err != nil {
+		return nil, listener.NewAcceptError(err)
+	}
+	return conn, nil
+}
+
+func (l *Listener) Addr() net.Addr {
+	l.mu.Lock()
+	ln := l.ln
+	l.mu.Unlock()
+	if ln == nil {
+		return nil
+	}
+	return ln.Addr()
+}
+
+func (l *Listener) Close() error {
+	l.mu.Lock()
+	ln := l.ln
+	l.ln = nil
+	l.mu.Unlock()
+	if ln != nil {
+		return ln.Close()
+	}
+	return nil
+}
+
+var errMissingAddr = errors.New("missing listen address")

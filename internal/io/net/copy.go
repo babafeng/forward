@@ -3,19 +3,19 @@ package net
 import (
 	"context"
 	"errors"
-	"forward/internal/config"
 	"io"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"forward/internal/config"
 )
 
 func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time.Duration, err error) {
 	start := time.Now()
 
-	// Make sure we stop promptly if the parent context is cancelled.
 	stop := make(chan struct{})
 	go func() {
 		select {
@@ -70,6 +70,5 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 func closeWrite(c net.Conn) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
-		return
 	}
 }

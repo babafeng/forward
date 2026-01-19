@@ -6,24 +6,37 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
+	"forward/internal/builder"
+	"forward/internal/chain"
 	"forward/internal/config"
-	"forward/internal/endpoint"
-	"forward/internal/logging"
-	"forward/internal/route"
+
+	"forward/inner/endpoint"
+	"forward/inner/logging"
+	"forward/inner/route"
+	"forward/internal/handler"
+	"forward/internal/listener"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
+	"forward/internal/service"
+	"path/filepath"
 
 	cini "forward/internal/config/ini"
 	cjson "forward/internal/config/json"
+	ctls "forward/internal/config/tls"
 
-	rc "forward/internal/reverse/client"
-
-	xlog "github.com/xtls/xray-core/common/log"
+	_ "forward/internal/connector/http"
+	_ "forward/internal/connector/socks5"
+	_ "forward/internal/dialer/tcp"
+	_ "forward/internal/dialer/tls"
+	_ "forward/internal/handler/http"
+	_ "forward/internal/handler/socks5"
+	_ "forward/internal/listener/tcp"
 )
 
 func Main() int {
@@ -42,57 +55,6 @@ func Main() int {
 		}
 		logger.Error("Parse args error: %v", err)
 		return 2
-	}
-
-	xlog.RegisterHandler(&xrayLogHandler{level: cfg.LogLevel.String(), logger: logger})
-	if cfg.Route != nil && cfg.RouteStore == nil {
-		store, err := route.NewStore(cfg.Route, logger)
-		if err != nil {
-			logger.Error("Route init error: %v", err)
-			return 2
-		}
-		cfg.RouteStore = store
-	}
-
-	if cfg.RouteStore != nil && cfg.RoutePath != "" {
-		go func() {
-			var lastMod time.Time
-			var lastSize int64
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					info, err := os.Stat(cfg.RoutePath)
-					if err != nil {
-						logger.Error("Route reload failed: %v", err)
-						continue
-					}
-					if info.ModTime().Equal(lastMod) && info.Size() == lastSize {
-						continue
-					}
-					lastMod = info.ModTime()
-					lastSize = info.Size()
-					start := time.Now()
-					newCfg, err := parseRouteConfig(cfg.RoutePath)
-					if err != nil {
-						logger.Error("Route reload failed: %v", err)
-						continue
-					}
-					if !sameListeners(cfg.Listeners, newCfg.Listeners) {
-						logger.Warn("Route reload ignored listen changes from %s", cfg.RoutePath)
-					}
-					if err := cfg.RouteStore.Update(newCfg.Route, logger); err != nil {
-						logger.Error("Route reload failed: %v", err)
-						continue
-					}
-					cfg.Route = newCfg.Route
-					logger.Info("Route reloaded from %s in %s", cfg.RoutePath, time.Since(start))
-				}
-			}
-		}()
 	}
 
 	for _, node := range cfg.Nodes {
@@ -129,7 +91,6 @@ func Main() int {
 	if err := <-errChan; err != nil {
 		return 1
 	}
-
 	return 0
 }
 
@@ -145,51 +106,10 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 }
 
 func runOne(ctx context.Context, cfg config.Config) error {
-	if isReverseForwardServer(cfg) {
-		return runReverseServer(ctx, cfg)
+	if !isProxyServer(cfg.Listen.Scheme) {
+		return fmt.Errorf("unsupported listen scheme: %s", cfg.Listen.Scheme)
 	}
-
-	if isReverseForwardClient(cfg) {
-		return runReverseClient(ctx, cfg)
-	}
-
-	if isPortForward(cfg) {
-		return runPortForward(ctx, cfg)
-	}
-
-	if isProxyServer(cfg) {
-		return runProxyServer(ctx, cfg)
-	}
-
-	return fmt.Errorf("unknown mode or scheme: %s", cfg.Listen.Scheme)
-}
-
-func runReverseClient(ctx context.Context, cfg config.Config) error {
-	cfg.Mode = config.ModeReverseClient
-	client, err := rc.New(cfg)
-	if err != nil {
-		return fmt.Errorf("reverse client init error: %w", err)
-	}
-	if err := client.Run(ctx); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("reverse client run error: %w", err)
-	}
-	return nil
-}
-
-func runPortForward(ctx context.Context, cfg config.Config) error {
-	cfg.Mode = config.ModePortForward
-
-	if cfg.Listen.FAddress != "" {
-		ef, _ := endpoint.Parse(fmt.Sprintf("%s://%s", cfg.Listen.Scheme, cfg.Listen.FAddress))
-		cfg.Forward = &ef
-	} else {
-		if cfg.Forward == nil {
-			return fmt.Errorf("missing target address (use -L .../target or -F target)")
-		}
-	}
-
-	_, err := runForwarders(ctx, cfg)
-	return err
+	return runProxyServer(ctx, cfg)
 }
 
 func runProxyServer(ctx context.Context, cfg config.Config) error {
@@ -199,48 +119,138 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		cfg.Logger.Warn("Proxy server listening on %s without authentication", cfg.Listen.Address())
 	}
 
-	_, err := runForwarders(ctx, cfg)
-	return err
-}
-
-func runReverseServer(ctx context.Context, cfg config.Config) error {
-	cfg.Mode = config.ModeReverseServer
-
-	if !cfg.Listen.HasUserPass() {
-		cfg.Logger.Warn("Reverse server listening on %s without authentication", cfg.Listen.Address())
-	}
-
-	_, err := runForwarders(ctx, cfg)
-	return err
-}
-
-func runForwarders(ctx context.Context, cfg config.Config) (int, error) {
-	fwd, err := NewForwarder(cfg)
+	rt, err := buildRouter(cfg)
 	if err != nil {
-		return 2, err
+		return err
 	}
 
-	if err := fwd.Run(ctx); err != nil && ctx.Err() == nil {
-		return 1, err
+	handlerScheme := strings.ToLower(cfg.Listen.Scheme)
+	if handlerScheme == "https" {
+		handlerScheme = "http"
 	}
-	return 0, nil
+	if handlerScheme == "socks5h" {
+		handlerScheme = "socks5"
+	}
+
+	newHandler := registry.HandlerRegistry().Get(handlerScheme)
+	if newHandler == nil {
+		return fmt.Errorf("handler not registered for scheme %s", handlerScheme)
+	}
+
+	h := newHandler(
+		handler.RouterOption(rt),
+		handler.AuthOption(cfg.Listen.User),
+		handler.LoggerOption(cfg.Logger),
+	)
+
+	md := metadata.New(map[string]any{
+		"transparent":       strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
+		"insecure":          cfg.Insecure,
+		"handshake_timeout": cfg.HandshakeTimeout,
+		"udp_idle":          cfg.UDPIdleTimeout,
+		"max_udp_sessions":  cfg.MaxUDPSessions,
+	})
+	if err := h.Init(md); err != nil {
+		return err
+	}
+
+	newListener := registry.ListenerRegistry().Get(strings.ToLower(cfg.Listen.Scheme))
+	if newListener == nil {
+		newListener = registry.ListenerRegistry().Get("tcp")
+	}
+	if newListener == nil {
+		return fmt.Errorf("listener not registered for scheme %s", cfg.Listen.Scheme)
+	}
+
+	lopts := []listener.Option{
+		listener.AddrOption(cfg.Listen.Address()),
+		listener.LoggerOption(cfg.Logger),
+		listener.RouterOption(rt),
+	}
+	if strings.EqualFold(cfg.Listen.Scheme, "https") {
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
+			NextProtos: []string{"h2", "http/1.1"},
+		})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	}
+
+	ln := newListener(lopts...)
+	if err := ln.Init(nil); err != nil {
+		return err
+	}
+
+	svc := service.NewService(ln, h)
+	go func() {
+		<-ctx.Done()
+		_ = svc.Close()
+	}()
+
+	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
+	return svc.Serve()
+}
+
+func buildRouter(cfg config.Config) (router.Router, error) {
+	var hops []endpoint.Endpoint
+	if len(cfg.ForwardChain) > 0 {
+		hops = cfg.ForwardChain
+	} else if cfg.Forward != nil {
+		hops = []endpoint.Endpoint{*cfg.Forward}
+	}
+
+	var defaultRoute chain.Route
+	if len(hops) > 0 {
+		rt, err := builder.BuildRoute(cfg, hops)
+		if err != nil {
+			return nil, err
+		}
+		defaultRoute = rt
+	} else {
+		defaultRoute = chain.NewRoute()
+	}
+
+	if cfg.Route == nil {
+		return router.NewStatic(defaultRoute), nil
+	}
+
+	store := cfg.RouteStore
+	if store == nil {
+		rstore, err := route.NewStore(cfg.Route, cfg.Logger)
+		if err != nil {
+			return nil, err
+		}
+		store = rstore
+	}
+
+	proxies := map[string]chain.Route{}
+	for name, ep := range cfg.Route.Proxies {
+		rt, err := builder.BuildRoute(cfg, []endpoint.Endpoint{ep})
+		if err != nil {
+			return nil, err
+		}
+		proxies[route.NormalizeProxyName(name)] = rt
+	}
+
+	return router.NewStore(store, defaultRoute, proxies), nil
 }
 
 func parseArgs(args []string) (config.Config, error) {
-	fs := flag.NewFlagSet("forward", flag.ContinueOnError)
+	fs := flag.NewFlagSet("forward-internal", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	var listenFlags stringSlice
-	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. https://127.0.0.1:443 (can be repeated)")
+	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. http://127.0.0.1:8080 (can be repeated)")
 	var forwardFlags stringSlice
-	fs.Var(&forwardFlags, "F", "Forward target endpoint, e.g. https://remote.com:443 (can be repeated)")
+	fs.Var(&forwardFlags, "F", "Forward target endpoint, e.g. socks5://remote:1080 (can be repeated)")
 	configFile := fs.String("C", "", "Path to JSON config file")
 	routeFile := fs.String("R", "", "Path to proxy route config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isVersion := fs.Bool("version", false, "Show version information")
 
-	println("Forward", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	fmt.Printf("Forward internal %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
 		return config.Config{}, nil
 	}
@@ -328,7 +338,6 @@ func parseArgs(args []string) (config.Config, error) {
 	}}
 
 	config.ApplyDefaults(&cfg)
-
 	return cfg, nil
 }
 
@@ -340,77 +349,19 @@ func parseRouteConfig(path string) (config.Config, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".ini", ".conf", ".cfg":
-		cfg, err := cini.ParseFile(path)
-		if err != nil {
-			return config.Config{}, err
-		}
-		cfg.RoutePath = path
-		return cfg, nil
+		return cini.ParseFile(path)
 	default:
 		return config.Config{}, fmt.Errorf("route config must be .ini/.conf/.cfg")
 	}
 }
 
-func isProxyServer(cfg config.Config) bool {
-	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "http", "https", "http3", "socks5", "tls", "quic", "socks5h", "vless", "vless+reality", "reality":
+func isProxyServer(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "http", "https", "socks5", "socks5h":
 		return true
 	default:
 		return false
 	}
-}
-
-func isPortForward(cfg config.Config) bool {
-	// Supports:
-	//   -L tcp://:2222 -F tcp://10.0.0.10:22
-	//   -L udp://:5353 -F udp://8.8.8.8:53
-	//   -L tcp://:2222/10.0.0.10:22
-	//   -L udp://:5353/8.8.8.8:53
-
-	ls := strings.ToLower(cfg.Listen.Scheme)
-	if ls != "tcp" && ls != "udp" {
-		return false
-	}
-
-	if cfg.Forward == nil {
-		return cfg.Listen.RAddress != "" && cfg.Listen.FAddress != ""
-	}
-
-	return strings.EqualFold(cfg.Listen.Scheme, cfg.Forward.Scheme)
-}
-
-func isReverseForwardServer(cfg config.Config) bool {
-	// remote server: -L tls://user:pass@0.0.0.0:443?bind=true or -L tls://user:pass@:443?bind=true
-	// remote server: -L reality://uuid@:2333?bind=true
-	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "tls", "http3", "https", "quic", "vless+reality", "reality":
-		return cfg.Listen.Query.Get("bind") == "true"
-	default:
-		return false
-	}
-}
-
-func isReverseForwardClient(cfg config.Config) bool {
-	// internal server tcp: -L tcp://127.0.0.1:2222/10.0.0.10:22 -F tls://user:pass@remote.com:443
-	// internal server udp: -L udp://127.0.0.1:5353/10.0.0.10:53 -F tls://user:pass@remote.com:443
-	// remote server will listen 127.0.0.1:2222
-
-	// internal server tcp: -L tcp://0.0.0.0:2222/10.0.0.10:22 -F tls://user:pass@remote.com:443
-	// internal server tcp: -L tcp://:2222/10.0.0.10:22 -F tls://user:pass@remote.com:443
-	// internal server udp: -L udp://0.0.0.0:5353/10.0.0.10:53 -F tls://user:pass@remote.com:443
-	// internal server udp: -L udp://:5353/10.0.0.10:53 -F tls://user:pass@remote.com:443
-	// remote server will listen 0.0.0.0:2222
-
-	if cfg.Forward == nil {
-		return false
-	}
-
-	if cfg.Forward.Scheme == "" || cfg.Listen.RAddress == "" || cfg.Listen.FAddress == "" {
-		return false
-	}
-
-	ls := strings.ToLower(cfg.Listen.Scheme)
-	return ls == "tcp" || ls == "udp"
 }
 
 func Usage(fs *flag.FlagSet) {
@@ -427,51 +378,4 @@ func (s *stringSlice) String() string {
 func (s *stringSlice) Set(value string) error {
 	*s = append(*s, value)
 	return nil
-}
-
-func sameListeners(a, b []endpoint.Endpoint) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].String() != b[i].String() {
-			return false
-		}
-	}
-	return true
-}
-
-type xrayLogHandler struct {
-	level  string
-	logger *logging.Logger
-}
-
-func (h *xrayLogHandler) Handle(msg xlog.Message) {
-	var severity xlog.Severity
-	var content interface{}
-
-	if gm, ok := msg.(*xlog.GeneralMessage); ok {
-		severity = gm.Severity
-		content = gm.Content
-	} else {
-		severity = xlog.Severity_Info
-		content = msg.String()
-	}
-
-	txt := fmt.Sprint(content)
-
-	switch severity {
-	case xlog.Severity_Debug:
-		if h.level == "debug" {
-			h.logger.Debug(txt)
-		}
-	case xlog.Severity_Info:
-		h.logger.Info(txt)
-	case xlog.Severity_Warning:
-		h.logger.Warn(txt)
-	case xlog.Severity_Error:
-		h.logger.Error(txt)
-	default:
-		h.logger.Info(txt)
-	}
 }

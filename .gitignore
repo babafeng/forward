@@ -55,4 +55,5 @@ self-rootca.cer
 .gocache/
 mem.out
 plan.md
+gost/
 Implementation.md

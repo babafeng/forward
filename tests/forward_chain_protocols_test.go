@@ -4,14 +4,14 @@ import (
 	"strings"
 	"testing"
 
-	"forward/internal/config"
-	"forward/internal/dialer"
-	"forward/internal/endpoint"
+	"forward/inner/config"
+	"forward/inner/dialer"
+	"forward/inner/endpoint"
 
-	_ "forward/internal/dialer/http"
-	_ "forward/internal/dialer/quic"
-	_ "forward/internal/dialer/socks5"
-	_ "forward/internal/dialer/vless"
+	_ "forward/inner/dialer/http"
+	_ "forward/inner/dialer/quic"
+	_ "forward/inner/dialer/socks5"
+	_ "forward/inner/dialer/vless"
 )
 
 func TestForwardChainQuicRequiresUDPBase(t *testing.T) {

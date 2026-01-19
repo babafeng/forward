@@ -3,12 +3,12 @@ package tests
 import (
 	"testing"
 
-	"forward/internal/config"
-	cjson "forward/internal/config/json"
-	"forward/internal/dialer"
-	"forward/internal/endpoint"
+	"forward/inner/config"
+	cjson "forward/inner/config/json"
+	"forward/inner/dialer"
+	"forward/inner/endpoint"
 
-	_ "forward/internal/dialer/http"
+	_ "forward/inner/dialer/http"
 )
 
 func TestJSONForwardsChain(t *testing.T) {

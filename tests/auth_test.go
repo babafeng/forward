@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"forward/internal/auth"
+	"forward/inner/auth"
 )
 
 func TestBasicAuthenticator(t *testing.T) {

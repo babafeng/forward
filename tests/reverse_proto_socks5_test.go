@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	rproto "forward/internal/reverse/proto"
+	rproto "forward/inner/reverse/proto"
 )
 
 func TestSocks5BindNoAuth(t *testing.T) {

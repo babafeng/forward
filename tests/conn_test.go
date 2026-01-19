@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/dialer/quic"
+	"forward/inner/dialer/quic"
 )
 
 // mockRWC for testing RWCConn

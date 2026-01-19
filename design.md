@@ -656,7 +656,7 @@ FINAL, PROXY_JP
 package myproto
 
 import (
-    "forward/internal/dialer"
+    "forward/inner/dialer"
 )
 
 func init() {
@@ -684,7 +684,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 package myproto
 
 import (
-    "forward/internal/listener"
+    "forward/inner/listener"
 )
 
 func init() {

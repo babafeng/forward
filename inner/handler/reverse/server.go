@@ -1,0 +1,301 @@
+package reverse
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"strconv"
+	"time"
+
+	"github.com/hashicorp/yamux"
+
+	"forward/inner/auth"
+	"forward/inner/config"
+	"forward/inner/logging"
+	"forward/inner/pool"
+
+	inet "forward/inner/io/net"
+	irev "forward/inner/reverse"
+	rproto "forward/inner/reverse/proto"
+)
+
+type Server struct {
+	cfg         config.Config
+	log         *logging.Logger
+	auth        auth.Authenticator
+	requireAuth bool
+	limit       chan struct{}
+}
+
+func NewServer(cfg config.Config) (*Server, error) {
+	user, pass, ok := cfg.Listen.UserPass()
+	isBind := cfg.Listen.Query.Get("bind") == "true"
+	if isBind && (!ok || (user == "" && pass == "")) {
+		return nil, fmt.Errorf("reverse server with bind=true requires authentication (user/pass)")
+	}
+
+	return &Server{
+		cfg:         cfg,
+		log:         cfg.Logger,
+		auth:        auth.FromUserPass(user, pass),
+		requireAuth: ok && (user != "" || pass != ""),
+		limit:       make(chan struct{}, 1024),
+	}, nil
+}
+
+func (s *Server) Handle(ctx context.Context, conn net.Conn) {
+	select {
+	case s.limit <- struct{}{}:
+		defer func() { <-s.limit }()
+	default:
+		s.log.Warn("Reverse server connection limit reached, rejecting %s", conn.RemoteAddr())
+		conn.Close()
+		return
+	}
+
+	defer conn.Close()
+
+	br := bufio.NewReader(conn)
+	bw := bufio.NewWriter(conn)
+
+	_ = conn.SetReadDeadline(time.Now().Add(config.DefaultHandshakeTimeout))
+
+	peek, err := br.Peek(1)
+	if err != nil {
+		s.log.Error("Reverse server peek error: %v", err)
+		return
+	}
+
+	if peek[0] != 0x05 {
+		title := config.CamouflagePageTitle
+		body := fmt.Sprintf(config.CamouflagePageBody, title, title)
+		resp := "HTTP/1.1 " + title + "\r\n" +
+			"Content-Type: text/html\r\n" +
+			"Content-Length: " + strconv.Itoa(len(body)) + "\r\n" +
+			"Connection: close\r\n" +
+			"\r\n" +
+			body
+		_, _ = conn.Write([]byte(resp))
+		return
+	}
+
+	var authFn func(string, string) bool
+	if s.requireAuth {
+		authFn = s.auth.Check
+	}
+
+	// Check Socks5 Bind
+	host, port, isUDP, err := rproto.Socks5ServerBind(br, bw, authFn)
+	if err != nil {
+		s.log.Error("Reverse server socks5 bind error: %v", err)
+		return
+	}
+
+	bindAddr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	var ln net.Listener
+	var udpLn *net.UDPConn
+	var network string
+
+	if isUDP {
+		network = "udp"
+		uaddr, err := net.ResolveUDPAddr("udp", bindAddr)
+		if err != nil {
+			s.log.Error("Reverse server resolve udp %s: %v", bindAddr, err)
+			return
+		}
+		udpLn, err = net.ListenUDP("udp", uaddr)
+		if err != nil {
+			s.log.Error("Reverse server listen udp %s error: %v", bindAddr, err)
+			return
+		}
+		defer udpLn.Close()
+	} else {
+		network = "tcp"
+		ln, err = net.Listen("tcp", bindAddr)
+		if err != nil {
+			s.log.Error("Reverse server listen tcp %s error: %v", bindAddr, err)
+			return
+		}
+		defer ln.Close()
+	}
+
+	if err := rproto.WriteBindSuccess(bw, host, port); err != nil {
+		s.log.Error("Reverse server write bind reply error: %v", err)
+		return
+	}
+
+	s.log.Info("Reverse server bound %s (%s), bridging to client %s", bindAddr, network, conn.RemoteAddr())
+
+	conf := irev.NewYamuxConfig(s.log)
+
+	_ = conn.SetReadDeadline(time.Time{})
+
+	session, err := yamux.Client(conn, conf)
+	if err != nil {
+		s.log.Error("Reverse server yamux error: %v", err)
+		return
+	}
+	defer session.Close()
+
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-session.CloseChan():
+		}
+		if ln != nil {
+			_ = ln.Close()
+		}
+		if udpLn != nil {
+			_ = udpLn.Close()
+		}
+		_ = session.Close()
+		_ = conn.Close()
+	}()
+
+	s.log.Info("Reverse session established for %s", bindAddr)
+
+	if isUDP {
+		s.handleBoundUDP(ctx, session, udpLn)
+	} else {
+		for {
+			lc, err := ln.Accept()
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				s.log.Error("Reverse server accept bound error: %v", err)
+				return
+			}
+			go s.handleBoundConn(ctx, session, lc)
+		}
+	}
+}
+
+func (s *Server) handleBoundConn(ctx context.Context, session *yamux.Session, clientConn net.Conn) {
+	defer clientConn.Close()
+
+	src := clientConn.RemoteAddr().String()
+	// clientConn.LocalAddr is 'bound' addr
+	bound := clientConn.LocalAddr().String()
+	// session.RemoteAddr is the Client's addr (tunnel end)
+	tunnelRemote := session.RemoteAddr().String()
+
+	s.log.Info("Forward Reverse Client Received connection %s --> %s --> %s", src, bound, tunnelRemote)
+
+	stream, err := session.Open()
+	if err != nil {
+		s.log.Error("Reverse server open stream error: %v", err)
+		return
+	}
+	defer stream.Close()
+
+	dst := stream.RemoteAddr().String()
+	s.log.Debug("Reverse TCP Connected to upstream %s --> %s", src, dst)
+
+	bytes, dur, err := inet.Bidirectional(ctx, clientConn, stream)
+	if err != nil && ctx.Err() == nil {
+		s.log.Error("Reverse server transfer error: %v", err)
+	}
+	s.log.Debug("Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", src, dst, bytes, dur)
+}
+
+func (s *Server) handleBoundUDP(ctx context.Context, session *yamux.Session, conn *net.UDPConn) {
+	type udpSession struct {
+		stream   net.Conn
+		ps       *inet.PacketStream
+		lastSeen time.Time
+	}
+
+	activeSessions := make(map[string]*udpSession)
+	idleTimeout := s.cfg.UDPIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = config.DefaultUDPIdleTimeout
+	}
+
+	pkt := pool.Get()
+	defer pool.Put(pkt)
+	bound := conn.LocalAddr().String()
+	tunnelRemote := session.RemoteAddr().String()
+
+	cleanupIdle := func() {
+		now := time.Now()
+		for k, sess := range activeSessions {
+			if now.Sub(sess.lastSeen) > idleTimeout {
+				_ = sess.stream.Close()
+				delete(activeSessions, k)
+				s.log.Debug("Reverse UDP session %s idle timeout", k)
+			}
+		}
+	}
+
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		n, src, err := conn.ReadFromUDP(pkt)
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				cleanupIdle()
+				continue
+			}
+			s.log.Error("Reverse UDP Read error: %v", err)
+			return
+		}
+
+		srcKey := src.String()
+		sess, ok := activeSessions[srcKey]
+		if !ok {
+			if len(activeSessions) >= config.DefaultMaxUDPSessions {
+				cleanupIdle()
+				if len(activeSessions) >= config.DefaultMaxUDPSessions {
+					s.log.Warn("Reverse UDP max sessions reached, dropping packet from %s", srcKey)
+					continue
+				}
+			}
+
+			s.log.Info("Forward Reverse Client Received connection %s --> %s --> %s", srcKey, bound, tunnelRemote)
+
+			stream, err := session.Open()
+			if err != nil {
+				s.log.Error("Reverse UDP Open stream error: %v", err)
+				continue
+			}
+
+			ps := inet.NewPacketStream(stream)
+			sess = &udpSession{
+				stream:   stream,
+				ps:       ps,
+				lastSeen: time.Now(),
+			}
+			activeSessions[srcKey] = sess
+
+			go func(uSess *udpSession, addr *net.UDPAddr) {
+				defer uSess.stream.Close()
+				buf := pool.Get()
+				defer pool.Put(buf)
+				for {
+					_ = uSess.stream.SetReadDeadline(time.Now().Add(idleTimeout))
+					n, err := uSess.ps.Read(buf)
+					if err != nil {
+						return
+					}
+					if _, err := conn.WriteToUDP(buf[:n], addr); err != nil {
+						return
+					}
+				}
+			}(sess, src)
+		} else {
+			sess.lastSeen = time.Now()
+		}
+
+		if _, err := sess.ps.Write(pkt[:n]); err != nil {
+			s.log.Error("Reverse UDP Write to stream error: %v", err)
+			sess.stream.Close()
+			delete(activeSessions, srcKey)
+		}
+	}
+}
