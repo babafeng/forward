@@ -86,6 +86,10 @@ func (h *Handler) Init(md metadata.Metadata) error {
 func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.HandleOption) error {
 	defer conn.Close()
 
+	remote := conn.RemoteAddr().String()
+	local := conn.LocalAddr().String()
+	h.logf(logging.LevelInfo, "HTTP connection %s -> %s", remote, local)
+
 	br := bufio.NewReader(conn)
 	for {
 		req, err := stdhttp.ReadRequest(br)
@@ -95,6 +99,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 			}
 			return err
 		}
+		req.RemoteAddr = remote
 
 		if h.requireAuth && !h.authorize(conn, req) {
 			if req.Body != nil {
@@ -151,7 +156,9 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Re
 	if route == nil {
 		route = chain.NewRoute()
 	}
+	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", routeSummary(route))
 
+	h.logf(logging.LevelInfo, "HTTP CONNECT %s -> %s", req.RemoteAddr, target)
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
 		h.logf(logging.LevelError, "HTTP connect dial error: %v", err)
@@ -171,7 +178,8 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Re
 		}
 	}
 
-	_, _, err = inet.Bidirectional(ctx, conn, up)
+	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+	h.logf(logging.LevelInfo, "HTTP CONNECT closed %s -> %s bytes=%d dur=%s", req.RemoteAddr, target, bytes, dur)
 	return err
 }
 
@@ -196,8 +204,10 @@ func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp
 	if route == nil {
 		route = chain.NewRoute()
 	}
+	h.logf(logging.LevelDebug, "HTTP route via %s", routeSummary(route))
 	upReq = upReq.WithContext(context.WithValue(upReq.Context(), routeKey, route))
 
+	h.logf(logging.LevelInfo, "HTTP %s %s -> %s", req.Method, req.URL.String(), target)
 	resp, err := h.transportClient().RoundTrip(upReq)
 	if err != nil {
 		h.logf(logging.LevelDebug, "HTTP dial failed %s: %v", upReq.URL.String(), err)
@@ -216,6 +226,7 @@ func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp
 		return false, err
 	}
 
+	h.logf(logging.LevelInfo, "HTTP response %s -> %s %d", req.RemoteAddr, target, resp.StatusCode)
 	return !req.Close && !resp.Close, nil
 }
 
@@ -403,4 +414,31 @@ func (h *Handler) logf(level logging.Level, format string, args ...any) {
 	case logging.LevelError:
 		h.options.Logger.Error(format, args...)
 	}
+}
+
+func routeSummary(rt chain.Route) string {
+	if rt == nil {
+		return "DIRECT"
+	}
+	nodes := rt.Nodes()
+	if len(nodes) == 0 {
+		return "DIRECT"
+	}
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		name := node.Name
+		if name == "" {
+			name = node.Addr
+		} else if node.Addr != "" && name != node.Addr {
+			name = name + "(" + node.Addr + ")"
+		}
+		parts = append(parts, name)
+	}
+	if len(parts) == 0 {
+		return "DIRECT"
+	}
+	return strings.Join(parts, " -> ")
 }
