@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -105,6 +106,10 @@ func (h *Handler) Init(md metadata.Metadata) error {
 func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.HandleOption) error {
 	defer conn.Close()
 
+	remote := conn.RemoteAddr().String()
+	local := conn.LocalAddr().String()
+	h.logf(logging.LevelInfo, "SOCKS5 connection %s -> %s", remote, local)
+
 	_ = conn.SetReadDeadline(time.Now().Add(h.handshakeTimout))
 
 	br := bufio.NewReader(conn)
@@ -157,6 +162,7 @@ func (h *Handler) negotiateAuth(br *bufio.Reader, bw *bufio.Writer) error {
 	if h.requireAuth {
 		required = methodUserPass
 	}
+	h.logf(logging.LevelDebug, "SOCKS5 auth method selected=%d", required)
 	if !socks5util.Contains(methods, required) {
 		if _, err := bw.Write([]byte{version5, 0xff}); err != nil {
 			return fmt.Errorf("write reject: %w", err)
@@ -256,7 +262,9 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 	if route == nil {
 		route = chain.NewRoute()
 	}
+	h.logf(logging.LevelDebug, "SOCKS5 CONNECT route via %s", routeSummary(route))
 
+	h.logf(logging.LevelInfo, "SOCKS5 CONNECT %s -> %s", conn.RemoteAddr().String(), dest)
 	up, err := route.Dial(ctx, "tcp", dest)
 	if err != nil {
 		h.logf(logging.LevelError, "SOCKS5 connect dial error: %v", err)
@@ -268,7 +276,8 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 	bind := hostPortFromAddr(up.LocalAddr())
 	_ = h.writeReply(bw, 0x00, bind)
 
-	_, _, err = inet.Bidirectional(ctx, conn, up)
+	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+	h.logf(logging.LevelInfo, "SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
 	return err
 }
 
@@ -292,6 +301,8 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 	if err := h.writeReply(bw, 0x00, bind); err != nil {
 		return err
 	}
+
+	h.logf(logging.LevelInfo, "SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -447,6 +458,8 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 			s.logf(logging.LevelError, "SOCKS5 UDP dial %s error: %v", dest, err)
 			return nil, err
 		}
+
+		s.logf(logging.LevelInfo, "SOCKS5 UDP %s -> %s", src.String(), dest)
 
 		p := &udpPeer{
 			conn: c,
@@ -631,4 +644,31 @@ func (h *Handler) logf(level logging.Level, format string, args ...any) {
 
 func (h *Handler) log() *logging.Logger {
 	return h.options.Logger
+}
+
+func routeSummary(rt chain.Route) string {
+	if rt == nil {
+		return "DIRECT"
+	}
+	nodes := rt.Nodes()
+	if len(nodes) == 0 {
+		return "DIRECT"
+	}
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		name := node.Name
+		if name == "" {
+			name = node.Addr
+		} else if node.Addr != "" && name != node.Addr {
+			name = name + "(" + node.Addr + ")"
+		}
+		parts = append(parts, name)
+	}
+	if len(parts) == 0 {
+		return "DIRECT"
+	}
+	return strings.Join(parts, " -> ")
 }
