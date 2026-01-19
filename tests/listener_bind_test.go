@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/app"
-	"forward/internal/config"
-	"forward/internal/endpoint"
+	"forward/inner/app"
+	"forward/inner/config"
+	"forward/inner/endpoint"
 )
 
 // TestListenerBindAddress 验证监听器是否正确绑定到指定地址

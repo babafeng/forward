@@ -1,56 +1,68 @@
 package listener
 
 import (
-	"context"
-	"fmt"
-	"strings"
-	"sync"
+	"errors"
+	"net"
 
-	"forward/internal/config"
-	"forward/internal/dialer"
+	"forward/internal/metadata"
 )
-
-type Runner interface {
-	Run(ctx context.Context) error
-}
-
-type Factory func(cfg config.Config, d dialer.Dialer) (Runner, error)
 
 var (
-	mu        sync.RWMutex
-	factories = map[string]Factory{}
+	ErrClosed = errors.New("accept on closed listener")
 )
 
-func Register(scheme string, f Factory) {
-	scheme = strings.ToLower(strings.TrimSpace(scheme))
-	if scheme == "" || f == nil {
-		panic("listener: Register requires non-empty scheme and non-nil factory")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if _, exists := factories[scheme]; exists {
-		panic("listener: duplicate register for scheme: " + scheme)
-	}
-	factories[scheme] = f
+// Listener is a server listener, just like a net.Listener.
+type Listener interface {
+	Init(metadata.Metadata) error
+	Accept() (net.Conn, error)
+	Addr() net.Addr
+	Close() error
 }
 
-func New(cfg config.Config, d dialer.Dialer) (Runner, error) {
-	scheme := strings.ToLower(cfg.Listen.Scheme)
+type AcceptError struct {
+	err error
+}
 
-	mu.RLock()
-	var f Factory
-	var ok bool
+func NewAcceptError(err error) error {
+	return &AcceptError{err: err}
+}
 
-	if cfg.IsMode(config.ModeReverseServer) {
-		f, ok = factories["reverse"]
-	} else {
-		f, ok = factories[scheme]
-	}
+func (e *AcceptError) Error() string {
+	return e.err.Error()
+}
 
-	mu.RUnlock()
+func (e *AcceptError) Timeout() bool {
+	return false
+}
 
-	if !ok {
-		return nil, fmt.Errorf("unsupported listen scheme: %s", cfg.Listen.Scheme)
-	}
-	return f(cfg, d)
+func (e *AcceptError) Temporary() bool {
+	return true
+}
+
+func (e *AcceptError) Unwrap() error {
+	return e.err
+}
+
+type BindError struct {
+	err error
+}
+
+func NewBindError(err error) error {
+	return &BindError{err: err}
+}
+
+func (e *BindError) Error() string {
+	return e.err.Error()
+}
+
+func (e *BindError) Timeout() bool {
+	return false
+}
+
+func (e *BindError) Temporary() bool {
+	return true
+}
+
+func (e *BindError) Unwrap() error {
+	return e.err
 }

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/config"
-	"forward/internal/endpoint"
-	"forward/internal/handler/udp"
-	"forward/internal/logging"
+	"forward/inner/config"
+	"forward/inner/endpoint"
+	"forward/inner/handler/udp"
+	"forward/inner/logging"
 )
 
 // blockingConn simulates a connection that blocks on Write

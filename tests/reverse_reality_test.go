@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	"forward/internal/config"
-	"forward/internal/dialer"
-	"forward/internal/endpoint"
-	"forward/internal/listener"
-	rclient "forward/internal/reverse/client"
-	"forward/internal/utils/crypto"
+	"forward/inner/config"
+	"forward/inner/dialer"
+	"forward/inner/endpoint"
+	"forward/inner/listener"
+	rclient "forward/inner/reverse/client"
+	"forward/inner/utils/crypto"
 )
 
 func realityForwardEndpoint(t *testing.T) endpoint.Endpoint {

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/config"
-	tlsconfig "forward/internal/config/tls"
-	"forward/internal/endpoint"
-	"forward/internal/logging"
+	"forward/inner/config"
+	tlsconfig "forward/inner/config/tls"
+	"forward/inner/endpoint"
+	"forward/inner/logging"
 )
 
 // TestTLSServerConfigGenerate 测试 TLS 服务端配置生成

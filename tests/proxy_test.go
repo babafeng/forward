@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/app"
-	"forward/internal/config"
-	"forward/internal/endpoint"
-	"forward/internal/logging"
+	"forward/inner/app"
+	"forward/inner/config"
+	"forward/inner/endpoint"
+	"forward/inner/logging"
 )
 
 // TestSOCKS5ProxyBasic 测试 SOCKS5 代理基本功能

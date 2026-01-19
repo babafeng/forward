@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"forward/internal/config"
-	"forward/internal/endpoint"
-	"forward/internal/logging"
+	"forward/inner/endpoint"
+	"forward/inner/logging"
 )
 
 const configFileName = "forward.json"

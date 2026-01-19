@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/config"
+	"forward/inner/config"
 )
 
 func TestDefaultConstants(t *testing.T) {

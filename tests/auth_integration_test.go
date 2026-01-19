@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"forward/internal/app"
-	"forward/internal/auth"
-	"forward/internal/config"
-	"forward/internal/logging"
+	"forward/inner/app"
+	"forward/inner/auth"
+	"forward/inner/config"
+	"forward/inner/logging"
 )
 
 // TestSOCKS5WithAuth 测试带认证的 SOCKS5 代理

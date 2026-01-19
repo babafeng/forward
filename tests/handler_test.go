@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"forward/internal/config"
-	"forward/internal/endpoint"
-	forwardhttp "forward/internal/handler/http"
-	"forward/internal/logging"
+	"forward/inner/config"
+	"forward/inner/endpoint"
+	forwardhttp "forward/inner/handler/http"
+	"forward/inner/logging"
 )
 
 type mockDialer struct{}
