@@ -12,7 +12,7 @@ import (
 
 	"forward/inner/config"
 	ctls "forward/inner/config/tls"
-	"forward/inner/logging"
+	"forward/base/logging"
 	rev "forward/inner/reverse"
 	"forward/inner/structs"
 )

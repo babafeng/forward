@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 	"forward/internal/chain"
 	"forward/internal/config"
 	"forward/internal/connector"

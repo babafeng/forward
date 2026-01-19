@@ -9,8 +9,8 @@ import (
 
 	"forward/inner/config"
 	tlsconfig "forward/inner/config/tls"
-	"forward/inner/endpoint"
-	"forward/inner/logging"
+	"forward/base/endpoint"
+	"forward/base/logging"
 )
 
 // TestTLSServerConfigGenerate 测试 TLS 服务端配置生成

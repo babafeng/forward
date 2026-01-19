@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"forward/inner/config"
-	"forward/inner/endpoint"
-	"forward/inner/logging"
+	"forward/base/endpoint"
+	"forward/base/logging"
 
 	dialerquic "forward/inner/dialer/quic"
 )

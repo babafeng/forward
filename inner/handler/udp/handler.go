@@ -11,8 +11,8 @@ import (
 
 	"forward/inner/config"
 	"forward/inner/dialer"
-	"forward/inner/logging"
-	"forward/inner/pool"
+	"forward/base/logging"
+	"forward/base/pool"
 )
 
 type Handler struct {

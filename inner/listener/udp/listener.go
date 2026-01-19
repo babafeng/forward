@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"forward/inner/config"
-	"forward/inner/logging"
-	"forward/inner/pool"
+	"forward/base/logging"
+	"forward/base/pool"
 )
 
 type Handler interface {

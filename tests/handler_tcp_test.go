@@ -10,7 +10,7 @@ import (
 	"forward/inner/config"
 	"forward/inner/dialer"
 	handlerTCP "forward/inner/handler/tcp"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 func TestTCPHandlerForward(t *testing.T) {

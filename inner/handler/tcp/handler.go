@@ -6,8 +6,8 @@ import (
 
 	"forward/inner/config"
 	"forward/inner/dialer"
-	inet "forward/inner/io/net"
-	"forward/inner/logging"
+	inet "forward/base/io/net"
+	"forward/base/logging"
 )
 
 type Handler struct {

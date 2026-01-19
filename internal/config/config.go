@@ -3,9 +3,9 @@ package config
 import (
 	"time"
 
-	"forward/inner/endpoint"
-	"forward/inner/logging"
-	"forward/inner/route"
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
 )
 
 const (

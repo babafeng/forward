@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 func TestParseLevel(t *testing.T) {

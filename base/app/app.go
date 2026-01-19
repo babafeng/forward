@@ -15,9 +15,9 @@ import (
 	"forward/internal/chain"
 	"forward/internal/config"
 
-	"forward/inner/endpoint"
-	"forward/inner/logging"
-	"forward/inner/route"
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
 	"forward/internal/handler"
 	"forward/internal/listener"
 	"forward/internal/metadata"
@@ -182,7 +182,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	svc := service.NewService(ln, h)
+	svc := service.NewService(ln, h, cfg.Logger)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()

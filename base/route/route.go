@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"forward/inner/logging"
+	"forward/base/logging"
 	"forward/inner/mmdb"
 )
 

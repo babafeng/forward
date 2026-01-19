@@ -16,17 +16,17 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"forward/internal/auth"
+	"forward/base/logging"
+	socks5util "forward/base/utils/socks5"
+	"forward/base/auth"
 	"forward/internal/chain"
 	"forward/internal/config"
 	corehandler "forward/internal/handler"
-	inet "forward/internal/io/net"
+	inet "forward/base/io/net"
 	"forward/internal/metadata"
-	"forward/internal/pool"
+	"forward/base/pool"
 	"forward/internal/registry"
 	"forward/internal/router"
-	"forward/inner/logging"
-	socks5util "forward/inner/utils/socks5"
 )
 
 const (
@@ -363,13 +363,13 @@ type udpPeer struct {
 
 func newUDPSession(r router.Router, log *logging.Logger, relay *net.UDPConn, idle time.Duration, expectedIP net.IP, maxSessions int) *udpSession {
 	return &udpSession{
-		router:    r,
-		logger:    log,
-		relay:     relay,
-		idle:      idle,
+		router:     r,
+		logger:     log,
+		relay:      relay,
+		idle:       idle,
 		expectedIP: expectedIP,
-		maxSess:   maxSessions,
-		sessions:  make(map[string]*udpPeer),
+		maxSess:    maxSessions,
+		sessions:   make(map[string]*udpPeer),
 	}
 }
 

@@ -3,7 +3,7 @@ package handler
 import (
 	"net/url"
 
-	"forward/inner/logging"
+	"forward/base/logging"
 	"forward/internal/router"
 )
 

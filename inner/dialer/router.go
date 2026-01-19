@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"forward/inner/config"
-	"forward/inner/route"
+	"forward/base/route"
 )
 
 type RouteDialer struct {

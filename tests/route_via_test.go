@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"forward/inner/logging"
-	"forward/inner/route"
+	"forward/base/logging"
+	"forward/base/route"
 )
 
 func TestRouteVia_NilStore(t *testing.T) {

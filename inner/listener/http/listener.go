@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/http2"
 
 	"forward/inner/config"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 type Handler interface {

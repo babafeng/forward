@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"forward/inner/config"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 type Handler interface {

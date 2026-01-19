@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"forward/inner/config"
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 	forwardhttp "forward/inner/handler/http"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 type mockDialer struct{}

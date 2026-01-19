@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 func RouteVia(ctx context.Context, store *Store, log *logging.Logger, src, dst string) (string, error) {

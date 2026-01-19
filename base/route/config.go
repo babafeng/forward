@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 )
 
 type ActionType int

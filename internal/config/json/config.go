@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"forward/base/endpoint"
+	"forward/base/logging"
 	"forward/internal/config"
-	"forward/inner/endpoint"
-	"forward/inner/logging"
 )
 
 const configFileName = "forward.json"

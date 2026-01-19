@@ -1,7 +1,7 @@
 package tests
 
 import (
-	"forward/inner/pool"
+	"forward/base/pool"
 	"testing"
 )
 

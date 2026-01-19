@@ -6,7 +6,7 @@ import (
 	"forward/inner/config"
 	cjson "forward/inner/config/json"
 	"forward/inner/dialer"
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 
 	_ "forward/inner/dialer/http"
 )

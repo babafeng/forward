@@ -9,7 +9,7 @@ import (
 
 	"forward/inner/app"
 	"forward/inner/config"
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 )
 
 // TestListenerBindAddress 验证监听器是否正确绑定到指定地址

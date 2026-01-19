@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"forward/inner/config"
-	"forward/inner/endpoint"
-	"forward/inner/logging"
-	"forward/inner/route"
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
 )
 
 func ParseFile(path string) (config.Config, error) {

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"forward/inner/config"
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 	"forward/inner/handler/udp"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 type udpLimitMockConn struct {
