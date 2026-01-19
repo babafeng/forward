@@ -6,7 +6,7 @@ import (
 	"io"
 	"net"
 
-	socks5util "forward/inner/utils/socks5"
+	socks5util "forward/base/utils/socks5"
 )
 
 const (

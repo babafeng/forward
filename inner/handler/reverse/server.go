@@ -13,10 +13,10 @@ import (
 
 	"forward/inner/auth"
 	"forward/inner/config"
-	"forward/inner/logging"
-	"forward/inner/pool"
+	"forward/base/logging"
+	"forward/base/pool"
 
-	inet "forward/inner/io/net"
+	inet "forward/base/io/net"
 	irev "forward/inner/reverse"
 	rproto "forward/inner/reverse/proto"
 )

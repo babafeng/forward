@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	socks5util "forward/inner/utils/socks5"
+	socks5util "forward/base/utils/socks5"
 )
 
 func TestEncodeAddrIPv4(t *testing.T) {

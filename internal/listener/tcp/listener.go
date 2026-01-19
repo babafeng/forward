@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 
+	"forward/base/logging"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
@@ -22,6 +23,7 @@ func init() {
 type Listener struct {
 	addr      string
 	tlsConfig *tls.Config
+	logger    *logging.Logger
 
 	ln net.Listener
 	mu sync.Mutex
@@ -36,6 +38,7 @@ func NewListener(opts ...listener.Option) listener.Listener {
 	return &Listener{
 		addr:      options.Addr,
 		tlsConfig: options.TLSConfig,
+		logger:    options.Logger,
 	}
 }
 
@@ -70,6 +73,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, listener.NewAcceptError(err)
 	}
+	if l.logger != nil {
+		l.logger.Info("Listener accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
+	}
 	return conn, nil
 }
 
@@ -89,6 +95,9 @@ func (l *Listener) Close() error {
 	l.ln = nil
 	l.mu.Unlock()
 	if ln != nil {
+		if l.logger != nil {
+			l.logger.Info("Listener closed %s", ln.Addr().String())
+		}
 		return ln.Close()
 	}
 	return nil

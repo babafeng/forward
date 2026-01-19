@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"forward/inner/config"
-	"forward/inner/endpoint"
-	"forward/inner/logging"
-	"forward/inner/route"
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
 
 	cini "forward/inner/config/ini"
 	cjson "forward/inner/config/json"

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"forward/base/logging"
 	"forward/internal/handler"
 	"forward/internal/listener"
 )
@@ -20,12 +21,14 @@ type Service interface {
 type defaultService struct {
 	listener listener.Listener
 	handler  handler.Handler
+	logger   *logging.Logger
 }
 
-func NewService(ln listener.Listener, h handler.Handler) Service {
+func NewService(ln listener.Listener, h handler.Handler, logger *logging.Logger) Service {
 	return &defaultService{
 		listener: ln,
 		handler:  h,
+		logger:   logger,
 	}
 }
 
@@ -64,10 +67,22 @@ func (s *defaultService) Serve() error {
 		}
 		tempDelay = 0
 
+		if s.logger != nil {
+			s.logger.Debug("Service accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
+		}
+
 		wg.Add(1)
 		go func(c net.Conn) {
 			defer wg.Done()
-			_ = s.handler.Handle(context.Background(), c)
+			if s.logger != nil {
+				s.logger.Debug("Service handling %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
+			}
+			if err := s.handler.Handle(context.Background(), c); err != nil && s.logger != nil {
+				s.logger.Debug("Service handler error %s -> %s: %v", c.RemoteAddr().String(), c.LocalAddr().String(), err)
+			}
+			if s.logger != nil {
+				s.logger.Debug("Service closed %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
+			}
 		}(conn)
 	}
 }

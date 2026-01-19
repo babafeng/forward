@@ -22,8 +22,8 @@ import (
 	xvless "github.com/xtls/xray-core/proxy/vless"
 
 	"forward/inner/dialer"
-	"forward/inner/logging"
-	"forward/inner/route"
+	"forward/base/logging"
+	"forward/base/route"
 )
 
 type Handler struct {

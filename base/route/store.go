@@ -5,8 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"forward/inner/endpoint"
-	"forward/inner/logging"
+	"forward/base/endpoint"
+	"forward/base/logging"
 )
 
 type Store struct {

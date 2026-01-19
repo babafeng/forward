@@ -50,7 +50,7 @@
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                          internal/app                            │
+│                           base/app                               │
 │    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
 │    │   app.go     │  │  forward.go  │  │  version.go  │         │
 │    │  (主逻辑)     │  │  (工厂初始化) │  │  (版本信息)  │         │
@@ -70,7 +70,7 @@
 ```
 Layer 1: 入口层 (Entry)
     └── cmd/forward/main.go
-    └── internal/app/app.go
+    └── base/app/app.go
 
 Layer 2: 网络层 (Network)
     ├── internal/listener/     # 监听器（接收连接）
@@ -106,10 +106,10 @@ Layer 4: 路由层 (Routing)
 
 Layer 5: 基础设施层 (Infrastructure)
     ├── internal/config/       # 配置管理
-    ├── internal/auth/         # 认证
+    ├── base/auth/             # 认证
     ├── internal/logging/      # 日志
-    ├── internal/pool/         # 缓冲区池
-    └── internal/io/net/       # IO 工具
+    ├── base/pool/             # 缓冲区池
+    └── base/io/net/           # IO 工具
 ```
 
 ---

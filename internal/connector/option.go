@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"time"
 
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 type Options struct {

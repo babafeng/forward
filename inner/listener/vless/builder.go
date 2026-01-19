@@ -15,7 +15,7 @@ import (
 
 	"forward/inner/config"
 	pvless "forward/inner/protocol/vless"
-	"forward/inner/utils/crypto"
+	"forward/base/utils/crypto"
 )
 
 type ServerConfig struct {

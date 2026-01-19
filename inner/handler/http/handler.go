@@ -18,9 +18,9 @@ import (
 	"forward/inner/auth"
 	"forward/inner/config"
 	"forward/inner/dialer"
-	inet "forward/inner/io/net"
-	"forward/inner/logging"
-	"forward/inner/route"
+	inet "forward/base/io/net"
+	"forward/base/logging"
+	"forward/base/route"
 )
 
 type Handler struct {

@@ -8,7 +8,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"forward/inner/config"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 type Handler interface {

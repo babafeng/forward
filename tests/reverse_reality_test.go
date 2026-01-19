@@ -7,10 +7,10 @@ import (
 
 	"forward/inner/config"
 	"forward/inner/dialer"
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 	"forward/inner/listener"
 	rclient "forward/inner/reverse/client"
-	"forward/inner/utils/crypto"
+	"forward/base/utils/crypto"
 )
 
 func realityForwardEndpoint(t *testing.T) endpoint.Endpoint {

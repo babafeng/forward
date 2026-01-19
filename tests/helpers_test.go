@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 )
 
 // parseEndpoint 是测试辅助函数，解析 endpoint 并处理错误

@@ -3,7 +3,7 @@ package listener
 import (
 	"crypto/tls"
 
-	"forward/inner/logging"
+	"forward/base/logging"
 	"forward/internal/router"
 )
 

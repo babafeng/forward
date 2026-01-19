@@ -13,8 +13,8 @@ import (
 
 	"forward/inner/config"
 	"forward/inner/dialer"
-	"forward/inner/endpoint"
-	socks5util "forward/inner/utils/socks5"
+	"forward/base/endpoint"
+	socks5util "forward/base/utils/socks5"
 )
 
 const (

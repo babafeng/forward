@@ -18,11 +18,11 @@ import (
 	"forward/inner/auth"
 	"forward/inner/config"
 	"forward/inner/dialer"
-	netio "forward/inner/io/net"
-	"forward/inner/logging"
-	"forward/inner/pool"
-	"forward/inner/route"
-	socks5util "forward/inner/utils/socks5"
+	netio "forward/base/io/net"
+	"forward/base/logging"
+	"forward/base/pool"
+	"forward/base/route"
+	socks5util "forward/base/utils/socks5"
 )
 
 const (

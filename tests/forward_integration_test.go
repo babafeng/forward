@@ -10,8 +10,8 @@ import (
 
 	"forward/inner/app"
 	"forward/inner/config"
-	"forward/inner/endpoint"
-	"forward/inner/logging"
+	"forward/base/endpoint"
+	"forward/base/logging"
 )
 
 func TestTCPPortForwardEndToEnd(t *testing.T) {

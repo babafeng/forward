@@ -14,9 +14,9 @@ import (
 	"forward/inner/config"
 	ctls "forward/inner/config/tls"
 	"forward/inner/dialer"
-	"forward/inner/endpoint"
-	inet "forward/inner/io/net"
-	"forward/inner/logging"
+	"forward/base/endpoint"
+	inet "forward/base/io/net"
+	"forward/base/logging"
 	rev "forward/inner/reverse"
 	rproto "forward/inner/reverse/proto"
 

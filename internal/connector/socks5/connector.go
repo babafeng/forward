@@ -14,7 +14,7 @@ import (
 	"forward/internal/connector"
 	"forward/internal/metadata"
 	"forward/internal/registry"
-	socks5util "forward/inner/utils/socks5"
+	socks5util "forward/base/utils/socks5"
 )
 
 const (

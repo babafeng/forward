@@ -13,7 +13,7 @@ import (
 
 	"forward/inner/config"
 	vhandler "forward/inner/handler/vless"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 const (

@@ -6,7 +6,7 @@ import (
 
 	"forward/inner/config"
 	"forward/inner/dialer"
-	"forward/inner/endpoint"
+	"forward/base/endpoint"
 
 	_ "forward/inner/dialer/http"
 	_ "forward/inner/dialer/quic"

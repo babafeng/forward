@@ -11,7 +11,7 @@ import (
 	"forward/inner/app"
 	"forward/inner/auth"
 	"forward/inner/config"
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 // TestSOCKS5WithAuth 测试带认证的 SOCKS5 代理

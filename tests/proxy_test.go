@@ -12,8 +12,8 @@ import (
 
 	"forward/inner/app"
 	"forward/inner/config"
-	"forward/inner/endpoint"
-	"forward/inner/logging"
+	"forward/base/endpoint"
+	"forward/base/logging"
 )
 
 // TestSOCKS5ProxyBasic 测试 SOCKS5 代理基本功能

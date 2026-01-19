@@ -6,7 +6,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"forward/inner/logging"
+	"forward/base/logging"
 )
 
 func NewYamuxConfig(logger *logging.Logger) *yamux.Config {
