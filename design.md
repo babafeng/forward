@@ -138,16 +138,16 @@ dialer.Register("socks5", newDialer)
 
 **支持的 Scheme**：
 
-| Scheme          | 实现            | 说明              |
-| --------------- | --------------- | ----------------- |
-| `direct`        | `dialer/direct` | 直接连接          |
-| `http`          | `dialer/http`   | HTTP CONNECT 代理 |
-| `https`         | `dialer/http`   | HTTPS 代理（TLS） |
-| `socks5`        | `dialer/socks5` | SOCKS5 代理       |
-| `tls`           | `dialer/tls`    | TLS 加密连接      |
-| `quic`          | `dialer/quic`   | QUIC/HTTP3 连接   |
-| `vless`         | `dialer/vless`  | VLESS 协议        |
-| `vless+reality` | `dialer/vless`  | VLESS+REALITY     |
+| Scheme          | 实现            | 说明                 |
+| --------------- | --------------- | -------------------- |
+| `direct`        | `dialer/direct` | 直接连接             |
+| `http`          | `dialer/http`   | HTTP CONNECT 代理    |
+| `https`         | `dialer/http`   | HTTPS 代理（TLS）    |
+| `socks5`        | `dialer/socks5` | SOCKS5 代理          |
+| `tls`           | `dialer/tls`    | TLS 加密连接         |
+| `quic`          | `dialer/quic`   | QUIC/HTTP3 连接      |
+| `vless`         | `dialer/vless`  | VLESS 协议           |
+| `vless+reality` | `dialer/vless`  | VLESS+REALITY        |
 | `reality`       | `dialer/vless`  | `vless+reality` 别名 |
 
 ---
@@ -166,16 +166,16 @@ type Runner interface {
 
 **支持的 Scheme**：
 
-| Scheme   | 实现              | 说明               |
-| -------- | ----------------- | ------------------ |
-| `tcp`    | `listener/tcp`    | TCP 端口转发       |
-| `udp`    | `listener/udp`    | UDP 端口转发       |
-| `http`   | `listener/http`   | HTTP 代理服务      |
-| `https`  | `listener/http`   | HTTPS 代理服务     |
-| `socks5` | `listener/socks5` | SOCKS5 代理服务    |
-| `http3`  | `listener/http3`  | HTTP/3 代理服务    |
-| `vless+reality` | `listener/vless` | VLESS+REALITY 服务 |
-| `reality` | `listener/vless` | `vless+reality` 别名 |
+| Scheme          | 实现              | 说明                 |
+| --------------- | ----------------- | -------------------- |
+| `tcp`           | `listener/tcp`    | TCP 端口转发         |
+| `udp`           | `listener/udp`    | UDP 端口转发         |
+| `http`          | `listener/http`   | HTTP 代理服务        |
+| `https`         | `listener/http`   | HTTPS 代理服务       |
+| `socks5`        | `listener/socks5` | SOCKS5 代理服务      |
+| `http3`         | `listener/http3`  | HTTP/3 代理服务      |
+| `vless+reality` | `listener/vless`  | VLESS+REALITY 服务   |
+| `reality`       | `listener/vless`  | `vless+reality` 别名 |
 
 ---
 
@@ -321,19 +321,139 @@ forward -L "reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&s
 
 ### 4. 代理链
 
+代理链功能允许流量通过多个代理服务器依次转发，实现多跳代理，类似于 [gost](https://github.com/go-gost/gost) 的代理链特性。
+
+#### 典型场景
+
+客户端只能访问 S2，无法直接访问 S1，但 S2 可以访问 S1：
+
+```text
+┌────────┐        ┌────────┐        ┌────────┐        ┌────────┐
+│ 客户端  │───────▶│   S2   │───────▶│   S1   │───────▶│  目标  │
+│        │  Hop1  │中继代理 │  Hop2  │最终代理 │  直连  │ 服务器 │
+└────────┘        └────────┘        └────────┘        └────────┘
+```
+
+#### 架构设计
+
+代理链通过 `BaseSetter` 接口实现层层嵌套的拨号器：
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│                    Dialer Chain                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │                 最外层 Dialer (S1)               │   │
+│  │   ┌───────────────────────────────────────┐     │   │
+│  │   │          中间层 Dialer (S2)           │     │   │
+│  │   │   ┌───────────────────────────┐       │     │   │
+│  │   │   │      Direct Dialer        │       │     │   │
+│  │   │   │       (TCP 直连)           │       │     │   │
+│  │   │   └───────────────────────────┘       │     │   │
+│  │   │            SetBase()                   │     │   │
+│  │   └───────────────────────────────────────┘     │   │
+│  │                 SetBase()                        │   │
+│  └─────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 核心接口
+
+```go
+// BaseSetter 接口 - 支持链式代理的 Dialer 必须实现此接口
+type BaseSetter interface {
+    SetBase(Dialer)  // 设置底层拨号器
+}
+
+// PacketDialer 接口 - 支持 UDP 的拨号器（QUIC/HTTP3 需要）
+type PacketDialer interface {
+    ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error)
+}
+```
+
+#### 链式构建流程
+
+`newDialerWithForwardChain` 函数按顺序构建代理链：
+
+1. 创建 `Direct` 直连拨号器作为 base
+2. 遍历 chain 中的每个 hop，创建对应协议的 Dialer
+3. 通过 `SetBase()` 将前一个 Dialer 注入到当前 Dialer
+4. 最后返回最外层 Dialer
+
+```go
+// 代理链构建伪代码
+base := NewDirect()
+for i, hop := range chain {
+    dialer := newDialer(hop.Scheme)
+    if i > 0 {
+        dialer.SetBase(base)  // 嵌套上一层 Dialer
+    }
+    base = dialer
+}
+return base  // 最外层 Dialer
+```
+
+#### 使用方式
+
+**服务器配置：**
+
+```bash
+# 服务器 S1（最终代理）
+forward -L http://:8080
+
+# 服务器 S2（中继代理）
+forward -L http://:8080
+```
+
+**客户端配置：**
+
 ```bash
 # 单跳
 forward -L http://:8080 -F tls://user:pass@remote.com:443
 
-# 多跳（S2 -> S1）
+# 双跳（S2 -> S1）
 forward -L http://:8080 -F http://S2:8080 -F http://S1:8080
+
+# 三跳
+forward -L http://:8080 -F http://S3:8080 -F http://S2:8080 -F http://S1:8080
 ```
 
+#### 协议兼容性
+
+| 协议       | 可作为 Base | 支持 SetBase | 支持 UDP | 说明               |
+| ---------- | ----------- | ------------ | -------- | ------------------ |
+| direct     | ✅           | ❌            | ✅        | 直连，作为链的起点 |
+| http/https | ✅           | ✅            | ❌        | HTTP CONNECT 隧道  |
+| socks5     | ✅           | ✅            | ✅        | 支持 UDP ASSOCIATE |
+| tls        | ✅           | ✅            | ❌        | TLS 加密层         |
+| quic       | ✅           | ✅            | ✅        | 需要 UDP 底层      |
+| vless      | ✅           | ✅            | ❌        | 仅 `type=tcp`      |
+
 说明：
-* `-F` 可重复，顺序从近到远。
+* `-F` 可重复，顺序从近到远（先经过的代理先写）。
 * 多跳链仅支持 http/https/tls/socks5 作为中继协议。
-* QUIC/HTTP3 多跳需要 UDP-capable base（如 socks5）。
+* QUIC/HTTP3 多跳需要 UDP-capable base（如 socks5 或 direct）。
 * VLESS 多跳仅支持 TCP 传输（`type=tcp`）。
+
+#### QUIC/HTTP3 多跳
+
+```bash
+# QUIC 需要 UDP-capable 的底层，socks5 支持 UDP
+forward -L http://:8080 -F socks5://S2:1080 -F quic://S1:443
+
+# 直连 QUIC 链
+forward -L socks5://:1080 -F quic://S2:1080 -F quic://S1:443
+```
+
+#### JSON 配置
+
+```json
+{
+  "listeners": ["http://:8080"],
+  "forwards": ["http://S2:8080", "http://S1:8080"]
+}
+```
+
+注意：`forward` 和 `forwards` 互斥，`forwards` 顺序为从近到远。
 
 ### 5. 内网穿透
 
