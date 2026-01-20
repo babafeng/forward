@@ -110,6 +110,20 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	local := conn.LocalAddr().String()
 	h.logf(logging.LevelInfo, "HTTP connection %s -> %s", remote, local)
 
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return err
+		}
+		if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
+			h2srv := &http2.Server{}
+			h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
+				Context: ctx,
+				Handler: stdhttp.HandlerFunc(h.ServeHTTP),
+			})
+			return nil
+		}
+	}
+
 	br := bufio.NewReader(conn)
 	for {
 		req, err := stdhttp.ReadRequest(br)

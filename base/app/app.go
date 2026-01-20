@@ -34,6 +34,7 @@ import (
 	_ "forward/internal/connector/socks5"
 	_ "forward/internal/connector/tcp"
 	_ "forward/internal/dialer/dtls"
+	_ "forward/internal/dialer/http2"
 	_ "forward/internal/dialer/http3"
 	_ "forward/internal/dialer/tcp"
 	_ "forward/internal/dialer/tls"
@@ -43,6 +44,7 @@ import (
 	_ "forward/internal/handler/tcp"
 	_ "forward/internal/handler/udp"
 	_ "forward/internal/listener/dtls"
+	_ "forward/internal/listener/http2"
 	_ "forward/internal/listener/http3"
 	_ "forward/internal/listener/tcp"
 	_ "forward/internal/listener/udp"
@@ -183,6 +185,14 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 			return err
 		}
 		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case listenerScheme == "http2":
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
+			NextProtos: []string{"h2"},
+		})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
 	case transport == transportTLS:
 		tlsOpts := ctls.ServerOptions{}
 		if handlerScheme == "http" {
@@ -264,6 +274,9 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 	if transport == transportDTLS {
 		listenerScheme = "dtls"
 	}
+	if transport == transportH2 {
+		listenerScheme = "http2"
+	}
 	newListener := registry.ListenerRegistry().Get(listenerScheme)
 	if newListener == nil {
 		return fmt.Errorf("listener not registered for scheme %s", listenerScheme)
@@ -273,8 +286,17 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 		listener.LoggerOption(cfg.Logger),
 		listener.RouterOption(rt),
 	}
-	if transport == transportTLS || transport == transportDTLS {
+	switch transport {
+	case transportTLS, transportDTLS:
 		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case transportH2:
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
+			NextProtos: []string{"h2"},
+		})
 		if err != nil {
 			return err
 		}
@@ -515,6 +537,7 @@ const (
 	transportNone transportKind = ""
 	transportTLS  transportKind = "tls"
 	transportDTLS transportKind = "dtls"
+	transportH2   transportKind = "http2"
 )
 
 func splitSchemeTransport(scheme string) (base string, transport transportKind) {
@@ -522,10 +545,15 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 	switch s {
 	case "https":
 		return "http", transportTLS
+	case "http2":
+		return "http", transportH2
 	case "tls":
 		return "tcp", transportTLS
 	case "dtls":
 		return "tcp", transportDTLS
+	}
+	if strings.HasSuffix(s, "+http2") {
+		return strings.TrimSuffix(s, "+http2"), transportH2
 	}
 	if strings.HasSuffix(s, "+tls") {
 		return strings.TrimSuffix(s, "+tls"), transportTLS
@@ -552,6 +580,9 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 
 	if transport == transportDTLS {
 		listenerScheme = "dtls"
+	}
+	if transport == transportH2 {
+		listenerScheme = "http2"
 	}
 	return
 }
