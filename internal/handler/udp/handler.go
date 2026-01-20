@@ -1,0 +1,142 @@
+package udp
+
+import (
+	"context"
+	"errors"
+	"net"
+	"strings"
+
+	inet "forward/base/io/net"
+	"forward/base/logging"
+	"forward/internal/chain"
+	corehandler "forward/internal/handler"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
+)
+
+func init() {
+	registry.HandlerRegistry().Register("udp", NewHandler)
+}
+
+type Handler struct {
+	options corehandler.Options
+	target  string
+}
+
+func NewHandler(opts ...corehandler.Option) corehandler.Handler {
+	options := corehandler.Options{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	if options.Router == nil {
+		options.Router = router.NewStatic(chain.NewRoute())
+	}
+	return &Handler{options: options}
+}
+
+func (h *Handler) Init(md metadata.Metadata) error {
+	if md == nil {
+		return nil
+	}
+	h.target = getString(md.Get("target"))
+	if h.target == "" {
+		h.target = getString(md.Get("forward"))
+	}
+	if h.target == "" {
+		return errors.New("udp handler: missing target")
+	}
+	return nil
+}
+
+func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.HandleOption) error {
+	defer conn.Close()
+
+	if _, ok := conn.(net.PacketConn); !ok {
+		return errors.New("udp handler: packet connection required")
+	}
+
+	target := h.target
+	if target == "" {
+		return errors.New("udp handler: missing target")
+	}
+
+	remote := conn.RemoteAddr().String()
+	local := conn.LocalAddr().String()
+	h.logf(logging.LevelInfo, "UDP connection %s -> %s", remote, local)
+
+	route, err := h.options.Router.Route(ctx, "udp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "UDP route error: %v", err)
+		return err
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	h.logf(logging.LevelDebug, "UDP route via %s", routeSummary(route))
+
+	up, err := route.Dial(ctx, "udp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "UDP dial %s error: %v", target, err)
+		return err
+	}
+
+	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+	if err != nil && ctx.Err() == nil {
+		h.logf(logging.LevelError, "UDP transfer error: %v", err)
+	}
+	h.logf(logging.LevelDebug, "UDP closed %s -> %s transferred %d bytes in %s", remote, target, bytes, dur)
+	return err
+}
+
+func (h *Handler) logf(level logging.Level, format string, args ...any) {
+	if h.options.Logger == nil {
+		return
+	}
+	switch level {
+	case logging.LevelDebug:
+		h.options.Logger.Debug(format, args...)
+	case logging.LevelInfo:
+		h.options.Logger.Info(format, args...)
+	case logging.LevelWarn:
+		h.options.Logger.Warn(format, args...)
+	case logging.LevelError:
+		h.options.Logger.Error(format, args...)
+	}
+}
+
+func routeSummary(rt chain.Route) string {
+	if rt == nil {
+		return "DIRECT"
+	}
+	nodes := rt.Nodes()
+	if len(nodes) == 0 {
+		return "DIRECT"
+	}
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		name := node.Name
+		if name == "" {
+			name = node.Addr
+		} else if node.Addr != "" && name != node.Addr {
+			name = name + "(" + node.Addr + ")"
+		}
+		parts = append(parts, name)
+	}
+	if len(parts) == 0 {
+		return "DIRECT"
+	}
+	return strings.Join(parts, " -> ")
+}
+
+func getString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	default:
+		return ""
+	}
+}

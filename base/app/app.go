@@ -32,11 +32,20 @@ import (
 
 	_ "forward/internal/connector/http"
 	_ "forward/internal/connector/socks5"
+	_ "forward/internal/connector/tcp"
+	_ "forward/internal/dialer/dtls"
+	_ "forward/internal/dialer/http3"
 	_ "forward/internal/dialer/tcp"
 	_ "forward/internal/dialer/tls"
+	_ "forward/internal/dialer/udp"
 	_ "forward/internal/handler/http"
 	_ "forward/internal/handler/socks5"
+	_ "forward/internal/handler/tcp"
+	_ "forward/internal/handler/udp"
+	_ "forward/internal/listener/dtls"
+	_ "forward/internal/listener/http3"
 	_ "forward/internal/listener/tcp"
+	_ "forward/internal/listener/udp"
 )
 
 func Main() int {
@@ -106,6 +115,9 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 }
 
 func runOne(ctx context.Context, cfg config.Config) error {
+	if isPortForward(cfg) {
+		return runPortForward(ctx, cfg)
+	}
 	if !isProxyServer(cfg.Listen.Scheme) {
 		return fmt.Errorf("unsupported listen scheme: %s", cfg.Listen.Scheme)
 	}
@@ -124,13 +136,8 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	handlerScheme := strings.ToLower(cfg.Listen.Scheme)
-	if handlerScheme == "https" {
-		handlerScheme = "http"
-	}
-	if handlerScheme == "socks5h" {
-		handlerScheme = "socks5"
-	}
+	rawScheme := strings.ToLower(cfg.Listen.Scheme)
+	handlerScheme, listenerScheme, transport := normalizeProxySchemes(rawScheme)
 
 	newHandler := registry.HandlerRegistry().Get(handlerScheme)
 	if newHandler == nil {
@@ -154,7 +161,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	newListener := registry.ListenerRegistry().Get(strings.ToLower(cfg.Listen.Scheme))
+	newListener := registry.ListenerRegistry().Get(listenerScheme)
 	if newListener == nil {
 		newListener = registry.ListenerRegistry().Get("tcp")
 	}
@@ -167,10 +174,27 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		listener.LoggerOption(cfg.Logger),
 		listener.RouterOption(rt),
 	}
-	if strings.EqualFold(cfg.Listen.Scheme, "https") {
+	switch {
+	case listenerScheme == "http3":
 		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h2", "http/1.1"},
+			NextProtos: []string{"h3"},
 		})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case transport == transportTLS:
+		tlsOpts := ctls.ServerOptions{}
+		if handlerScheme == "http" {
+			tlsOpts.NextProtos = []string{"h2", "http/1.1"}
+		}
+		tlsCfg, err := ctls.ServerConfig(cfg, tlsOpts)
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case transport == transportDTLS:
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{})
 		if err != nil {
 			return err
 		}
@@ -178,7 +202,10 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	}
 
 	ln := newListener(lopts...)
-	if err := ln.Init(nil); err != nil {
+	lmd := metadata.New(map[string]any{
+		"handshake_timeout": cfg.HandshakeTimeout,
+	})
+	if err := ln.Init(lmd); err != nil {
 		return err
 	}
 
@@ -189,6 +216,87 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	}()
 
 	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
+	return svc.Serve()
+}
+
+func runPortForward(ctx context.Context, cfg config.Config) error {
+	cfg.Mode = config.ModePortForward
+
+	baseScheme, transport := splitSchemeTransport(cfg.Listen.Scheme)
+	if baseScheme == "udp" && transport != transportNone {
+		return fmt.Errorf("udp over %s is not supported", transport)
+	}
+
+	target, useForwardAsTarget, err := resolveForwardTarget(cfg)
+	if err != nil {
+		return err
+	}
+
+	routeCfg := cfg
+	if useForwardAsTarget {
+		routeCfg.Forward = nil
+		routeCfg.ForwardChain = nil
+	}
+
+	rt, err := buildRouter(routeCfg)
+	if err != nil {
+		return err
+	}
+
+	newHandler := registry.HandlerRegistry().Get(baseScheme)
+	if newHandler == nil {
+		return fmt.Errorf("handler not registered for scheme %s", baseScheme)
+	}
+
+	h := newHandler(
+		handler.RouterOption(rt),
+		handler.LoggerOption(cfg.Logger),
+	)
+	hmd := metadata.New(map[string]any{
+		"target":   target,
+		"udp_idle": cfg.UDPIdleTimeout,
+	})
+	if err := h.Init(hmd); err != nil {
+		return err
+	}
+
+	listenerScheme := baseScheme
+	if transport == transportDTLS {
+		listenerScheme = "dtls"
+	}
+	newListener := registry.ListenerRegistry().Get(listenerScheme)
+	if newListener == nil {
+		return fmt.Errorf("listener not registered for scheme %s", listenerScheme)
+	}
+	lopts := []listener.Option{
+		listener.AddrOption(cfg.Listen.Address()),
+		listener.LoggerOption(cfg.Logger),
+		listener.RouterOption(rt),
+	}
+	if transport == transportTLS || transport == transportDTLS {
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	}
+	ln := newListener(lopts...)
+
+	lmd := metadata.New(map[string]any{
+		"handshake_timeout": cfg.HandshakeTimeout,
+		"udp_idle":          cfg.UDPIdleTimeout,
+	})
+	if err := ln.Init(lmd); err != nil {
+		return err
+	}
+
+	svc := service.NewService(ln, h, cfg.Logger)
+	go func() {
+		<-ctx.Done()
+		_ = svc.Close()
+	}()
+
+	cfg.Logger.Info("Forward internal %s forward listening on %s -> %s", cfg.Listen.Scheme, cfg.Listen.Address(), target)
 	return svc.Serve()
 }
 
@@ -356,12 +464,96 @@ func parseRouteConfig(path string) (config.Config, error) {
 }
 
 func isProxyServer(scheme string) bool {
-	switch strings.ToLower(scheme) {
-	case "http", "https", "socks5", "socks5h":
+	base, transport := splitSchemeTransport(scheme)
+	if base == "http3" {
+		return transport == transportNone
+	}
+	switch base {
+	case "http", "socks5", "socks5h":
 		return true
 	default:
 		return false
 	}
+}
+
+func isPortForward(cfg config.Config) bool {
+	ls, transport := splitSchemeTransport(cfg.Listen.Scheme)
+	if ls != "tcp" && ls != "udp" {
+		return false
+	}
+	if ls == "udp" && transport != transportNone {
+		return false
+	}
+	if cfg.Forward == nil {
+		return cfg.Listen.FAddress != ""
+	}
+	fs, _ := splitSchemeTransport(cfg.Forward.Scheme)
+	return strings.EqualFold(ls, fs)
+}
+
+func resolveForwardTarget(cfg config.Config) (target string, useForwardAsTarget bool, err error) {
+	if cfg.Listen.FAddress != "" {
+		return cfg.Listen.FAddress, false, nil
+	}
+	if cfg.Forward == nil {
+		return "", false, fmt.Errorf("missing target address (use -L .../target or -F target)")
+	}
+	ls, _ := splitSchemeTransport(cfg.Listen.Scheme)
+	fs, _ := splitSchemeTransport(cfg.Forward.Scheme)
+	if !strings.EqualFold(ls, fs) {
+		return "", false, fmt.Errorf("forward scheme %s does not match listen scheme %s", cfg.Forward.Scheme, cfg.Listen.Scheme)
+	}
+	if len(cfg.ForwardChain) > 1 {
+		return "", false, fmt.Errorf("forward chain requires target in listen path")
+	}
+	return cfg.Forward.Address(), true, nil
+}
+
+type transportKind string
+
+const (
+	transportNone transportKind = ""
+	transportTLS  transportKind = "tls"
+	transportDTLS transportKind = "dtls"
+)
+
+func splitSchemeTransport(scheme string) (base string, transport transportKind) {
+	s := strings.ToLower(strings.TrimSpace(scheme))
+	switch s {
+	case "https":
+		return "http", transportTLS
+	case "tls":
+		return "tcp", transportTLS
+	case "dtls":
+		return "tcp", transportDTLS
+	}
+	if strings.HasSuffix(s, "+tls") {
+		return strings.TrimSuffix(s, "+tls"), transportTLS
+	}
+	if strings.HasSuffix(s, "+dtls") {
+		return strings.TrimSuffix(s, "+dtls"), transportDTLS
+	}
+	return s, transportNone
+}
+
+func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string, transport transportKind) {
+	base, transport := splitSchemeTransport(scheme)
+	handlerScheme = base
+	listenerScheme = base
+
+	switch base {
+	case "http3":
+		handlerScheme = "http"
+		listenerScheme = "http3"
+		return handlerScheme, listenerScheme, transportNone
+	case "socks5h":
+		handlerScheme = "socks5"
+	}
+
+	if transport == transportDTLS {
+		listenerScheme = "dtls"
+	}
+	return
 }
 
 func Usage(fs *flag.FlagSet) {

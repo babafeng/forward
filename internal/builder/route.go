@@ -32,8 +32,12 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 			dialer.TimeoutOption(cfg.DialTimeout),
 			dialer.LoggerOption(cfg.Logger),
 		}
-		if dialerName == "tls" {
-			tlsCfg, err := ctls.ClientConfig(hop, cfg.Insecure, ctls.ClientOptions{})
+		if dialerName == "tls" || dialerName == "http3" || dialerName == "dtls" {
+			tlsOpts := ctls.ClientOptions{}
+			if dialerName == "http3" {
+				tlsOpts.NextProtos = []string{"h3"}
+			}
+			tlsCfg, err := ctls.ClientConfig(hop, cfg.Insecure, tlsOpts)
 			if err != nil {
 				return nil, fmt.Errorf("hop %d: tls config: %w", i+1, err)
 			}
@@ -64,13 +68,56 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 }
 
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	if scheme == "" {
+		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+	}
+	if scheme == "https" || scheme == "http+tls" {
+		return "http", "tls", nil
+	}
+	if scheme == "http3" {
+		return "http", "http3", nil
+	}
+	if strings.HasSuffix(scheme, "+dtls") {
+		base := strings.TrimSuffix(scheme, "+dtls")
+		switch base {
+		case "http":
+			return "http", "dtls", nil
+		case "socks5", "socks5h":
+			return "socks5", "dtls", nil
+		case "tcp":
+			return "tcp", "dtls", nil
+		default:
+			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+		}
+	}
+	if strings.HasSuffix(scheme, "+tls") {
+		base := strings.TrimSuffix(scheme, "+tls")
+		switch base {
+		case "http":
+			return "http", "tls", nil
+		case "socks5", "socks5h":
+			return "socks5", "tls", nil
+		case "tcp":
+			return "tcp", "tls", nil
+		default:
+			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+		}
+	}
+	if scheme == "tls" {
+		return "tcp", "tls", nil
+	}
+	if scheme == "dtls" {
+		return "tcp", "dtls", nil
+	}
+
 	switch scheme {
 	case "http":
 		return "http", "tcp", nil
-	case "https":
-		return "http", "tls", nil
 	case "socks5", "socks5h":
 		return "socks5", "tcp", nil
+	case "tcp":
+		return "tcp", "tcp", nil
 	default:
 		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
 	}
