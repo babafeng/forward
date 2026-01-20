@@ -32,10 +32,16 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 			dialer.TimeoutOption(cfg.DialTimeout),
 			dialer.LoggerOption(cfg.Logger),
 		}
-		if dialerName == "tls" || dialerName == "http3" || dialerName == "dtls" {
+		if dialerName == "tls" || dialerName == "http3" || dialerName == "dtls" || dialerName == "http2" {
 			tlsOpts := ctls.ClientOptions{}
 			if dialerName == "http3" {
 				tlsOpts.NextProtos = []string{"h3"}
+			}
+			if dialerName == "http2" {
+				tlsOpts.NextProtos = []string{"h2"}
+			}
+			if dialerName == "tls" && connectorName == "http" {
+				tlsOpts.NextProtos = []string{"h2", "http/1.1"}
 			}
 			tlsCfg, err := ctls.ClientConfig(hop, cfg.Insecure, tlsOpts)
 			if err != nil {
@@ -77,6 +83,22 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 	}
 	if scheme == "http3" {
 		return "http", "http3", nil
+	}
+	if scheme == "http2" {
+		return "http", "http2", nil
+	}
+	if strings.HasSuffix(scheme, "+http2") {
+		base := strings.TrimSuffix(scheme, "+http2")
+		switch base {
+		case "http":
+			return "http", "http2", nil
+		case "socks5", "socks5h":
+			return "socks5", "http2", nil
+		case "tcp":
+			return "tcp", "http2", nil
+		default:
+			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+		}
 	}
 	if strings.HasSuffix(scheme, "+dtls") {
 		base := strings.TrimSuffix(scheme, "+dtls")
