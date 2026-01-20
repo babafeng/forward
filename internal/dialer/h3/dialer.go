@@ -1,4 +1,4 @@
-package http3
+package h3
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 )
 
 func init() {
-	registry.DialerRegistry().Register("http3", NewDialer)
+	registry.DialerRegistry().Register("h3", NewDialer)
 }
 
 type Dialer struct {
@@ -27,10 +27,13 @@ type Dialer struct {
 	md      dialerMetadata
 
 	mu      sync.Mutex
-	clients map[string]*http.Client
+	clients map[string]*phtClient
 }
 
 type dialerMetadata struct {
+	authorizePath    string
+	pushPath         string
+	pullPath         string
 	host             string
 	keepAlivePeriod  time.Duration
 	handshakeTimeout time.Duration
@@ -45,7 +48,7 @@ func NewDialer(opts ...dialer.Option) dialer.Dialer {
 	}
 	return &Dialer{
 		options: options,
-		clients: make(map[string]*http.Client),
+		clients: make(map[string]*phtClient),
 	}
 }
 
@@ -65,12 +68,6 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 			host = hostFromAddr(addr)
 		}
 
-		tlsCfg := cloneTLSConfig(d.options.TLSConfig)
-		if tlsCfg.ServerName == "" {
-			tlsCfg.ServerName = host
-		}
-		ensureNextProtos(tlsCfg, []string{"h3"})
-
 		quicCfg := &quic.Config{
 			Versions: []quic.Version{
 				quic.Version1,
@@ -89,6 +86,11 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 			quicCfg.MaxIncomingStreams = int64(d.md.maxStreams)
 		}
 
+		tlsCfg := cloneTLSConfig(d.options.TLSConfig)
+		if tlsCfg.ServerName == "" {
+			tlsCfg.ServerName = host
+		}
+
 		tr := &http3.Transport{
 			TLSClientConfig:    tlsCfg,
 			QUICConfig:         quicCfg,
@@ -97,20 +99,20 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 				return quic.DialAddrEarly(ctx, addr, tlsCfg, cfg)
 			},
 		}
-		client = &http.Client{Transport: tr}
+
+		client = &phtClient{
+			Host:          host,
+			Client:        &http.Client{Transport: tr},
+			AuthorizePath: d.md.authorizePath,
+			PushPath:      d.md.pushPath,
+			PullPath:      d.md.pullPath,
+			TLSEnabled:    true,
+			Logger:        d.options.Logger,
+		}
 		d.clients[addr] = client
 	}
 
-	raddr, _ := net.ResolveTCPAddr("tcp", addr)
-	if raddr == nil {
-		raddr = &net.TCPAddr{}
-	}
-
-	return &clientConn{
-		client:     client,
-		localAddr:  &net.TCPAddr{},
-		remoteAddr: raddr,
-	}, nil
+	return client.Dial(ctx, addr)
 }
 
 // Multiplex implements dialer.Multiplexer.
@@ -118,31 +120,27 @@ func (d *Dialer) Multiplex() bool {
 	return true
 }
 
-type clientConn struct {
-	client     *http.Client
-	localAddr  net.Addr
-	remoteAddr net.Addr
-}
-
-func (c *clientConn) HTTPClient() *http.Client { return c.client }
-func (c *clientConn) Read([]byte) (int, error) { return 0, net.ErrClosed }
-func (c *clientConn) Write([]byte) (int, error) {
-	return 0, net.ErrClosed
-}
-func (c *clientConn) Close() error                     { return nil }
-func (c *clientConn) LocalAddr() net.Addr              { return c.localAddr }
-func (c *clientConn) RemoteAddr() net.Addr             { return c.remoteAddr }
-func (c *clientConn) SetDeadline(time.Time) error      { return nil }
-func (c *clientConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *clientConn) SetWriteDeadline(time.Time) error { return nil }
-
 func (d *Dialer) parseMetadata(md metadata.Metadata) {
+	d.md.authorizePath = "/authorize"
+	d.md.pushPath = "/push"
+	d.md.pullPath = "/pull"
 	if md == nil {
 		return
+	}
+
+	if v := getString(md.Get("authorize_path")); v != "" {
+		d.md.authorizePath = ensurePath(v, d.md.authorizePath)
+	}
+	if v := getString(md.Get("push_path")); v != "" {
+		d.md.pushPath = ensurePath(v, d.md.pushPath)
+	}
+	if v := getString(md.Get("pull_path")); v != "" {
+		d.md.pullPath = ensurePath(v, d.md.pullPath)
 	}
 	if v := getString(md.Get("host")); v != "" {
 		d.md.host = v
 	}
+
 	if getBool(md.Get("keepalive")) {
 		if v := getDuration(md.Get("ttl")); v > 0 {
 			d.md.keepAlivePeriod = v
@@ -162,6 +160,16 @@ func (d *Dialer) parseMetadata(md metadata.Metadata) {
 	}
 }
 
+func ensurePath(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	if !strings.HasPrefix(v, "/") {
+		return fallback
+	}
+	return v
+}
+
 func hostFromAddr(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -177,39 +185,12 @@ func cloneTLSConfig(cfg *tls.Config) *tls.Config {
 	return cfg.Clone()
 }
 
-func ensureNextProtos(cfg *tls.Config, protos []string) {
-	if cfg == nil || len(protos) == 0 {
-		return
-	}
-	existing := map[string]struct{}{}
-	for _, p := range cfg.NextProtos {
-		existing[p] = struct{}{}
-	}
-	for _, p := range protos {
-		if _, ok := existing[p]; !ok {
-			cfg.NextProtos = append(cfg.NextProtos, p)
-		}
-	}
-}
-
 func getString(v any) string {
 	switch t := v.(type) {
 	case string:
 		return strings.TrimSpace(t)
 	default:
 		return ""
-	}
-}
-
-func getBool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		t = strings.TrimSpace(strings.ToLower(t))
-		return t == "1" || t == "true" || t == "yes" || t == "on"
-	default:
-		return false
 	}
 }
 
@@ -227,6 +208,18 @@ func getInt(v any) int {
 		return n
 	default:
 		return 0
+	}
+}
+
+func getBool(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		t = strings.TrimSpace(strings.ToLower(t))
+		return t == "1" || t == "true" || t == "yes" || t == "on"
+	default:
+		return false
 	}
 }
 

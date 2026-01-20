@@ -1,4 +1,4 @@
-package http2
+package h2
 
 import (
 	"crypto/tls"
@@ -34,7 +34,7 @@ type Listener struct {
 }
 
 func init() {
-	registry.ListenerRegistry().Register("http2", NewListener)
+	registry.ListenerRegistry().Register("h2", NewListener)
 }
 
 func NewListener(opts ...listener.Option) listener.Listener {

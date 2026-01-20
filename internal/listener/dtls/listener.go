@@ -11,7 +11,7 @@ import (
 	"github.com/pion/dtls/v2"
 
 	"forward/base/logging"
-	dtlsutil "forward/internal/dtls"
+	dtlsutil "forward/base/transport/dtls"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"

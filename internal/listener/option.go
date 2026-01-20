@@ -1,6 +1,7 @@
 package listener
 
 import (
+	"context"
 	"crypto/tls"
 
 	"forward/base/logging"
@@ -12,6 +13,7 @@ type Options struct {
 	TLSConfig *tls.Config
 	Logger    *logging.Logger
 	Router    router.Router
+	Context   context.Context
 }
 
 type Option func(opts *Options)
@@ -37,5 +39,11 @@ func LoggerOption(logger *logging.Logger) Option {
 func RouterOption(r router.Router) Option {
 	return func(opts *Options) {
 		opts.Router = r
+	}
+}
+
+func ContextOption(ctx context.Context) Option {
+	return func(opts *Options) {
+		opts.Context = ctx
 	}
 }

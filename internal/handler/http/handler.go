@@ -21,6 +21,7 @@ import (
 	"forward/base/logging"
 	"forward/internal/chain"
 	"forward/internal/config"
+	ictx "forward/internal/ctx"
 	corehandler "forward/internal/handler"
 	"forward/internal/metadata"
 	"forward/internal/registry"
@@ -109,6 +110,15 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
 	h.logf(logging.LevelInfo, "HTTP connection %s -> %s", remote, local)
+
+	if md := ictx.MetadataFromContext(ctx); md != nil {
+		if w, ok := md.Get(metadata.MetaHTTPResponseWriter).(stdhttp.ResponseWriter); ok && w != nil {
+			if r, ok := md.Get(metadata.MetaHTTPRequest).(*stdhttp.Request); ok && r != nil {
+				h.ServeHTTP(w, r)
+				return nil
+			}
+		}
+	}
 
 	if tlsConn, ok := conn.(*tls.Conn); ok {
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
