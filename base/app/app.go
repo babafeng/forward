@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -22,6 +23,8 @@ import (
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
+	rev "forward/internal/reverse"
+	revclient "forward/internal/reverse/client"
 	"forward/internal/router"
 	"forward/internal/service"
 	"path/filepath"
@@ -31,23 +34,36 @@ import (
 	ctls "forward/internal/config/tls"
 
 	_ "forward/internal/connector/http"
+	_ "forward/internal/connector/http2"
+	_ "forward/internal/connector/http3"
 	_ "forward/internal/connector/socks5"
 	_ "forward/internal/connector/tcp"
 	_ "forward/internal/dialer/dtls"
-	_ "forward/internal/dialer/http2"
+	_ "forward/internal/dialer/h2"
+	_ "forward/internal/dialer/h3"
 	_ "forward/internal/dialer/http3"
+	_ "forward/internal/dialer/quic"
 	_ "forward/internal/dialer/tcp"
 	_ "forward/internal/dialer/tls"
 	_ "forward/internal/dialer/udp"
 	_ "forward/internal/handler/http"
+	revhandler "forward/internal/handler/reverse"
 	_ "forward/internal/handler/socks5"
 	_ "forward/internal/handler/tcp"
 	_ "forward/internal/handler/udp"
 	_ "forward/internal/listener/dtls"
-	_ "forward/internal/listener/http2"
+	_ "forward/internal/listener/h2"
+	_ "forward/internal/listener/h3"
 	_ "forward/internal/listener/http3"
+	quiclistener "forward/internal/listener/quic"
 	_ "forward/internal/listener/tcp"
 	_ "forward/internal/listener/udp"
+
+	// VLESS + Reality
+	_ "forward/internal/connector/vless"
+	_ "forward/internal/dialer/reality"
+	_ "forward/internal/handler/vless"
+	_ "forward/internal/listener/reality"
 )
 
 func Main() int {
@@ -117,6 +133,12 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 }
 
 func runOne(ctx context.Context, cfg config.Config) error {
+	if isReverseServer(cfg) {
+		return runReverseServer(ctx, cfg)
+	}
+	if isReverseClient(cfg) {
+		return runReverseClient(ctx, cfg)
+	}
 	if isPortForward(cfg) {
 		return runPortForward(ctx, cfg)
 	}
@@ -141,28 +163,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	rawScheme := strings.ToLower(cfg.Listen.Scheme)
 	handlerScheme, listenerScheme, transport := normalizeProxySchemes(rawScheme)
 
-	newHandler := registry.HandlerRegistry().Get(handlerScheme)
-	if newHandler == nil {
-		return fmt.Errorf("handler not registered for scheme %s", handlerScheme)
-	}
-
-	h := newHandler(
-		handler.RouterOption(rt),
-		handler.AuthOption(cfg.Listen.User),
-		handler.LoggerOption(cfg.Logger),
-	)
-
-	md := metadata.New(map[string]any{
-		"transparent":       strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
-		"insecure":          cfg.Insecure,
-		"handshake_timeout": cfg.HandshakeTimeout,
-		"udp_idle":          cfg.UDPIdleTimeout,
-		"max_udp_sessions":  cfg.MaxUDPSessions,
-	})
-	if err := h.Init(md); err != nil {
-		return err
-	}
-
+	// 先创建并初始化 Listener
 	newListener := registry.ListenerRegistry().Get(listenerScheme)
 	if newListener == nil {
 		newListener = registry.ListenerRegistry().Get("tcp")
@@ -175,6 +176,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		listener.AddrOption(cfg.Listen.Address()),
 		listener.LoggerOption(cfg.Logger),
 		listener.RouterOption(rt),
+		listener.ContextOption(ctx),
 	}
 	switch {
 	case listenerScheme == "http3":
@@ -185,7 +187,23 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 			return err
 		}
 		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case listenerScheme == "h3":
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
+			NextProtos: []string{"h3"},
+		})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
 	case listenerScheme == "http2":
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
+			NextProtos: []string{"h2"},
+		})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case listenerScheme == "h2":
 		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
 			NextProtos: []string{"h2"},
 		})
@@ -212,6 +230,125 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	}
 
 	ln := newListener(lopts...)
+	// 构建 listener metadata
+	lmdMap := map[string]any{
+		"handshake_timeout": cfg.HandshakeTimeout,
+		// Reality Listener 需要的配置
+		metadata.KeyHost:    cfg.Listen.Host,
+		metadata.KeyPort:    cfg.Listen.Port,
+		metadata.KeySNI:     cfg.Listen.Query.Get("sni"),
+		metadata.KeyShortID: cfg.Listen.Query.Get("sid"),
+		metadata.KeyFlow:    cfg.Listen.Query.Get("flow"),
+		metadata.KeyNetwork: cfg.Listen.Query.Get("type"),
+		"dest":              cfg.Listen.Query.Get("dest"),
+		"privatekey":        cfg.Listen.Query.Get("key"),
+	}
+	if cfg.Listen.User != nil {
+		lmdMap[metadata.KeyUUID] = cfg.Listen.User.Username()
+	}
+	lmd := metadata.New(lmdMap)
+	if err := ln.Init(lmd); err != nil {
+		return err
+	}
+
+	// 创建 Handler
+	newHandler := registry.HandlerRegistry().Get(handlerScheme)
+	if newHandler == nil {
+		return fmt.Errorf("handler not registered for scheme %s", handlerScheme)
+	}
+
+	h := newHandler(
+		handler.RouterOption(rt),
+		handler.AuthOption(cfg.Listen.User),
+		handler.LoggerOption(cfg.Logger),
+	)
+
+	md := metadata.New(map[string]any{
+		"transparent":       strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
+		"insecure":          cfg.Insecure,
+		"handshake_timeout": cfg.HandshakeTimeout,
+		"udp_idle":          cfg.UDPIdleTimeout,
+		"max_udp_sessions":  cfg.MaxUDPSessions,
+	})
+	if err := h.Init(md); err != nil {
+		return err
+	}
+
+	// 如果是 VLESS+Reality，传递 validator 给 Handler
+	if handlerScheme == "vless" && listenerScheme == "reality" {
+		type validatorProvider interface {
+			Validator() interface{}
+		}
+		type validatorSetter interface {
+			SetValidator(v interface{})
+		}
+		if vp, ok := ln.(validatorProvider); ok {
+			if vs, ok := h.(validatorSetter); ok {
+				vs.SetValidator(vp.Validator())
+			}
+		}
+	}
+
+	svc := service.NewService(ln, h, cfg.Logger)
+	go func() {
+		<-ctx.Done()
+		_ = svc.Close()
+	}()
+
+	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
+	return svc.Serve()
+}
+
+func runReverseServer(ctx context.Context, cfg config.Config) error {
+	cfg.Mode = config.ModeReverseServer
+
+	if cfg.Listen.Query.Get("bind") != "true" {
+		return fmt.Errorf("reverse server requires bind=true")
+	}
+	if !cfg.Listen.HasUserPass() {
+		return fmt.Errorf("reverse server with bind=true requires authentication (user/pass)")
+	}
+
+	h := revhandler.NewHandler(
+		handler.AuthOption(cfg.Listen.User),
+		handler.LoggerOption(cfg.Logger),
+	)
+	hmd := metadata.New(map[string]any{
+		"handshake_timeout": cfg.HandshakeTimeout,
+		"udp_idle":          cfg.UDPIdleTimeout,
+		"max_udp_sessions":  cfg.MaxUDPSessions,
+	})
+	if err := h.Init(hmd); err != nil {
+		return err
+	}
+
+	scheme := strings.ToLower(cfg.Listen.Scheme)
+	if scheme == "reality" || scheme == "vless+reality" {
+		return runReverseRealityServer(ctx, cfg, h)
+	}
+	lopts := []listener.Option{
+		listener.AddrOption(cfg.Listen.Address()),
+		listener.LoggerOption(cfg.Logger),
+	}
+	if protos := rev.NextProtosForScheme(scheme); len(protos) > 0 {
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{NextProtos: protos})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	}
+
+	var ln listener.Listener
+	if scheme == "http3" || scheme == "quic" {
+		ln = quiclistener.NewListener(lopts...)
+	} else {
+		newListener := registry.ListenerRegistry().Get("tcp")
+		if newListener == nil {
+			return fmt.Errorf("listener not registered for scheme tcp")
+		}
+		ln = newListener(lopts...)
+	}
+
 	lmd := metadata.New(map[string]any{
 		"handshake_timeout": cfg.HandshakeTimeout,
 	})
@@ -225,8 +362,151 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
+	cfg.Logger.Info("Forward internal reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
 	return svc.Serve()
+}
+
+func runReverseRealityServer(ctx context.Context, cfg config.Config, revHandler handler.Handler) error {
+	newHandler := registry.HandlerRegistry().Get("vless")
+	if newHandler == nil {
+		return fmt.Errorf("handler not registered for scheme vless")
+	}
+
+	pipeRouter := &reversePipeRouter{
+		handler: revHandler,
+		logger:  cfg.Logger,
+	}
+
+	vlessHandler := newHandler(
+		handler.RouterOption(pipeRouter),
+		handler.AuthOption(cfg.Listen.User),
+		handler.LoggerOption(cfg.Logger),
+	)
+	if err := vlessHandler.Init(nil); err != nil {
+		return err
+	}
+
+	newListener := registry.ListenerRegistry().Get("reality")
+	if newListener == nil {
+		return fmt.Errorf("listener not registered for scheme reality")
+	}
+
+	lopts := []listener.Option{
+		listener.AddrOption(cfg.Listen.Address()),
+		listener.LoggerOption(cfg.Logger),
+	}
+	ln := newListener(lopts...)
+
+	lmdMap := map[string]any{
+		metadata.KeyHost:        cfg.Listen.Host,
+		metadata.KeyPort:        cfg.Listen.Port,
+		metadata.KeySecurity:    cfg.Listen.Query.Get("security"),
+		metadata.KeyNetwork:     cfg.Listen.Query.Get("type"),
+		metadata.KeySNI:         cfg.Listen.Query.Get("sni"),
+		metadata.KeyFingerprint: cfg.Listen.Query.Get("fp"),
+		metadata.KeyPublicKey:   cfg.Listen.Query.Get("pbk"),
+		metadata.KeyShortID:     cfg.Listen.Query.Get("sid"),
+		metadata.KeySpiderX:     cfg.Listen.Query.Get("spiderx"),
+		metadata.KeyALPN:        cfg.Listen.Query.Get("alpn"),
+		metadata.KeyInsecure:    cfg.Insecure,
+		metadata.KeyFlow:        cfg.Listen.Query.Get("flow"),
+		"dest":                  cfg.Listen.Query.Get("dest"),
+		"privatekey":            cfg.Listen.Query.Get("key"),
+	}
+	if cfg.Listen.User != nil {
+		lmdMap[metadata.KeyUUID] = cfg.Listen.User.Username()
+	}
+	lmd := metadata.New(lmdMap)
+	if err := ln.Init(lmd); err != nil {
+		return err
+	}
+
+	type validatorProvider interface {
+		Validator() interface{}
+	}
+	type validatorSetter interface {
+		SetValidator(v interface{})
+	}
+	if vp, ok := ln.(validatorProvider); ok {
+		if vs, ok := vlessHandler.(validatorSetter); ok {
+			vs.SetValidator(vp.Validator())
+		}
+	}
+
+	svc := service.NewService(ln, vlessHandler, cfg.Logger)
+	go func() {
+		<-ctx.Done()
+		_ = svc.Close()
+	}()
+
+	cfg.Logger.Info("Forward internal reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
+	return svc.Serve()
+}
+
+func runReverseClient(ctx context.Context, cfg config.Config) error {
+	cfg.Mode = config.ModeReverseClient
+
+	if cfg.Listen.FAddress == "" {
+		return fmt.Errorf("reverse client requires target address in listen path")
+	}
+
+	var hops []endpoint.Endpoint
+	if len(cfg.ForwardChain) > 0 {
+		hops = cfg.ForwardChain
+	} else if cfg.Forward != nil {
+		hops = []endpoint.Endpoint{*cfg.Forward}
+	}
+	if len(hops) == 0 {
+		return fmt.Errorf("reverse client requires forward target")
+	}
+
+	route, err := builder.BuildReverseRoute(cfg, hops)
+	if err != nil {
+		return err
+	}
+	forward := hops[len(hops)-1]
+
+	client := revclient.New(cfg, route, forward)
+	if err := client.Run(ctx); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("reverse client run error: %w", err)
+	}
+	return nil
+}
+
+type reversePipeRouter struct {
+	handler handler.Handler
+	logger  *logging.Logger
+}
+
+func (r *reversePipeRouter) Route(ctx context.Context, _ string, _ string) (chain.Route, error) {
+	return reversePipeRoute{handler: r.handler, logger: r.logger}, nil
+}
+
+type reversePipeRoute struct {
+	handler handler.Handler
+	logger  *logging.Logger
+}
+
+func (r reversePipeRoute) Dial(ctx context.Context, _, _ string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client, server := net.Pipe()
+	go func() {
+		if err := r.handler.Handle(ctx, server); err != nil && r.logger != nil {
+			r.logger.Debug("Reverse server pipe handler error: %v", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		_ = client.Close()
+		_ = server.Close()
+	}()
+	return client, nil
+}
+
+func (r reversePipeRoute) Nodes() []*chain.Node {
+	return nil
 }
 
 func runPortForward(ctx context.Context, cfg config.Config) error {
@@ -275,7 +555,10 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 		listenerScheme = "dtls"
 	}
 	if transport == transportH2 {
-		listenerScheme = "http2"
+		listenerScheme = "h2"
+	}
+	if transport == transportH3 {
+		listenerScheme = "h3"
 	}
 	newListener := registry.ListenerRegistry().Get(listenerScheme)
 	if newListener == nil {
@@ -296,6 +579,14 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 	case transportH2:
 		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
 			NextProtos: []string{"h2"},
+		})
+		if err != nil {
+			return err
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case transportH3:
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
+			NextProtos: []string{"h3"},
 		})
 		if err != nil {
 			return err
@@ -487,8 +778,12 @@ func parseRouteConfig(path string) (config.Config, error) {
 
 func isProxyServer(scheme string) bool {
 	base, transport := splitSchemeTransport(scheme)
-	if base == "http3" {
+	if base == "http2" || base == "http3" {
 		return transport == transportNone
+	}
+	// VLESS+Reality 是代理服务器
+	if base == "vless" {
+		return true
 	}
 	switch base {
 	case "http", "socks5", "socks5h":
@@ -496,6 +791,32 @@ func isProxyServer(scheme string) bool {
 	default:
 		return false
 	}
+}
+
+func isReverseServer(cfg config.Config) bool {
+	if cfg.Listen.Query.Get("bind") != "true" {
+		return false
+	}
+	switch strings.ToLower(cfg.Listen.Scheme) {
+	case "tls", "https", "http3", "quic", "reality", "vless+reality":
+		return true
+	default:
+		return false
+	}
+}
+
+func isReverseClient(cfg config.Config) bool {
+	ls := strings.ToLower(cfg.Listen.Scheme)
+	if ls != "rtcp" && ls != "rudp" {
+		return false
+	}
+	if cfg.Listen.FAddress == "" {
+		return false
+	}
+	if cfg.Forward == nil && len(cfg.ForwardChain) == 0 {
+		return false
+	}
+	return true
 }
 
 func isPortForward(cfg config.Config) bool {
@@ -537,7 +858,8 @@ const (
 	transportNone transportKind = ""
 	transportTLS  transportKind = "tls"
 	transportDTLS transportKind = "dtls"
-	transportH2   transportKind = "http2"
+	transportH2   transportKind = "h2"
+	transportH3   transportKind = "h3"
 )
 
 func splitSchemeTransport(scheme string) (base string, transport transportKind) {
@@ -546,20 +868,38 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 	case "https":
 		return "http", transportTLS
 	case "http2":
-		return "http", transportH2
+		return "http2", transportNone
+	case "http3":
+		return "http3", transportNone
 	case "tls":
-		return "tcp", transportTLS
+		return "http", transportTLS
+	case "h2":
+		return "http", transportH2
+	case "h3":
+		return "http", transportH3
 	case "dtls":
 		return "tcp", transportDTLS
+	// VLESS + Reality
+	case "vless", "vless+reality", "reality":
+		return "vless", transportNone
+	case "vless+tls":
+		return "vless", transportTLS
 	}
-	if strings.HasSuffix(s, "+http2") {
-		return strings.TrimSuffix(s, "+http2"), transportH2
+	if strings.HasSuffix(s, "+h2") {
+		return strings.TrimSuffix(s, "+h2"), transportH2
+	}
+	if strings.HasSuffix(s, "+h3") {
+		return strings.TrimSuffix(s, "+h3"), transportH3
 	}
 	if strings.HasSuffix(s, "+tls") {
 		return strings.TrimSuffix(s, "+tls"), transportTLS
 	}
 	if strings.HasSuffix(s, "+dtls") {
 		return strings.TrimSuffix(s, "+dtls"), transportDTLS
+	}
+	// VLESS + Reality 带后缀
+	if strings.HasSuffix(s, "+reality") {
+		return strings.TrimSuffix(s, "+reality"), transportNone
 	}
 	return s, transportNone
 }
@@ -574,15 +914,27 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 		handlerScheme = "http"
 		listenerScheme = "http3"
 		return handlerScheme, listenerScheme, transportNone
+	case "http2":
+		handlerScheme = "http"
+		listenerScheme = "http2"
+		return handlerScheme, listenerScheme, transportNone
 	case "socks5h":
 		handlerScheme = "socks5"
+	// VLESS + Reality
+	case "vless":
+		handlerScheme = "vless"
+		listenerScheme = "reality"
+		return handlerScheme, listenerScheme, transportNone
 	}
 
 	if transport == transportDTLS {
 		listenerScheme = "dtls"
 	}
 	if transport == transportH2 {
-		listenerScheme = "http2"
+		listenerScheme = "h2"
+	}
+	if transport == transportH3 {
+		listenerScheme = "h3"
 	}
 	return
 }
