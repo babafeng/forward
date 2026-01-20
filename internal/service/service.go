@@ -74,10 +74,16 @@ func (s *defaultService) Serve() error {
 		wg.Add(1)
 		go func(c net.Conn) {
 			defer wg.Done()
+			ctx := context.Background()
+			if cc, ok := c.(interface{ Context() context.Context }); ok {
+				if cctx := cc.Context(); cctx != nil {
+					ctx = cctx
+				}
+			}
 			if s.logger != nil {
 				s.logger.Debug("Service handling %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
 			}
-			if err := s.handler.Handle(context.Background(), c); err != nil && s.logger != nil {
+			if err := s.handler.Handle(ctx, c); err != nil && s.logger != nil {
 				s.logger.Debug("Service handler error %s -> %s: %v", c.RemoteAddr().String(), c.LocalAddr().String(), err)
 			}
 			if s.logger != nil {

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/http2"
 
 	"forward/internal/connector"
+	"forward/internal/handler/udptun"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -55,8 +56,12 @@ func (c *Connector) Init(_ metadata.Metadata) error {
 }
 
 func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address string, _ ...connector.ConnectOption) (net.Conn, error) {
-	if !strings.HasPrefix(strings.ToLower(network), "tcp") {
-		return nil, fmt.Errorf("http connector supports tcp only")
+	network = strings.ToLower(strings.TrimSpace(network))
+	switch {
+	case strings.HasPrefix(network, "tcp"):
+	case strings.HasPrefix(network, "udp"):
+	default:
+		return nil, fmt.Errorf("http connector supports tcp/udp only")
 	}
 
 	if tlsConn, ok := conn.(*tls.Conn); ok {
@@ -67,19 +72,22 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 			if err != nil {
 				return nil, err
 			}
-			return c.dialH2(ctx, cc, address)
+			return c.dialH2(ctx, cc, network, address)
 		}
 	}
 
-	return c.dialHTTP1(ctx, conn, address)
+	return c.dialHTTP1(ctx, conn, network, address)
 }
 
-func (c *Connector) dialHTTP1(ctx context.Context, conn net.Conn, address string) (net.Conn, error) {
+func (c *Connector) dialHTTP1(ctx context.Context, conn net.Conn, network, address string) (net.Conn, error) {
 	if deadline := deadlineFromContext(ctx, c.timeout); !deadline.IsZero() {
 		_ = conn.SetDeadline(deadline)
 	}
 
 	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", address, address)
+	if isUDP(network) {
+		req += "X-Forward-Protocol: udp\r\n"
+	}
 	if c.authVal != "" {
 		req += fmt.Sprintf("Proxy-Authorization: %s\r\n", c.authVal)
 	}
@@ -101,18 +109,28 @@ func (c *Connector) dialHTTP1(ctx context.Context, conn net.Conn, address string
 
 	_ = conn.SetDeadline(time.Time{})
 	if br.Buffered() > 0 {
-		return &readWriteConn{Conn: conn, r: br}, nil
+		conn = &readWriteConn{Conn: conn, r: br}
+	}
+	if isUDP(network) {
+		udpAddr, err := net.ResolveUDPAddr("udp", address)
+		if err != nil {
+			return nil, err
+		}
+		return udptun.ClientConn(conn, udpAddr), nil
 	}
 	return conn, nil
 }
 
-func (c *Connector) dialH2(ctx context.Context, cc *http2.ClientConn, address string) (net.Conn, error) {
+func (c *Connector) dialH2(ctx context.Context, cc *http2.ClientConn, network, address string) (net.Conn, error) {
 	pr, pw := io.Pipe()
 	req, err := stdhttp.NewRequestWithContext(ctx, "CONNECT", "//"+address, pr)
 	if err != nil {
 		return nil, err
 	}
 	req.Host = address
+	if isUDP(network) {
+		req.Header.Set("X-Forward-Protocol", "udp")
+	}
 	if c.authVal != "" {
 		req.Header.Set("Proxy-Authorization", c.authVal)
 	}
@@ -125,14 +143,22 @@ func (c *Connector) dialH2(ctx context.Context, cc *http2.ClientConn, address st
 		return nil, fmt.Errorf("http2 proxy connect failed: %s", resp.Status)
 	}
 
-	return &h2Conn{
+	conn := &h2Conn{
 		r: resp.Body,
 		w: pw,
 		close: func() error {
 			_ = resp.Body.Close()
 			return pw.Close()
 		},
-	}, nil
+	}
+	if isUDP(network) {
+		udpAddr, err := net.ResolveUDPAddr("udp", address)
+		if err != nil {
+			return nil, err
+		}
+		return udptun.ClientConn(conn, udpAddr), nil
+	}
+	return conn, nil
 }
 
 type h2Conn struct {
@@ -143,10 +169,10 @@ type h2Conn struct {
 
 func (c *h2Conn) Read(p []byte) (int, error)  { return c.r.Read(p) }
 func (c *h2Conn) Write(p []byte) (int, error) { return c.w.Write(p) }
-func (c *h2Conn) Close() error                 { return c.close() }
-func (c *h2Conn) LocalAddr() net.Addr          { return nil }
-func (c *h2Conn) RemoteAddr() net.Addr         { return nil }
-func (c *h2Conn) SetDeadline(time.Time) error  { return nil }
+func (c *h2Conn) Close() error                { return c.close() }
+func (c *h2Conn) LocalAddr() net.Addr         { return nil }
+func (c *h2Conn) RemoteAddr() net.Addr        { return nil }
+func (c *h2Conn) SetDeadline(time.Time) error { return nil }
 func (c *h2Conn) SetReadDeadline(time.Time) error {
 	return nil
 }
@@ -174,4 +200,8 @@ func deadlineFromContext(ctx context.Context, fallback time.Duration) time.Time 
 		return time.Now().Add(fallback)
 	}
 	return time.Time{}
+}
+
+func isUDP(network string) bool {
+	return strings.HasPrefix(network, "udp")
 }
