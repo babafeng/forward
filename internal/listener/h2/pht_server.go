@@ -1,4 +1,4 @@
-package http3
+package h2
 
 import (
 	"bufio"
@@ -15,30 +15,34 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
+	"golang.org/x/net/http2"
 
 	"forward/base/logging"
 	"forward/base/pool"
-	phtshared "forward/internal/http3"
+	phtshared "forward/base/transport/h2"
 )
 
 const (
-	defaultBacklog        = 128
-	defaultReadBufferSize = 32 * 1024
-	defaultReadTimeout    = 10 * time.Second
+	defaultBacklog           = 128
+	defaultReadBufferSize    = 32 * 1024
+	defaultReadTimeout       = 10 * time.Second
+	defaultReadHeaderTimeout = 30 * time.Second
 )
 
 type serverOptions struct {
-	authorizePath  string
-	pushPath       string
-	pullPath       string
-	backlog        int
-	tlsEnabled     bool
-	tlsConfig      *tls.Config
-	readBufferSize int
-	readTimeout    time.Duration
-	logger         *logging.Logger
+	authorizePath     string
+	pushPath          string
+	pullPath          string
+	backlog           int
+	tlsConfig         *tls.Config
+	readBufferSize    int
+	readTimeout       time.Duration
+	readHeaderTimeout time.Duration
+	maxStreams        uint32
+	idleTimeout       time.Duration
+	readIdleTimeout   time.Duration
+	pingTimeout       time.Duration
+	logger            *logging.Logger
 }
 
 type ServerOption func(opts *serverOptions)
@@ -63,12 +67,6 @@ func TLSConfigServerOption(tlsConfig *tls.Config) ServerOption {
 	}
 }
 
-func EnableTLSServerOption(enable bool) ServerOption {
-	return func(opts *serverOptions) {
-		opts.tlsEnabled = enable
-	}
-}
-
 func ReadBufferSizeServerOption(n int) ServerOption {
 	return func(opts *serverOptions) {
 		opts.readBufferSize = n
@@ -81,6 +79,36 @@ func ReadTimeoutServerOption(timeout time.Duration) ServerOption {
 	}
 }
 
+func ReadHeaderTimeoutServerOption(timeout time.Duration) ServerOption {
+	return func(opts *serverOptions) {
+		opts.readHeaderTimeout = timeout
+	}
+}
+
+func MaxStreamsServerOption(n uint32) ServerOption {
+	return func(opts *serverOptions) {
+		opts.maxStreams = n
+	}
+}
+
+func IdleTimeoutServerOption(timeout time.Duration) ServerOption {
+	return func(opts *serverOptions) {
+		opts.idleTimeout = timeout
+	}
+}
+
+func ReadIdleTimeoutServerOption(timeout time.Duration) ServerOption {
+	return func(opts *serverOptions) {
+		opts.readIdleTimeout = timeout
+	}
+}
+
+func PingTimeoutServerOption(timeout time.Duration) ServerOption {
+	return func(opts *serverOptions) {
+		opts.pingTimeout = timeout
+	}
+}
+
 func LoggerServerOption(logger *logging.Logger) ServerOption {
 	return func(opts *serverOptions) {
 		opts.logger = logger
@@ -88,24 +116,24 @@ func LoggerServerOption(logger *logging.Logger) ServerOption {
 }
 
 type Server struct {
-	addr        net.Addr
-	httpServer  *http.Server
-	http3Server *http3.Server
-	cqueue      chan net.Conn
-	conns       sync.Map
-	closed      chan struct{}
+	addr       net.Addr
+	httpServer *http.Server
+	cqueue     chan net.Conn
+	conns      sync.Map
+	closed     chan struct{}
 
 	options serverOptions
 }
 
 func NewServer(addr string, opts ...ServerOption) *Server {
 	options := serverOptions{
-		authorizePath:  "/authorize",
-		pushPath:       "/push",
-		pullPath:       "/pull",
-		backlog:        defaultBacklog,
-		readBufferSize: defaultReadBufferSize,
-		readTimeout:    defaultReadTimeout,
+		authorizePath:     "/authorize",
+		pushPath:          "/push",
+		pullPath:          "/pull",
+		backlog:           defaultBacklog,
+		readBufferSize:    defaultReadBufferSize,
+		readTimeout:       defaultReadTimeout,
+		readHeaderTimeout: defaultReadHeaderTimeout,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -121,11 +149,14 @@ func NewServer(addr string, opts ...ServerOption) *Server {
 	if options.readTimeout <= 0 {
 		options.readTimeout = defaultReadTimeout
 	}
+	if options.readHeaderTimeout <= 0 {
+		options.readHeaderTimeout = defaultReadHeaderTimeout
+	}
 
 	s := &Server{
 		httpServer: &http.Server{
 			Addr:              addr,
-			ReadHeaderTimeout: 30 * time.Second,
+			ReadHeaderTimeout: options.readHeaderTimeout,
 		},
 		cqueue:  make(chan net.Conn, options.backlog),
 		closed:  make(chan struct{}),
@@ -141,62 +172,9 @@ func NewServer(addr string, opts ...ServerOption) *Server {
 	return s
 }
 
-func NewHTTP3Server(addr string, quicConfig *quic.Config, opts ...ServerOption) *Server {
-	options := serverOptions{
-		authorizePath:  "/authorize",
-		pushPath:       "/push",
-		pullPath:       "/pull",
-		backlog:        defaultBacklog,
-		readBufferSize: defaultReadBufferSize,
-		readTimeout:    defaultReadTimeout,
-	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&options)
-		}
-	}
-	if options.backlog <= 0 {
-		options.backlog = defaultBacklog
-	}
-	if options.readBufferSize <= 0 {
-		options.readBufferSize = defaultReadBufferSize
-	}
-	if options.readTimeout <= 0 {
-		options.readTimeout = defaultReadTimeout
-	}
-
-	s := &Server{
-		http3Server: &http3.Server{
-			Addr:       addr,
-			TLSConfig:  options.tlsConfig,
-			QUICConfig: quicConfig,
-		},
-		cqueue:  make(chan net.Conn, options.backlog),
-		closed:  make(chan struct{}),
-		options: options,
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc(options.authorizePath, s.handleAuthorize)
-	mux.HandleFunc(options.pushPath, s.handlePush)
-	mux.HandleFunc(options.pullPath, s.handlePull)
-	s.http3Server.Handler = mux
-
-	return s
-}
-
 func (s *Server) ListenAndServe() error {
-	if s.http3Server != nil {
-		network := "udp"
-		if isIPv4(s.http3Server.Addr) {
-			network = "udp4"
-		}
-		addr, err := net.ResolveUDPAddr(network, s.http3Server.Addr)
-		if err != nil {
-			return err
-		}
-		s.addr = addr
-		return s.http3Server.ListenAndServe()
+	if s.options.tlsConfig == nil {
+		return errors.New("missing tls config")
 	}
 
 	network := "tcp"
@@ -210,11 +188,19 @@ func (s *Server) ListenAndServe() error {
 	}
 
 	s.addr = ln.Addr()
-	if s.options.tlsEnabled {
-		s.httpServer.TLSConfig = s.options.tlsConfig
-		ln = tls.NewListener(ln, s.options.tlsConfig)
+	s.httpServer.TLSConfig = s.options.tlsConfig
+
+	h2srv := &http2.Server{
+		MaxConcurrentStreams: s.options.maxStreams,
+		IdleTimeout:          s.options.idleTimeout,
+		ReadIdleTimeout:      s.options.readIdleTimeout,
+		PingTimeout:          s.options.pingTimeout,
+	}
+	if err := http2.ConfigureServer(s.httpServer, h2srv); err != nil {
+		return err
 	}
 
+	ln = tls.NewListener(ln, s.options.tlsConfig)
 	return s.httpServer.Serve(ln)
 }
 
@@ -234,9 +220,6 @@ func (s *Server) Close() error {
 	default:
 		close(s.closed)
 
-		if s.http3Server != nil {
-			return s.http3Server.Close()
-		}
 		if s.httpServer != nil {
 			return s.httpServer.Close()
 		}

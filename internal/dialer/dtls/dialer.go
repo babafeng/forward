@@ -10,9 +10,9 @@ import (
 
 	"github.com/pion/dtls/v2"
 
+	dtlsutil "forward/base/transport/dtls"
 	"forward/internal/dialer"
 	"forward/internal/dialer/udp"
-	dtlsutil "forward/internal/dtls"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )

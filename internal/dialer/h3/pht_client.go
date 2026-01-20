@@ -1,4 +1,4 @@
-package http3
+package h3
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"forward/base/logging"
-	phtshared "forward/internal/http3"
+	phtshared "forward/base/transport/h3"
 )
 
 type phtClient struct {

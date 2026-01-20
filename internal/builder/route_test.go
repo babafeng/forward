@@ -2,17 +2,21 @@ package builder
 
 import "testing"
 
-func TestResolveTypesHTTP2(t *testing.T) {
+func TestResolveTypesSchemes(t *testing.T) {
 	tests := []struct {
 		scheme        string
 		wantConnector string
 		wantDialer    string
 	}{
-		{scheme: "http2", wantConnector: "http", wantDialer: "http2"},
-		{scheme: "http+http2", wantConnector: "http", wantDialer: "http2"},
-		{scheme: "socks5+http2", wantConnector: "socks5", wantDialer: "http2"},
-		{scheme: "socks5h+http2", wantConnector: "socks5", wantDialer: "http2"},
-		{scheme: "tcp+http2", wantConnector: "tcp", wantDialer: "http2"},
+		{scheme: "http2", wantConnector: "http2", wantDialer: "tls"},
+		{scheme: "http3", wantConnector: "http3", wantDialer: "http3"},
+		{scheme: "tls", wantConnector: "http", wantDialer: "tls"},
+		{scheme: "h2", wantConnector: "http", wantDialer: "h2"},
+		{scheme: "h3", wantConnector: "http", wantDialer: "h3"},
+		{scheme: "socks5+h2", wantConnector: "socks5", wantDialer: "h2"},
+		{scheme: "socks5+h3", wantConnector: "socks5", wantDialer: "h3"},
+		{scheme: "socks5h+h2", wantConnector: "socks5", wantDialer: "h2"},
+		{scheme: "tcp+h3", wantConnector: "tcp", wantDialer: "h3"},
 	}
 
 	for _, tt := range tests {
@@ -31,8 +35,8 @@ func TestResolveTypesHTTP2(t *testing.T) {
 	}
 }
 
-func TestResolveTypesHTTP2Unsupported(t *testing.T) {
-	if _, _, err := resolveTypes("udp+http2"); err == nil {
-		t.Fatal("expected udp+http2 to be unsupported")
+func TestResolveTypesUnsupported(t *testing.T) {
+	if _, _, err := resolveTypes("udp+h2"); err == nil {
+		t.Fatal("expected udp+h2 to be unsupported")
 	}
 }

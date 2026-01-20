@@ -1,4 +1,4 @@
-package http2
+package h2
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 )
 
 func init() {
-	registry.DialerRegistry().Register("http2", NewDialer)
+	registry.DialerRegistry().Register("h2", NewDialer)
 }
 
 type Dialer struct {

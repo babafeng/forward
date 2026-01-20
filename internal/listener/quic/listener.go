@@ -1,33 +1,37 @@
-package tcp
+package quic
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
 	"sync"
 
+	"github.com/quic-go/quic-go"
+
 	"forward/base/logging"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
+	"forward/internal/structs"
 )
 
-func init() {
-	registry.ListenerRegistry().Register("tcp", NewListener)
-	registry.ListenerRegistry().Register("http", NewListener)
-	registry.ListenerRegistry().Register("https", NewListener)
-	registry.ListenerRegistry().Register("http2", NewListener)
-	registry.ListenerRegistry().Register("socks5", NewListener)
-	registry.ListenerRegistry().Register("socks5h", NewListener)
-}
+var errMissingAddr = errors.New("missing listen address")
+var errMissingTLS = errors.New("missing tls config")
 
 type Listener struct {
 	addr      string
 	tlsConfig *tls.Config
 	logger    *logging.Logger
 
-	ln net.Listener
-	mu sync.Mutex
+	ln     *quic.Listener
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.Mutex
+}
+
+func init() {
+	registry.ListenerRegistry().Register("quic", NewListener)
 }
 
 func NewListener(opts ...listener.Option) listener.Listener {
@@ -35,7 +39,6 @@ func NewListener(opts ...listener.Option) listener.Listener {
 	for _, opt := range opts {
 		opt(&options)
 	}
-
 	return &Listener{
 		addr:      options.Addr,
 		tlsConfig: options.TLSConfig,
@@ -52,13 +55,15 @@ func (l *Listener) Init(_ metadata.Metadata) error {
 	if l.addr == "" {
 		return listener.NewBindError(errMissingAddr)
 	}
-	ln, err := net.Listen("tcp", l.addr)
+	if l.tlsConfig == nil {
+		return errMissingTLS
+	}
+
+	ln, err := quic.ListenAddr(l.addr, l.tlsConfig, nil)
 	if err != nil {
 		return listener.NewBindError(err)
 	}
-	if l.tlsConfig != nil {
-		ln = tls.NewListener(ln, l.tlsConfig)
-	}
+	l.ctx, l.cancel = context.WithCancel(context.Background())
 	l.ln = ln
 	return nil
 }
@@ -66,18 +71,44 @@ func (l *Listener) Init(_ metadata.Metadata) error {
 func (l *Listener) Accept() (net.Conn, error) {
 	l.mu.Lock()
 	ln := l.ln
+	ctx := l.ctx
 	l.mu.Unlock()
 	if ln == nil {
 		return nil, listener.ErrClosed
 	}
-	conn, err := ln.Accept()
+
+	qconn, err := ln.Accept(ctx)
 	if err != nil {
 		return nil, listener.NewAcceptError(err)
 	}
-	if l.logger != nil {
-		l.logger.Info("Listener accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
+
+	stream, err := qconn.AcceptStream(ctx)
+	if err != nil {
+		_ = qconn.CloseWithError(0, "")
+		return nil, listener.NewAcceptError(err)
 	}
-	return conn, nil
+
+	go func() {
+		for {
+			s, err := qconn.AcceptStream(ctx)
+			if err != nil {
+				return
+			}
+			_ = s.Close()
+		}
+	}()
+
+	if l.logger != nil {
+		l.logger.Info("Listener accepted %s -> %s", qconn.RemoteAddr().String(), qconn.LocalAddr().String())
+	}
+
+	return &structs.QuicStreamConn{
+		Stream:    stream,
+		Local:     qconn.LocalAddr(),
+		Remote:    qconn.RemoteAddr(),
+		Closer:    qconn,
+		CloseOnce: &sync.Once{},
+	}, nil
 }
 
 func (l *Listener) Addr() net.Addr {
@@ -93,8 +124,13 @@ func (l *Listener) Addr() net.Addr {
 func (l *Listener) Close() error {
 	l.mu.Lock()
 	ln := l.ln
+	cancel := l.cancel
 	l.ln = nil
+	l.cancel = nil
 	l.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if ln != nil {
 		if l.logger != nil {
 			l.logger.Info("Listener closed %s", ln.Addr().String())
@@ -103,5 +139,3 @@ func (l *Listener) Close() error {
 	}
 	return nil
 }
-
-var errMissingAddr = errors.New("missing listen address")

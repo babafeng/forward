@@ -1,4 +1,4 @@
-package http2
+package h2
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"forward/base/logging"
-	phtshared "forward/internal/http2"
+	phtshared "forward/base/transport/h2"
 )
 
 type phtClient struct {
