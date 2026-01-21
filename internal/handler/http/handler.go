@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	stdhttp "net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -215,7 +216,7 @@ func (l *oneShotListener) Addr() net.Addr {
 
 // ServeHTTP handles HTTP/1.1, HTTP/2, and HTTP/3 proxy requests when bridged via listener metadata.
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	h.logf(logging.LevelInfo, "HTTP request %s %s from %s host=%s", r.Method, r.URL.String(), r.RemoteAddr, r.Host)
+	h.logf(logging.LevelInfo, "HTTP request %s %s from %s host=%s", r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if isUDPRequest(r) {
@@ -798,4 +799,31 @@ func routeSummary(rt chain.Route) string {
 		return "DIRECT"
 	}
 	return strings.Join(parts, " -> ")
+}
+
+// redactURL 移除 URL 中的敏感信息（userinfo 和敏感 query 参数）
+func redactURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	// 复制 URL 避免修改原始对象
+	redacted := *u
+	redacted.User = nil
+
+	// 脱敏敏感 query 参数
+	sensitiveKeys := []string{
+		"password", "pwd", "pass", "passwd",
+		"token", "auth", "key", "secret",
+		"psk", "session", "credential", "api_key",
+	}
+	if redacted.RawQuery != "" {
+		q := redacted.Query()
+		for _, k := range sensitiveKeys {
+			if q.Has(k) {
+				q.Set(k, "[REDACTED]")
+			}
+		}
+		redacted.RawQuery = q.Encode()
+	}
+	return redacted.String()
 }

@@ -8,7 +8,9 @@ import (
 	"forward/internal/config"
 )
 
-type defaultRoute struct{}
+type defaultRoute struct {
+	dialTimeout time.Duration
+}
 
 var defaultResolver *net.Resolver
 
@@ -44,8 +46,11 @@ func SetDefaultResolver(dnsServers []string) {
 	}
 }
 
-func (defaultRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
-	timeout := config.DefaultDialTimeout
+func (r defaultRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+	timeout := r.dialTimeout
+	if timeout <= 0 {
+		timeout = config.DefaultDialTimeout
+	}
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -56,19 +61,30 @@ func (defaultRoute) Dial(ctx context.Context, network, address string) (net.Conn
 	return d.DialContext(ctx, network, address)
 }
 
-func (defaultRoute) Nodes() []*Node {
+func (r defaultRoute) Nodes() []*Node {
 	return nil
 }
 
+// NewDefaultRoute 创建带有指定超时的默认直连路由
+func NewDefaultRoute(dialTimeout time.Duration) Route {
+	return defaultRoute{dialTimeout: dialTimeout}
+}
+
 type chainRoute struct {
-	nodes []*Node
+	nodes       []*Node
+	dialTimeout time.Duration
 }
 
 func NewRoute(nodes ...*Node) Route {
+	return NewRouteWithTimeout(0, nodes...)
+}
+
+// NewRouteWithTimeout 创建带有指定超时的路由
+func NewRouteWithTimeout(dialTimeout time.Duration, nodes ...*Node) Route {
 	if len(nodes) == 0 {
-		return defaultRoute{}
+		return defaultRoute{dialTimeout: dialTimeout}
 	}
-	r := &chainRoute{}
+	r := &chainRoute{dialTimeout: dialTimeout}
 	r.nodes = append(r.nodes, nodes...)
 	return r
 }
