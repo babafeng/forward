@@ -494,6 +494,13 @@ func startPortForwardServer(t *testing.T, scheme, target string) (endpoint.Endpo
 			t.Fatalf("h3 tls config: %v", err)
 		}
 		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
+	case transportQuic:
+		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{NextProtos: []string{"h3"}})
+		if err != nil {
+			cancel()
+			t.Fatalf("quic tls config: %v", err)
+		}
+		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
 	}
 
 	ln := newListener(lopts...)
