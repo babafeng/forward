@@ -81,6 +81,10 @@ func BuildReverseRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route
 			if err := d.Init(dmd); err != nil {
 				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
 			}
+		} else {
+			if err := d.Init(nil); err != nil {
+				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
+			}
 		}
 
 		newConnector := registry.ConnectorRegistry().Get(connectorName)

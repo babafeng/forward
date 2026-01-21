@@ -60,10 +60,14 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 		}
 		d := newDialer(dialerOpts...)
 
-		// 为 Reality Dialer 初始化 metadata
+		// Dialer 初始化：Reality 需要 metadata，其它使用默认值
 		if dialerName == "reality" {
 			dmd := buildDialerMetadata(hop)
 			if err := d.Init(dmd); err != nil {
+				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
+			}
+		} else {
+			if err := d.Init(nil); err != nil {
 				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
 			}
 		}
