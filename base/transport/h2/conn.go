@@ -3,6 +3,7 @@ package h2
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -92,7 +93,11 @@ func (c *clientConn) write(b []byte) (n int, err error) {
 		r = buf
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.pushURL, r)
+	// 使用带超时的 context 避免请求卡死
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.pushURL, r)
 	if err != nil {
 		return 0, err
 	}
@@ -118,7 +123,11 @@ func (c *clientConn) readLoop() {
 
 		done := true
 		err := func() error {
-			req, err := http.NewRequest(http.MethodGet, c.pullURL, nil)
+			// 使用带超时的 context
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.pullURL, nil)
 			if err != nil {
 				return err
 			}
@@ -134,6 +143,9 @@ func (c *clientConn) readLoop() {
 			}
 
 			scanner := bufio.NewScanner(resp.Body)
+			// 增大 scanner buffer 以支持更大的 payload（1MB base64 ≈ 768KB 原始数据）
+			const maxTokenSize = 1024 * 1024
+			scanner.Buffer(make([]byte, maxTokenSize), maxTokenSize)
 			for scanner.Scan() {
 				done = false
 				if scanner.Text() == "" {
