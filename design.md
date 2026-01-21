@@ -22,13 +22,13 @@
 
 ### 核心功能
 
-| 功能           | 描述                                     |
-| -------------- | ---------------------------------------- |
-| **端口转发**   | TCP/UDP 端口转发，支持灵活的转发链配置   |
+| 功能           | 描述                                                                |
+| -------------- | ------------------------------------------------------------------- |
+| **端口转发**   | TCP/UDP 端口转发，支持灵活的转发链配置                              |
 | **代理服务器** | HTTP/SOCKS5/HTTPS/HTTP2/HTTP3/DTLS 代理协议（tls:// 视为 https://） |
-| **内网穿透**   | 支持反向代理，将内网服务安全暴露到公网   |
-| **智能路由**   | 基于域名、IP、GeoIP 的精细化流量分流规则 |
-| **安全强化**   | 默认启用 TLS 验证，支持 TLS/DTLS 加密传输 |
+| **内网穿透**   | 支持反向代理，将内网服务安全暴露到公网                              |
+| **智能路由**   | 基于域名、IP、GeoIP 的精细化流量分流规则                            |
+| **安全强化**   | 默认启用 TLS 验证，支持 TLS/DTLS 加密传输                           |
 
 ### 设计哲学
 
@@ -133,6 +133,7 @@ type Listener interface {
 *   `http3`: HTTP/3 代理监听（QUIC + CONNECT）。
 *   `h2`: HTTP/2 传输隧道监听（TLS + PHT）。
 *   `h3`: HTTP/3 传输隧道监听（QUIC + PHT）。
+*   `quic`: Raw QUIC 监听（纯 QUIC 传输）。
 *   `dtls`: DTLS 监听（UDP + DTLS）。
 
 ### 2. Handler (入站处理器)
@@ -164,6 +165,7 @@ type Dialer interface {
 *   `dtls`: 在 UDP 之上封装 DTLS 握手。
 *   `h2`: HTTP/2 传输隧道（TLS + PHT，多路复用）。
 *   `h3`: HTTP/3 传输隧道（QUIC + PHT，多路复用）。
+*   `quic`: Raw QUIC 拨号（纯 QUIC 传输）。
 *   `http3`: HTTP/3 代理拨号（QUIC）。
 
 ### 4. Connector (协议层连接器)
@@ -196,26 +198,28 @@ type Connector interface {
 
 ## 支持的协议
 
-| 方案                | Listener (入站) | Dialer (传输) | Connector (出站握手) | 说明                         |
-| :------------------ | :-------------: | :-----------: | :------------------: | :--------------------------- |
-| **TCP**             |        ✅        |       ✅       |          ✅           | 端口转发/直连                 |
-| **UDP**             |        ✅        |       ✅       |          -           | UDP 端口转发；代理可走 UDP 隧道 |
-| **HTTP**            |        ✅        |       -       |          ✅           | HTTP 代理 / CONNECT           |
-| **HTTP+TLS/HTTPS**  |        ✅        |     ✅ (tls)    |          ✅           | HTTP over TLS (H1/H2)         |
-| **HTTP+DTLS**       |        ✅        |    ✅ (dtls)    |          ✅           | HTTP over DTLS                |
-| **SOCKS5**          |        ✅        |       -       |          ✅           | 标准 SOCKS5                   |
-| **SOCKS5H**         |        ✅        |       -       |          ✅           | SOCKS5 (服务端解析域名)       |
-| **SOCKS5+TLS**      |        ✅        |     ✅ (tls)    |          ✅           | SOCKS5 over TLS               |
-| **SOCKS5+DTLS**     |        ✅        |    ✅ (dtls)    |          ✅           | SOCKS5 over DTLS              |
-| **TCP+TLS**         |        ✅        |     ✅ (tls)    |          ✅           | 加密端口转发                  |
-| **TCP+DTLS**        |        ✅        |    ✅ (dtls)    |          ✅           | 加密端口转发                  |
-| **HTTP2 (代理)**    |        ✅        |    ✅ (tls)     |       ✅ (http2)      | HTTP/2 代理 (CONNECT over h2) |
-| **HTTP3 (代理)**    |        ✅        |   ✅ (http3)    |       ✅ (http3)      | HTTP/3 代理 (CONNECT over h3) |
-| **H2 (隧道)**        |        ✅        |     ✅ (h2)     |          ✅           | HTTP/2 传输隧道 (PHT，多路复用) |
-| **H3 (隧道)**        |        ✅        |     ✅ (h3)     |          ✅           | HTTP/3 传输隧道 (PHT，多路复用) |
-| **VLESS+Reality**   |        ✅        |   ✅ (reality)  |        ✅ (vless)      | VLESS 代理 + Reality 传输      |
-| **RTCP**            |        -         |       -        |          -            | 反向 TCP 穿透客户端 (rtcp)     |
-| **RUDP**            |        -         |       -        |          -            | 反向 UDP 穿透客户端 (rudp)     |
+| 方案               | Listener (入站) | Dialer (传输) | Connector (出站握手) | 说明                            |
+| :----------------- | :-------------: | :-----------: | :------------------: | :------------------------------ |
+| **TCP**            |        ✅        |       ✅       |          ✅           | 端口转发/直连                   |
+| **UDP**            |        ✅        |       ✅       |          -           | UDP 端口转发；代理可走 UDP 隧道 |
+| **HTTP**           |        ✅        |       -       |          ✅           | HTTP 代理 / CONNECT             |
+| **HTTP+TLS/HTTPS** |        ✅        |    ✅ (tls)    |          ✅           | HTTP over TLS (H1/H2)           |
+| **HTTP+DTLS**      |        ✅        |   ✅ (dtls)    |          ✅           | HTTP over DTLS                  |
+| **SOCKS5**         |        ✅        |       -       |          ✅           | 标准 SOCKS5                     |
+| **SOCKS5H**        |        ✅        |       -       |          ✅           | SOCKS5 (服务端解析域名)         |
+| **SOCKS5+TLS**     |        ✅        |    ✅ (tls)    |          ✅           | SOCKS5 over TLS                 |
+| **SOCKS5+DTLS**    |        ✅        |   ✅ (dtls)    |          ✅           | SOCKS5 over DTLS                |
+| **TCP+TLS**        |        ✅        |    ✅ (tls)    |          ✅           | 加密端口转发                    |
+| **TCP+DTLS**       |        ✅        |   ✅ (dtls)    |          ✅           | 加密端口转发                    |
+| **HTTP2 (代理)**   |        ✅        |    ✅ (tls)    |      ✅ (http2)       | HTTP/2 代理 (CONNECT over h2)   |
+| **HTTP3 (代理)**   |        ✅        |   ✅ (http3)   |      ✅ (http3)       | HTTP/3 代理 (CONNECT over h3)   |
+| **H2 (隧道)**      |        ✅        |    ✅ (h2)     |          ✅           | HTTP/2 传输隧道 (PHT，多路复用) |
+| **H2 (隧道)**      |        ✅        |    ✅ (h2)     |          ✅           | HTTP/2 传输隧道 (PHT，多路复用) |
+| **H3 (隧道)**      |        ✅        |    ✅ (h3)     |          ✅           | HTTP/3 传输隧道 (PHT，多路复用) |
+| **Raw QUIC**       |        ✅        |   ✅ (quic)    |          -           | 原始 QUIC 传输 (无 HTTP 语义)   |
+| **VLESS+Reality**  |        ✅        |  ✅ (reality)  |      ✅ (vless)       | VLESS 代理 + Reality 传输       |
+| **RTCP**           |        -        |       -       |          -           | 反向 TCP 穿透客户端 (rtcp)      |
+| **RUDP**           |        -        |       -       |          -           | 反向 UDP 穿透客户端 (rudp)      |
 
 说明：
 *   `https://` 等价 `http+tls://`，`tls://` 等价 `https://`，`dtls://` 等价 `tcp+dtls://`。
@@ -241,14 +245,14 @@ type Connector interface {
 
 ### E2E 测试矩阵（`tests/`）
 
-| 功能 | 覆盖测试 | 说明 |
-| --- | --- | --- |
-| TCP 转发 + 传输层组合 | `TestPortForwardTransports` | 覆盖 tcp/tls/dtls/h2/h3 |
-| UDP 端口转发 | `TestUDPPortForward` | 覆盖 udp forward |
-| 代理协议（基础） | `TestProxySchemesTCP` | 覆盖 http/https/tls/http2/http3/socks5/socks5h |
-| 传输隧道代理 | `TestProxyTransportTunnels` | 覆盖 socks5+tls/h2/h3 |
-| 反向穿透 | `TestReverseTCPOverTLS` | 覆盖 rtcp + tls |
-| VLESS+Reality 代理 | `TestProxyVlessReality` | 覆盖 reality 传输 + vless 握手 |
+| 功能                  | 覆盖测试                    | 说明                                           |
+| --------------------- | --------------------------- | ---------------------------------------------- |
+| TCP 转发 + 传输层组合 | `TestPortForwardTransports` | 覆盖 tcp/tls/dtls/h2/h3                        |
+| UDP 端口转发          | `TestUDPPortForward`        | 覆盖 udp forward                               |
+| 代理协议（基础）      | `TestProxySchemesTCP`       | 覆盖 http/https/tls/http2/http3/socks5/socks5h |
+| 传输隧道代理          | `TestProxyTransportTunnels` | 覆盖 socks5+tls/h2/h3                          |
+| 反向穿透              | `TestReverseTCPOverTLS`     | 覆盖 rtcp + tls                                |
+| VLESS+Reality 代理    | `TestProxyVlessReality`     | 覆盖 reality 传输 + vless 握手                 |
 
 说明：反向 `rudp`、反向 `quic/http3` 与更多路由规则的 e2e 链路暂未覆盖，可按需补充。
 

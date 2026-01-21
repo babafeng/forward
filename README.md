@@ -1,14 +1,15 @@
 # forward
 
-forward 是一个用 Go 编写的安全、轻量、高性能的端口转发与代理工具。支持 TCP/UDP 端口转发、内网穿透（反向代理）以及多种代理协议（HTTP、SOCKS5、TLS）。
+forward 是一个用 Go 编写的安全、轻量、高性能的端口转发与代理工具。支持 TCP/UDP 端口转发、内网穿透（反向代理）以及多种代理协议
 
 ## 功能特性
 
 * **端口转发**：支持 TCP/UDP 转发，并支持代理链。
 * **内网穿透（反向代理）**：通过反向隧道将本地服务暴露到公网（TLS/QUIC/VLESS+REALITY）。
-* **代理服务器**：支持 HTTP/SOCKS5/TLS/QUIC/VLESS+REALITY 代理服务端。
+* **代理服务器**：支持 HTTP/SOCKS5/TLS/HTTP3/VLESS+REALITY 代理服务端。
+* **传输协议**：支持 TCP/UDP/TLS/DTLS/HTTP2/HTTP3/QUIC(Raw) 作为底层传输通道。
 * **代理路由**：基于规则将流量路由到多个上游代理（INI 配置）。
-* **多路复用**：TCP 使用 Yamux，UDP（计划中）使用 QUIC 以提升性能。
+* **多路复用**：TCP 使用 Yamux
 
 ## 安装
 
@@ -57,6 +58,12 @@ forward -F tls://user:pass@your.server.com:2333
 ```bash
 # 支持 tls / quic / http2 / http1 / http3
 forward -L "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
+
+# HTTP/3 代理（标准 HTTP/3 代理）
+forward -L http3://:443 --debug
+
+# SOCKS5 over Raw QUIC (无 HTTP 头部，纯 QUIC 隧道)
+forward -L socks5+quic://:443 --debug
 
 # 客户端：如果是自签证书，设置 ca 选项
 forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer&sni=your.server.com"
@@ -115,6 +122,7 @@ forward -L http://:8080 -F http://S3:8080 -F http://S2:8080 -F http://S1:8080
 | http/https/tls | http/https/tls/socks5     | 标准 TCP 链式代理            |
 | socks5         | quic/http3/http/https/tls | SOCKS5 支持 UDP，可承载 QUIC |
 | vless/reality  | http/https/tls/socks5     | 仅支持 TCP 传输 (`type=tcp`) |
+| tcp            | quic                      | Raw QUIC 隧道                |
 
 **QUIC/HTTP3 多跳示例：**
 
