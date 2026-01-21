@@ -15,6 +15,7 @@ func TestPortForwardTransports(t *testing.T) {
 		"tcp+dtls",
 		"tcp+h2",
 		"tcp+h3",
+		"quic",
 	}
 
 	for _, scheme := range cases {

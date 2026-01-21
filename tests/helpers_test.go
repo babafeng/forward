@@ -137,7 +137,7 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 		return "http", transportTLS
 	case "http2":
 		return "http2", transportNone
-	case "http3":
+	case "http3", "quic":
 		return "http3", transportNone
 	case "tls":
 		return "http", transportTLS
@@ -176,10 +176,10 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 	listenerScheme = base
 
 	switch base {
-	case "http3":
+	case "http3", "quic":
 		handlerScheme = "http"
 		listenerScheme = "http3"
-		return handlerScheme, listenerScheme, transportNone
+		return handlerScheme, "quic", transportNone
 	case "http2":
 		handlerScheme = "http"
 		listenerScheme = "http2"
@@ -228,6 +228,7 @@ func dialWithRetry(t *testing.T, route chain.Route, network, address string) net
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		conn, err := route.Dial(ctx, network, address)
 		if err == nil {
+			cancel()
 			return conn
 		}
 		cancel()
@@ -273,7 +274,7 @@ func startProxyServer(t *testing.T, scheme string, user *url.Userinfo, query url
 	handlerScheme, listenerScheme, transport := normalizeProxySchemes(scheme)
 
 	port := freeTCPPort(t)
-	if listenerScheme == "http3" || listenerScheme == "h3" || listenerScheme == "dtls" {
+	if listenerScheme == "http3" || listenerScheme == "h3" || listenerScheme == "dtls" || listenerScheme == "quic" {
 		port = freeUDPPort(t)
 	}
 
@@ -304,7 +305,7 @@ func startProxyServer(t *testing.T, scheme string, user *url.Userinfo, query url
 	}
 
 	switch {
-	case listenerScheme == "http3" || listenerScheme == "h3":
+	case listenerScheme == "http3" || listenerScheme == "h3" || listenerScheme == "quic":
 		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{NextProtos: []string{"h3"}})
 		if err != nil {
 			cancel()

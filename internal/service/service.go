@@ -22,6 +22,7 @@ type defaultService struct {
 	listener listener.Listener
 	handler  handler.Handler
 	logger   *logging.Logger
+	conns    sync.Map
 }
 
 func NewService(ln listener.Listener, h handler.Handler, logger *logging.Logger) Service {
@@ -37,7 +38,17 @@ func (s *defaultService) Addr() net.Addr {
 }
 
 func (s *defaultService) Close() error {
-	return s.listener.Close()
+	err := s.listener.Close()
+	s.conns.Range(func(key, value any) bool {
+		if cancel, ok := value.(context.CancelFunc); ok {
+			cancel()
+		}
+		if conn, ok := key.(net.Conn); ok {
+			conn.Close()
+		}
+		return true
+	})
+	return err
 }
 
 func (s *defaultService) Serve() error {
@@ -71,21 +82,28 @@ func (s *defaultService) Serve() error {
 			s.logger.Debug("Service accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		if cc, ok := conn.(interface{ Context() context.Context }); ok {
+			if cctx := cc.Context(); cctx != nil {
+				ctx, cancel = context.WithCancel(cctx)
+			}
+		}
+
+		s.conns.Store(conn, cancel)
 		wg.Add(1)
 		go func(c net.Conn) {
 			defer wg.Done()
-			ctx := context.Background()
-			if cc, ok := c.(interface{ Context() context.Context }); ok {
-				if cctx := cc.Context(); cctx != nil {
-					ctx = cctx
-				}
-			}
+			defer s.conns.Delete(c)
+			defer cancel()
+
 			if s.logger != nil {
 				s.logger.Debug("Service handling %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
 			}
 			if err := s.handler.Handle(ctx, c); err != nil && s.logger != nil {
 				s.logger.Debug("Service handler error %s -> %s: %v", c.RemoteAddr().String(), c.LocalAddr().String(), err)
 			}
+			// ensure connection is closed
+			c.Close()
 			if s.logger != nil {
 				s.logger.Debug("Service closed %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
 			}

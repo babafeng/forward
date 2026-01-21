@@ -140,7 +140,7 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 	if scheme == "http2" {
 		return "http2", "tls", nil
 	}
-	if scheme == "http3" {
+	if scheme == "http3" || scheme == "quic" {
 		return "http3", "http3", nil
 	}
 	if scheme == "tls" {
