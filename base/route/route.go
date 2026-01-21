@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"forward/base/logging"
-	"forward/inner/mmdb"
+	"forward/base/mmdb"
 )
 
 type Decision struct {

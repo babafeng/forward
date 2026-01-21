@@ -209,7 +209,7 @@ func (s *Server) Accept() (net.Conn, error) {
 	case conn := <-s.cqueue:
 		return conn, nil
 	case <-s.closed:
-		return nil, http.ErrServerClosed
+		return nil, net.ErrClosed
 	}
 }
 
@@ -219,6 +219,14 @@ func (s *Server) Close() error {
 		return http.ErrServerClosed
 	default:
 		close(s.closed)
+
+		s.conns.Range(func(key, value any) bool {
+			if conn, ok := value.(net.Conn); ok {
+				conn.Close()
+			}
+			s.conns.Delete(key)
+			return true
+		})
 
 		if s.httpServer != nil {
 			return s.httpServer.Close()

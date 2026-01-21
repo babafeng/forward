@@ -3,7 +3,7 @@ package net
 import (
 	"context"
 	"errors"
-	"forward/inner/config"
+	"forward/internal/config"
 	"io"
 	"net"
 	"strings"

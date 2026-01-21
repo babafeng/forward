@@ -20,6 +20,7 @@ import (
 
 func init() {
 	registry.DialerRegistry().Register("http3", NewDialer)
+	registry.DialerRegistry().Register("quic", NewDialer)
 }
 
 type Dialer struct {

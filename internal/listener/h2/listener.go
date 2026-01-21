@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -84,7 +85,9 @@ func (l *Listener) Init(md metadata.Metadata) error {
 
 	go func() {
 		if err := l.server.ListenAndServe(); err != nil && l.logger != nil {
-			l.logger.Error("HTTP2 listener error: %v", err)
+			if !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+				l.logger.Error("HTTP2 listener error: %v", err)
+			}
 		}
 	}()
 
