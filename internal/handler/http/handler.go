@@ -535,12 +535,15 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 			InsecureSkipVerify: h.insecureTLS,
 		}
 		h.transport = &stdhttp.Transport{
-			Proxy:               nil,
-			DialContext:         h.routeDialContext,
-			ForceAttemptHTTP2:   true,
-			TLSClientConfig:     tlsCfg,
-			DisableCompression:  true,
-			MaxIdleConnsPerHost: 10,
+			Proxy:                 nil,
+			DialContext:           h.routeDialContext,
+			ForceAttemptHTTP2:     true,
+			TLSClientConfig:       tlsCfg,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			DisableCompression:    true,
+			MaxIdleConnsPerHost:   10,
 		}
 		_ = http2.ConfigureTransport(h.transport)
 	})
