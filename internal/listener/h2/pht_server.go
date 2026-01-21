@@ -28,6 +28,7 @@ const (
 	defaultReadBufferSize    = 32 * 1024
 	defaultReadTimeout       = 10 * time.Second
 	defaultReadHeaderTimeout = 30 * time.Second
+	maxPushBytes             = 1 << 20 // 1MB
 )
 
 type serverOptions struct {
@@ -264,8 +265,8 @@ func (s *Server) Close() error {
 		close(s.closed)
 
 		s.conns.Range(func(key, value any) bool {
-			if conn, ok := value.(net.Conn); ok {
-				conn.Close()
+			if sess, ok := value.(*phtSession); ok {
+				sess.conn.Close()
 			}
 			s.conns.Delete(key)
 			return true
@@ -337,6 +338,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	atomic.StoreInt64(&sess.lastSeen, time.Now().UnixNano())
 	conn := sess.conn
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxPushBytes)
 	br := bufio.NewReader(r.Body)
 	data, err := br.ReadString('\n')
 	if err != nil {

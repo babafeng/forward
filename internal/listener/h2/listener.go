@@ -24,6 +24,7 @@ type listenerMetadata struct {
 	handshakeTimeout time.Duration
 	maxIdleTimeout   time.Duration
 	maxStreams       int
+	secret           string
 }
 
 type Listener struct {
@@ -79,6 +80,9 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	}
 	if l.md.maxStreams > 0 {
 		opts = append(opts, MaxStreamsServerOption(uint32(l.md.maxStreams)))
+	}
+	if l.md.secret != "" {
+		opts = append(opts, SecretServerOption(l.md.secret))
 	}
 
 	l.server = NewServer(addr, opts...)
@@ -153,6 +157,9 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 	}
 	if v := getInt(md.Get("max_streams")); v > 0 {
 		l.md.maxStreams = v
+	}
+	if v := md.Get("secret"); v != nil {
+		l.md.secret = fmt.Sprintf("%v", v)
 	}
 }
 

@@ -21,6 +21,7 @@ type phtClient struct {
 	PullPath      string
 	TLSEnabled    bool
 	Logger        *logging.Logger
+	Secret        string
 }
 
 func (c *phtClient) Dial(ctx context.Context, addr string) (net.Conn, error) {

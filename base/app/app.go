@@ -86,6 +86,9 @@ func Main() int {
 		logger.Error("Parse args error: %v", err)
 		return 2
 	}
+	if len(cfg.DNSParameters.Servers) > 0 {
+		chain.SetDefaultResolver(cfg.DNSParameters.Servers)
+	}
 
 	for _, node := range cfg.Nodes {
 		if node.Insecure {
@@ -248,6 +251,9 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	}
 	if cfg.Listen.User != nil {
 		lmdMap[metadata.KeyUUID] = cfg.Listen.User.Username()
+		if p, ok := cfg.Listen.User.Password(); ok {
+			lmdMap["secret"] = p
+		}
 	}
 	lmd := metadata.New(lmdMap)
 	if err := ln.Init(lmd); err != nil {
@@ -267,11 +273,14 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	)
 
 	md := metadata.New(map[string]any{
-		"transparent":       strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
-		"insecure":          cfg.Insecure,
-		"handshake_timeout": cfg.HandshakeTimeout,
-		"udp_idle":          cfg.UDPIdleTimeout,
-		"max_udp_sessions":  cfg.MaxUDPSessions,
+		"transparent":         strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
+		"insecure":            cfg.Insecure,
+		"handshake_timeout":   cfg.HandshakeTimeout,
+		"udp_idle":            cfg.UDPIdleTimeout,
+		"max_udp_sessions":    cfg.MaxUDPSessions,
+		"read_header_timeout": cfg.ReadHeaderTimeout,
+		"max_header_bytes":    cfg.MaxHeaderBytes,
+		"idle_timeout":        cfg.IdleTimeout,
 	})
 	if err := h.Init(md); err != nil {
 		return err
@@ -598,10 +607,16 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 	}
 	ln := newListener(lopts...)
 
-	lmd := metadata.New(map[string]any{
+	lmdMap := map[string]any{
 		"handshake_timeout": cfg.HandshakeTimeout,
 		"udp_idle":          cfg.UDPIdleTimeout,
-	})
+	}
+	if cfg.Listen.User != nil {
+		if p, ok := cfg.Listen.User.Password(); ok {
+			lmdMap["secret"] = p
+		}
+	}
+	lmd := metadata.New(lmdMap)
 	if err := ln.Init(lmd); err != nil {
 		return err
 	}
@@ -632,7 +647,7 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		}
 		defaultRoute = rt
 	} else {
-		defaultRoute = chain.NewRoute()
+		defaultRoute = chain.NewRouteWithTimeout(cfg.DialTimeout)
 	}
 
 	if cfg.Route == nil {
@@ -980,15 +995,15 @@ func (h *xrayLogHandler) Handle(msg xlog.Message) {
 	switch severity {
 	case xlog.Severity_Debug:
 		if h.level == "debug" {
-			h.logger.Debug(txt)
+			h.logger.Debug("%s", txt)
 		}
 	case xlog.Severity_Info:
-		h.logger.Info(txt)
+		h.logger.Info("%s", txt)
 	case xlog.Severity_Warning:
-		h.logger.Warn(txt)
+		h.logger.Warn("%s", txt)
 	case xlog.Severity_Error:
-		h.logger.Error(txt)
+		h.logger.Error("%s", txt)
 	default:
-		h.logger.Info(txt)
+		h.logger.Info("%s", txt)
 	}
 }

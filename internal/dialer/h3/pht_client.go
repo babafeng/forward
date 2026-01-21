@@ -21,6 +21,7 @@ type phtClient struct {
 	PullPath      string
 	TLSEnabled    bool
 	Logger        *logging.Logger
+	Secret        string
 }
 
 func (c *phtClient) Dial(ctx context.Context, addr string) (net.Conn, error) {
@@ -63,6 +64,9 @@ func (c *phtClient) authorize(ctx context.Context, addr string) (string, error) 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
+	}
+	if c.Secret != "" {
+		req.Header.Set("X-PHT-Secret", c.Secret)
 	}
 
 	resp, err := c.Client.Do(req)

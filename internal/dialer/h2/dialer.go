@@ -37,6 +37,7 @@ type dialerMetadata struct {
 	keepAlivePeriod  time.Duration
 	handshakeTimeout time.Duration
 	maxIdleTimeout   time.Duration
+	secret           string
 }
 
 func NewDialer(opts ...dialer.Option) dialer.Dialer {
@@ -105,6 +106,7 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 			PullPath:      d.md.pullPath,
 			TLSEnabled:    true,
 			Logger:        d.options.Logger,
+			Secret:        d.md.secret,
 		}
 		d.clients[addr] = client
 	}
@@ -151,6 +153,9 @@ func (d *Dialer) parseMetadata(md metadata.Metadata) {
 	}
 	if v := getDuration(md.Get("max_idle_timeout")); v > 0 {
 		d.md.maxIdleTimeout = v
+	}
+	if v := getString(md.Get("secret")); v != "" {
+		d.md.secret = v
 	}
 }
 

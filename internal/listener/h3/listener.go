@@ -25,6 +25,7 @@ type listenerMetadata struct {
 	handshakeTimeout time.Duration
 	maxIdleTimeout   time.Duration
 	maxStreams       int
+	secret           string
 }
 
 type Listener struct {
@@ -79,12 +80,19 @@ func (l *Listener) Init(md metadata.Metadata) error {
 		quicCfg.MaxIncomingStreams = int64(l.md.maxStreams)
 	}
 
-	l.server = NewHTTP3Server(
-		addr,
-		quicCfg,
+	opts := []ServerOption{
 		TLSConfigServerOption(l.options.TLSConfig),
 		BacklogServerOption(l.md.backlog),
 		LoggerServerOption(l.logger),
+	}
+	if l.md.secret != "" {
+		opts = append(opts, SecretServerOption(l.md.secret))
+	}
+
+	l.server = NewHTTP3Server(
+		addr,
+		quicCfg,
+		opts...,
 	)
 
 	go func() {
@@ -157,6 +165,9 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 	}
 	if v := getInt(md.Get("max_streams")); v > 0 {
 		l.md.maxStreams = v
+	}
+	if v := md.Get("secret"); v != nil {
+		l.md.secret = fmt.Sprintf("%v", v)
 	}
 }
 
