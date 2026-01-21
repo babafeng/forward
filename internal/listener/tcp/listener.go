@@ -6,10 +6,16 @@ import (
 	"net"
 	"sync"
 
+	"time"
+
 	"forward/base/logging"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
+)
+
+const (
+	defaultHandshakeTimeout = 10 * time.Second
 )
 
 func init() {
@@ -57,7 +63,10 @@ func (l *Listener) Init(_ metadata.Metadata) error {
 		return listener.NewBindError(err)
 	}
 	if l.tlsConfig != nil {
-		ln = tls.NewListener(ln, l.tlsConfig)
+		ln = tls.NewListener(&timeoutListener{
+			Listener: ln,
+			timeout:  defaultHandshakeTimeout,
+		}, l.tlsConfig)
 	}
 	l.ln = ln
 	return nil
@@ -77,6 +86,24 @@ func (l *Listener) Accept() (net.Conn, error) {
 	if l.logger != nil {
 		l.logger.Info("Listener accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
 	}
+	// Clear the deadline set by timeoutListener
+	if l.tlsConfig != nil {
+		conn.SetDeadline(time.Time{})
+	}
+	return conn, nil
+}
+
+type timeoutListener struct {
+	net.Listener
+	timeout time.Duration
+}
+
+func (l *timeoutListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	conn.SetDeadline(time.Now().Add(l.timeout))
 	return conn, nil
 }
 

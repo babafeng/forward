@@ -33,6 +33,8 @@ import (
 	cjson "forward/internal/config/json"
 	ctls "forward/internal/config/tls"
 
+	xlog "github.com/xtls/xray-core/common/log"
+
 	_ "forward/internal/connector/http"
 	_ "forward/internal/connector/http2"
 	_ "forward/internal/connector/http3"
@@ -75,6 +77,7 @@ func Main() int {
 	if logger == nil {
 		logger = logging.New(logging.Options{Level: logging.LevelError})
 	}
+	xlog.RegisterHandler(&xrayLogHandler{level: cfg.LogLevel.String(), logger: logger})
 
 	if err != nil {
 		if err == flag.ErrHelp {
@@ -953,4 +956,39 @@ func (s *stringSlice) String() string {
 func (s *stringSlice) Set(value string) error {
 	*s = append(*s, value)
 	return nil
+}
+
+type xrayLogHandler struct {
+	level  string
+	logger *logging.Logger
+}
+
+func (h *xrayLogHandler) Handle(msg xlog.Message) {
+	var severity xlog.Severity
+	var content interface{}
+
+	if gm, ok := msg.(*xlog.GeneralMessage); ok {
+		severity = gm.Severity
+		content = gm.Content
+	} else {
+		severity = xlog.Severity_Info
+		content = msg.String()
+	}
+
+	txt := fmt.Sprint(content)
+
+	switch severity {
+	case xlog.Severity_Debug:
+		if h.level == "debug" {
+			h.logger.Debug(txt)
+		}
+	case xlog.Severity_Info:
+		h.logger.Info(txt)
+	case xlog.Severity_Warning:
+		h.logger.Warn(txt)
+	case xlog.Severity_Error:
+		h.logger.Error(txt)
+	default:
+		h.logger.Info(txt)
+	}
 }

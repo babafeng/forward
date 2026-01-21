@@ -30,6 +30,7 @@ type listenerMetadata struct {
 	readBufferSize int
 	ttl            time.Duration
 	keepalive      bool
+	rateLimit      int
 }
 
 type Listener struct {
@@ -45,7 +46,60 @@ type Listener struct {
 	errCh  chan error
 	laddr  net.Addr
 
+	limiter *rateLimiter
+
 	mu sync.Mutex
+}
+
+type rateLimiter struct {
+	mu     sync.Mutex
+	counts map[string]int
+	limit  int
+	stop   chan struct{}
+}
+
+func newRateLimiter(limit int) *rateLimiter {
+	rl := &rateLimiter{
+		counts: make(map[string]int),
+		limit:  limit,
+		stop:   make(chan struct{}),
+	}
+	go rl.run()
+	return rl
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	if rl.limit <= 0 {
+		return true
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	n := rl.counts[ip]
+	if n >= rl.limit {
+		return false
+	}
+	rl.counts[ip] = n + 1
+	return true
+}
+
+func (rl *rateLimiter) run() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			// Simple reset
+			rl.counts = make(map[string]int)
+			rl.mu.Unlock()
+		case <-rl.stop:
+			return
+		}
+	}
+}
+
+func (rl *rateLimiter) close() {
+	close(rl.stop)
 }
 
 func init() {
@@ -92,6 +146,12 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	l.closed = make(chan struct{})
 	l.errCh = make(chan error, 1)
 	l.pool = newConnPool(l.md.ttl, l.logger)
+
+	l.errCh = make(chan error, 1)
+	l.pool = newConnPool(l.md.ttl, l.logger)
+	if l.md.rateLimit > 0 {
+		l.limiter = newRateLimiter(l.md.rateLimit)
+	}
 
 	go l.listenLoop()
 
@@ -151,7 +211,13 @@ func (l *Listener) Close() error {
 		if l.logger != nil {
 			l.logger.Info("Listener closed %s", conn.LocalAddr().String())
 		}
+		if l.limiter != nil {
+			l.limiter.close()
+		}
 		return conn.Close()
+	}
+	if l.limiter != nil {
+		l.limiter.close()
 	}
 	return nil
 }
@@ -169,7 +235,17 @@ func (l *Listener) listenLoop() {
 		if err != nil {
 			l.notifyErr(err)
 			pool.Put(buf)
+			pool.Put(buf)
 			return
+		}
+
+		// Rate limit check
+		if l.limiter != nil {
+			host, _, _ := net.SplitHostPort(raddr.String())
+			if !l.limiter.allow(host) {
+				pool.Put(buf)
+				continue
+			}
 		}
 
 		c := l.getConn(raddr)
@@ -247,6 +323,9 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 	}
 	if v := md.Get("keepalive"); v != nil {
 		l.md.keepalive = getBool(v)
+	}
+	if v := getInt(md.Get("rate_limit")); v > 0 {
+		l.md.rateLimit = v
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -134,52 +133,84 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 		}
 	}
 
-	br := bufio.NewReader(conn)
-	for {
-		req, err := stdhttp.ReadRequest(br)
-		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-				return nil
-			}
-			return err
-		}
-		req.RemoteAddr = remote
-
-		if h.requireAuth && !h.authorize(conn, req) {
-			if req.Body != nil {
-				_ = req.Body.Close()
-			}
-			return nil
-		}
-
-		if isUDPRequest(req) {
-			if req.Body != nil {
-				_ = req.Body.Close()
-			}
-			if !strings.EqualFold(req.Method, stdhttp.MethodConnect) {
-				return writeSimple(conn, stdhttp.StatusBadRequest, "bad request", nil)
-			}
-			return h.handleUDP(ctx, conn, br)
-		}
-
-		if strings.EqualFold(req.Method, stdhttp.MethodConnect) {
-			if req.Body != nil {
-				_ = req.Body.Close()
-			}
-			return h.handleConnect(ctx, conn, br, req)
-		}
-
-		keep, err := h.handleForward(ctx, conn, req)
-		if req.Body != nil {
-			_ = req.Body.Close()
-		}
-		if err != nil {
-			return err
-		}
-		if !keep {
-			return nil
-		}
+	// Use http.Server for HTTP/1.x to handle timeouts and limits correctly
+	server := &stdhttp.Server{
+		Handler:           stdhttp.HandlerFunc(h.ServeHTTP),
+		ReadHeaderTimeout: 30 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
+		IdleTimeout:       60 * time.Second,
+		BaseContext: func(l net.Listener) context.Context {
+			return ctx
+		},
 	}
+
+	// Track connection close to avoid premature return
+	done := make(chan struct{})
+	wrappedConn := &closeNotifyConn{
+		Conn: conn,
+		onClose: func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		},
+	}
+
+	ln := &oneShotListener{conn: wrappedConn, addr: conn.LocalAddr()}
+
+	// serve in background (it will return quickly due to one-shot listener)
+	go func() {
+		_ = server.Serve(ln)
+	}()
+
+	// Wait for connection to be closed by http.Server (IdleTimeout) or Hijacker
+	select {
+	case <-done:
+	case <-ctx.Done():
+		server.Close()
+	}
+
+	return nil
+}
+
+type closeNotifyConn struct {
+	net.Conn
+	onClose func()
+	once    sync.Once
+}
+
+func (c *closeNotifyConn) Close() error {
+	c.once.Do(c.onClose)
+	return c.Conn.Close()
+}
+
+type oneShotListener struct {
+	conn net.Conn
+	addr net.Addr
+	mu   sync.Mutex
+	done bool
+}
+
+func (l *oneShotListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.done {
+		return nil, net.ErrClosed
+	}
+	l.done = true
+	return l.conn, nil
+}
+
+func (l *oneShotListener) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.done = true
+	return nil
+}
+
+func (l *oneShotListener) Addr() net.Addr {
+	return l.addr
 }
 
 // ServeHTTP handles HTTP/1.1, HTTP/2, and HTTP/3 proxy requests when bridged via listener metadata.
@@ -187,6 +218,20 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	h.logf(logging.LevelInfo, "HTTP request %s %s from %s host=%s", r.Method, r.URL.String(), r.RemoteAddr, r.Host)
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
+		if isUDPRequest(r) {
+			if hj, ok := w.(stdhttp.Hijacker); ok {
+				conn, bufrw, err := hj.Hijack()
+				if err != nil {
+					h.logf(logging.LevelError, "HTTP UDP hijack error: %v", err)
+					writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "hijack failed")
+					return
+				}
+				// We don't close conn here, handleUDP will manage it
+				h.handleUDP(r.Context(), conn, bufrw.Reader)
+				return
+			}
+		}
+
 		if !r.URL.IsAbs() && !h.transparent {
 			h.logf(logging.LevelDebug, "HTTP reject non-absolute request from %s: %s", r.RemoteAddr, r.URL.String())
 			writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)

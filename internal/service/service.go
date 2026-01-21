@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"forward/base/logging"
+	"forward/internal/config"
 	"forward/internal/handler"
 	"forward/internal/listener"
 )
@@ -56,6 +57,10 @@ func (s *defaultService) Serve() error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
+	// Use global limit for now as per P0-3 plan
+	limit := config.DefaultMaxConnections
+	sem := make(chan struct{}, limit)
+
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -89,9 +94,21 @@ func (s *defaultService) Serve() error {
 			}
 		}
 
+		select {
+		case sem <- struct{}{}:
+		default:
+			if s.logger != nil {
+				s.logger.Warn("Service max connection limit reached, rejected %s", conn.RemoteAddr())
+			}
+			conn.Close()
+			cancel()
+			continue
+		}
+
 		s.conns.Store(conn, cancel)
 		wg.Add(1)
 		go func(c net.Conn) {
+			defer func() { <-sem }()
 			defer wg.Done()
 			defer s.conns.Delete(c)
 			defer cancel()
