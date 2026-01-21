@@ -10,12 +10,49 @@ import (
 
 type defaultRoute struct{}
 
+var defaultResolver *net.Resolver
+
+func SetDefaultResolver(dnsServers []string) {
+	if len(dnsServers) == 0 {
+		return
+	}
+	defaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{
+				Timeout: time.Second * 5,
+			}
+			for _, server := range dnsServers {
+				// 尝试解析 DNS 服务器地址，支持 host:port
+				target := server
+				if _, _, err := net.SplitHostPort(server); err != nil {
+					// 默认为 DNS 端口
+					target = net.JoinHostPort(server, "53")
+				}
+				conn, err := d.DialContext(ctx, "udp", target)
+				if err == nil {
+					return conn, nil
+				}
+				// 尝试 TCP
+				conn, err = d.DialContext(ctx, "tcp", target)
+				if err == nil {
+					return conn, nil
+				}
+			}
+			return nil, net.UnknownNetworkError("no valid dns server found")
+		},
+	}
+}
+
 func (defaultRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	timeout := config.DefaultDialTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	d := &net.Dialer{Timeout: timeout}
+	d := &net.Dialer{
+		Timeout:  timeout,
+		Resolver: defaultResolver,
+	}
 	return d.DialContext(ctx, network, address)
 }
 

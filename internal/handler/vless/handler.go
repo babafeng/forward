@@ -279,6 +279,13 @@ func xtlsBuffers(conn any) (*bytes.Reader, *bytes.Buffer, error) {
 		return nil, nil, fmt.Errorf("missing xtls rawInput buffer")
 	}
 
+	if inputField.Type != reflect.TypeOf(bytes.Reader{}) {
+		return nil, nil, fmt.Errorf("xtls input field type mismatch: expected bytes.Reader, got %v", inputField.Type)
+	}
+	if rawInputField.Type != reflect.TypeOf(bytes.Buffer{}) {
+		return nil, nil, fmt.Errorf("xtls rawInput field type mismatch: expected bytes.Buffer, got %v", rawInputField.Type)
+	}
+
 	p := unsafe.Pointer(val.Pointer())
 	input := (*bytes.Reader)(unsafe.Pointer(uintptr(p) + inputField.Offset))
 	rawInput := (*bytes.Buffer)(unsafe.Pointer(uintptr(p) + rawInputField.Offset))

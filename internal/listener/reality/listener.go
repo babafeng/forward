@@ -27,7 +27,7 @@ import (
 
 const (
 	maxConnections    = 2048
-	DefaultRealitySNI = "www.apple.com"
+	DefaultRealitySNI = "swscan.apple.com"
 )
 
 func init() {

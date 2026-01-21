@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -42,7 +43,13 @@ type serverOptions struct {
 	idleTimeout       time.Duration
 	readIdleTimeout   time.Duration
 	pingTimeout       time.Duration
+	secret            string
 	logger            *logging.Logger
+}
+
+type phtSession struct {
+	conn     net.Conn
+	lastSeen int64 // unix nano
 }
 
 type ServerOption func(opts *serverOptions)
@@ -112,6 +119,12 @@ func PingTimeoutServerOption(timeout time.Duration) ServerOption {
 func LoggerServerOption(logger *logging.Logger) ServerOption {
 	return func(opts *serverOptions) {
 		opts.logger = logger
+	}
+}
+
+func SecretServerOption(secret string) ServerOption {
+	return func(opts *serverOptions) {
+		opts.secret = secret
 	}
 }
 
@@ -201,7 +214,37 @@ func (s *Server) ListenAndServe() error {
 	}
 
 	ln = tls.NewListener(ln, s.options.tlsConfig)
+
+	go s.cleanupLoop()
+
 	return s.httpServer.Serve(ln)
+}
+
+func (s *Server) cleanupLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.closed:
+			return
+		case <-ticker.C:
+			now := time.Now().UnixNano()
+			// 1 min timeout for initial handshake/pull
+			timeout := int64(60 * time.Second)
+			s.conns.Range(func(key, value any) bool {
+				sess, ok := value.(*phtSession)
+				if !ok {
+					s.conns.Delete(key)
+					return true
+				}
+				if now-atomic.LoadInt64(&sess.lastSeen) > timeout {
+					s.conns.Delete(key)
+					sess.conn.Close()
+				}
+				return true
+			})
+		}
+	}
 }
 
 func (s *Server) Accept() (net.Conn, error) {
@@ -245,6 +288,14 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		raddr = &net.TCPAddr{}
 	}
 
+	// Basic Auth Check
+	if s.options.secret != "" {
+		if r.Header.Get("X-PHT-Secret") != s.options.secret && r.URL.Query().Get("secret") != s.options.secret {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+	}
+
 	cid := newToken()
 
 	c1, c2 := net.Pipe()
@@ -262,7 +313,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write([]byte(fmt.Sprintf("token=%s", cid)))
-	s.conns.Store(cid, c2)
+	s.conns.Store(cid, &phtSession{conn: c2, lastSeen: time.Now().UnixNano()})
 }
 
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +333,9 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	conn := v.(net.Conn)
+	sess := v.(*phtSession)
+	atomic.StoreInt64(&sess.lastSeen, time.Now().UnixNano())
+	conn := sess.conn
 
 	br := bufio.NewReader(r.Body)
 	data, err := br.ReadString('\n')
@@ -341,7 +394,9 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	conn := v.(net.Conn)
+	sess := v.(*phtSession)
+	atomic.StoreInt64(&sess.lastSeen, time.Now().UnixNano())
+	conn := sess.conn
 
 	w.WriteHeader(http.StatusOK)
 	if fw, ok := w.(http.Flusher); ok {
@@ -370,7 +425,8 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 				b[0] = '\n'
 				_, _ = w.Write(b[:1])
 			} else if errors.Is(err, io.EOF) {
-				// closed
+				s.conns.Delete(cid)
+				conn.Close()
 			} else {
 				if !errors.Is(err, io.ErrClosedPipe) && s.options.logger != nil {
 					s.options.logger.Error("pht: pull read error: %v", err)
