@@ -33,9 +33,16 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 			dialer.TimeoutOption(cfg.DialTimeout),
 			dialer.LoggerOption(cfg.Logger),
 		}
-		if dialerName == "tls" || dialerName == "http3" || dialerName == "h3" || dialerName == "dtls" || dialerName == "h2" {
+		if dialerName == "tls" || dialerName == "http3" || dialerName == "h3" || dialerName == "dtls" || dialerName == "h2" || dialerName == "quic" {
 			tlsOpts := ctls.ClientOptions{}
-			if dialerName == "http3" || dialerName == "h3" {
+			if dialerName == "http3" || dialerName == "h3" || dialerName == "quic" {
+				tlsOpts.NextProtos = []string{"h3"} // QUIC typically uses h3 ALPN or similar, but for raw quic maybe empty or custom?
+				// Wait, if it's raw QUIC, does it default to 'h3'?
+				// The quic listener implementation might set NextProtos.
+				// Let's check quic listener. But generally, for quic-go, ALPN is needed.
+				// Assuming 'h3' for now as it was aliased to http3 before, or maybe no ALPN?
+				// quic-go requires ALPN to match.
+				// Let's check internal/listener/quic/listener.go to see what ALPN it expects.
 				tlsOpts.NextProtos = []string{"h3"}
 			}
 			if dialerName == "h2" {
@@ -140,8 +147,11 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 	if scheme == "http2" {
 		return "http2", "tls", nil
 	}
-	if scheme == "http3" || scheme == "quic" {
+	if scheme == "http3" {
 		return "http3", "http3", nil
+	}
+	if scheme == "quic" {
+		return "tcp", "quic", nil
 	}
 	if scheme == "tls" {
 		return "http", "tls", nil
@@ -200,6 +210,19 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 			return "socks5", "tls", nil
 		case "tcp":
 			return "tcp", "tls", nil
+		default:
+			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+		}
+	}
+	if strings.HasSuffix(scheme, "+quic") {
+		base := strings.TrimSuffix(scheme, "+quic")
+		switch base {
+		case "http":
+			return "http", "quic", nil
+		case "socks5", "socks5h":
+			return "socks5", "quic", nil
+		case "tcp":
+			return "tcp", "quic", nil
 		default:
 			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
 		}

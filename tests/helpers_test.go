@@ -34,6 +34,7 @@ const (
 	transportDTLS transportKind = "dtls"
 	transportH2   transportKind = "h2"
 	transportH3   transportKind = "h3"
+	transportQuic transportKind = "quic"
 )
 
 func testLogger() *logging.Logger {
@@ -137,8 +138,10 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 		return "http", transportTLS
 	case "http2":
 		return "http2", transportNone
-	case "http3", "quic":
+	case "http3":
 		return "http3", transportNone
+	case "quic":
+		return "tcp", transportQuic
 	case "tls":
 		return "http", transportTLS
 	case "h2":
@@ -167,6 +170,9 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 	if strings.HasSuffix(s, "+reality") {
 		return strings.TrimSuffix(s, "+reality"), transportNone
 	}
+	if strings.HasSuffix(s, "+quic") {
+		return strings.TrimSuffix(s, "+quic"), transportQuic
+	}
 	return s, transportNone
 }
 
@@ -176,10 +182,14 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 	listenerScheme = base
 
 	switch base {
-	case "http3", "quic":
+	case "http3":
 		handlerScheme = "http"
 		listenerScheme = "http3"
-		return handlerScheme, "quic", transportNone
+		return handlerScheme, listenerScheme, transportNone
+	case "quic":
+		handlerScheme = "tcp"
+		listenerScheme = "quic"
+		return handlerScheme, listenerScheme, transportNone
 	case "http2":
 		handlerScheme = "http"
 		listenerScheme = "http2"
@@ -200,6 +210,9 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 	}
 	if transport == transportH3 {
 		listenerScheme = "h3"
+	}
+	if transport == transportQuic {
+		listenerScheme = "quic"
 	}
 	return
 }
@@ -228,7 +241,6 @@ func dialWithRetry(t *testing.T, route chain.Route, network, address string) net
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		conn, err := route.Dial(ctx, network, address)
 		if err == nil {
-			cancel()
 			return conn
 		}
 		cancel()
@@ -445,6 +457,8 @@ func startPortForwardServer(t *testing.T, scheme, target string) (endpoint.Endpo
 		listenerScheme = "h2"
 	case transportH3:
 		listenerScheme = "h3"
+	case transportQuic:
+		listenerScheme = "quic"
 	}
 
 	newListener := registry.ListenerRegistry().Get(listenerScheme)

@@ -12,6 +12,7 @@ import (
 	"forward/base/logging"
 	"forward/internal/listener"
 	"forward/internal/metadata"
+	"forward/internal/registry"
 	"forward/internal/structs"
 )
 
@@ -30,7 +31,7 @@ type Listener struct {
 }
 
 func init() {
-	// registry.ListenerRegistry().Register("quic", NewListener)
+	registry.ListenerRegistry().Register("quic", NewListener)
 }
 
 func NewListener(opts ...listener.Option) listener.Listener {
