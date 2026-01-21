@@ -67,8 +67,8 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 		}
 		d := newDialer(dialerOpts...)
 
-		// Dialer 初始化：Reality 需要 metadata，其它使用默认值
-		if dialerName == "reality" {
+		// Dialer 初始化：Reality / H2 / H3 需要 metadata
+		if dialerName == "reality" || dialerName == "h2" || dialerName == "h3" {
 			dmd := buildDialerMetadata(hop)
 			if err := d.Init(dmd); err != nil {
 				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
@@ -107,7 +107,7 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 // buildDialerMetadata 为 Reality Dialer 构建 metadata
 func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	q := hop.Query
-	return metadata.New(map[string]any{
+	mdMap := map[string]any{
 		metadata.KeyHost:        hop.Host,
 		metadata.KeyPort:        hop.Port,
 		metadata.KeySecurity:    q.Get("security"),
@@ -119,7 +119,13 @@ func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 		metadata.KeySpiderX:     q.Get("spiderx"),
 		metadata.KeyALPN:        q.Get("alpn"),
 		metadata.KeyInsecure:    q.Get("insecure") == "true" || q.Get("insecure") == "1",
-	})
+	}
+	if hop.User != nil {
+		if p, ok := hop.User.Password(); ok {
+			mdMap["secret"] = p
+		}
+	}
+	return metadata.New(mdMap)
 }
 
 // buildConnectorMetadata 为 VLESS Connector 构建 metadata

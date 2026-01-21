@@ -33,14 +33,17 @@ func init() {
 }
 
 type Handler struct {
-	options        corehandler.Options
-	auth           auth.Authenticator
-	requireAuth    bool
-	transparent    bool
-	insecureTLS    bool
-	enableUDP      bool
-	udpIdle        time.Duration
-	maxUDPSessions int
+	options           corehandler.Options
+	auth              auth.Authenticator
+	requireAuth       bool
+	transparent       bool
+	insecureTLS       bool
+	enableUDP         bool
+	udpIdle           time.Duration
+	maxUDPSessions    int
+	readHeaderTimeout time.Duration
+	maxHeaderBytes    int
+	idleTimeout       time.Duration
 
 	transportOnce sync.Once
 	transport     *stdhttp.Transport
@@ -101,6 +104,25 @@ func (h *Handler) Init(md metadata.Metadata) error {
 			h.maxUDPSessions = n
 		}
 	}
+
+	h.readHeaderTimeout = 30 * time.Second
+	if v := md.Get("read_header_timeout"); v != nil {
+		if t, ok := v.(time.Duration); ok && t > 0 {
+			h.readHeaderTimeout = t
+		}
+	}
+	h.maxHeaderBytes = 1 << 20 // 1MB
+	if v := md.Get("max_header_bytes"); v != nil {
+		if n, ok := v.(int); ok && n > 0 {
+			h.maxHeaderBytes = n
+		}
+	}
+	h.idleTimeout = 60 * time.Second
+	if v := md.Get("idle_timeout"); v != nil {
+		if t, ok := v.(time.Duration); ok && t > 0 {
+			h.idleTimeout = t
+		}
+	}
 	return nil
 }
 
@@ -137,9 +159,9 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	// Use http.Server for HTTP/1.x to handle timeouts and limits correctly
 	server := &stdhttp.Server{
 		Handler:           stdhttp.HandlerFunc(h.ServeHTTP),
-		ReadHeaderTimeout: 30 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1MB
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: h.readHeaderTimeout,
+		MaxHeaderBytes:    h.maxHeaderBytes,
+		IdleTimeout:       h.idleTimeout,
 		BaseContext: func(l net.Listener) context.Context {
 			return ctx
 		},
@@ -218,21 +240,24 @@ func (l *oneShotListener) Addr() net.Addr {
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	h.logf(logging.LevelInfo, "HTTP request %s %s from %s host=%s", r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
 
-	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
-		if isUDPRequest(r) {
-			if hj, ok := w.(stdhttp.Hijacker); ok {
-				conn, bufrw, err := hj.Hijack()
-				if err != nil {
-					h.logf(logging.LevelError, "HTTP UDP hijack error: %v", err)
-					writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "hijack failed")
-					return
-				}
-				// We don't close conn here, handleUDP will manage it
-				h.handleUDP(r.Context(), conn, bufrw.Reader)
+	if isUDPRequest(r) {
+		if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
+			writeSimpleHTTP(w, stdhttp.StatusBadRequest, "bad udp request")
+			return
+		}
+		if hj, ok := w.(stdhttp.Hijacker); ok {
+			conn, bufrw, err := hj.Hijack()
+			if err != nil {
+				h.logf(logging.LevelError, "HTTP UDP hijack error: %v", err)
+				writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "hijack failed")
 				return
 			}
+			h.handleUDP(r.Context(), conn, bufrw.Reader)
+			return
 		}
+	}
 
+	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if !r.URL.IsAbs() && !h.transparent {
 			h.logf(logging.LevelDebug, "HTTP reject non-absolute request from %s: %s", r.RemoteAddr, r.URL.String())
 			writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)

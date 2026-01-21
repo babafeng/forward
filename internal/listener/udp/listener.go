@@ -31,6 +31,8 @@ type listenerMetadata struct {
 	ttl            time.Duration
 	keepalive      bool
 	rateLimit      int
+	allowCIDR      []*net.IPNet
+	blockPrivate   bool
 }
 
 type Listener struct {
@@ -52,10 +54,11 @@ type Listener struct {
 }
 
 type rateLimiter struct {
-	mu     sync.Mutex
-	counts map[string]int
-	limit  int
-	stop   chan struct{}
+	mu        sync.Mutex
+	counts    map[string]int
+	limit     int
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
 func newRateLimiter(limit int) *rateLimiter {
@@ -99,7 +102,9 @@ func (rl *rateLimiter) run() {
 }
 
 func (rl *rateLimiter) close() {
-	close(rl.stop)
+	rl.closeOnce.Do(func() {
+		close(rl.stop)
+	})
 }
 
 func init() {
@@ -144,9 +149,6 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	l.laddr = conn.LocalAddr()
 	l.cqueue = make(chan net.Conn, l.md.backlog)
 	l.closed = make(chan struct{})
-	l.errCh = make(chan error, 1)
-	l.pool = newConnPool(l.md.ttl, l.logger)
-
 	l.errCh = make(chan error, 1)
 	l.pool = newConnPool(l.md.ttl, l.logger)
 	if l.md.rateLimit > 0 {
@@ -235,8 +237,13 @@ func (l *Listener) listenLoop() {
 		if err != nil {
 			l.notifyErr(err)
 			pool.Put(buf)
-			pool.Put(buf)
 			return
+		}
+
+		// Access Control
+		if !l.checkPacket(raddr) {
+			pool.Put(buf)
+			continue
 		}
 
 		// Rate limit check
@@ -326,6 +333,57 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 	}
 	if v := getInt(md.Get("rate_limit")); v > 0 {
 		l.md.rateLimit = v
+	}
+	if v := getString(md.Get("allow_cidr")); v != "" {
+		for _, s := range strings.Split(v, ",") {
+			if _, ipnet, err := net.ParseCIDR(strings.TrimSpace(s)); err == nil {
+				l.md.allowCIDR = append(l.md.allowCIDR, ipnet)
+			}
+		}
+	}
+	if v := md.Get("udp_block_private"); v != nil {
+		l.md.blockPrivate = getBool(v)
+	} else {
+		l.md.blockPrivate = true // Default to true
+	}
+}
+
+func (l *Listener) checkPacket(addr net.Addr) bool {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+
+	if l.md.blockPrivate && ip.IsPrivate() {
+		return false
+	}
+
+	if len(l.md.allowCIDR) > 0 {
+		allowed := false
+		for _, ipnet := range l.md.allowCIDR {
+			if ipnet.Contains(ip) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+
+	return true
+}
+
+func getString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	default:
+		return ""
 	}
 }
 
