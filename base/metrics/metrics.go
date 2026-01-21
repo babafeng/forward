@@ -1,5 +1,3 @@
-// Package metrics 提供可观测性指标收集能力
-// 可后续集成 prometheus、expvar 或其他指标系统
 package metrics
 
 import (
