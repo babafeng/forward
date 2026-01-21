@@ -46,11 +46,12 @@ func (r *chainRoute) Dial(ctx context.Context, network, address string) (net.Con
 	if err != nil {
 		return nil, err
 	}
-	conn, err = node.Transport().Handshake(ctx, conn)
+	hc, err := node.Transport().Handshake(ctx, conn)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
+	conn = hc
 
 	prev := node
 	for _, node = range r.nodes[1:] {
@@ -61,11 +62,13 @@ func (r *chainRoute) Dial(ctx context.Context, network, address string) (net.Con
 		}
 		conn = cc
 
-		conn, err = node.Transport().Handshake(ctx, conn)
+		cc, err = node.Transport().Handshake(ctx, conn)
 		if err != nil {
 			conn.Close()
 			return nil, err
 		}
+		conn = cc
+
 		prev = node
 	}
 
