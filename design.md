@@ -411,3 +411,46 @@ FINAL, MyVPS
 # 或者是 make build
 go build -o forward cmd/forward/main.go
 ```
+
+---
+
+## 配置项适用范围
+
+> [!IMPORTANT]
+> 部分配置项仅对特定协议生效，使用时请注意。
+
+### 超时配置
+
+| 配置项              | 适用范围                  | 默认值 | 说明             |
+| ------------------- | ------------------------- | ------ | ---------------- |
+| `DialTimeout`       | 所有出站连接              | 10s    | 连接建立超时     |
+| `HandshakeTimeout`  | TLS/DTLS/SOCKS5/HTTP 代理 | 5s     | 协议握手超时     |
+| `ReadHeaderTimeout` | HTTP/1.1 handler          | 10s    | 读取请求头超时   |
+| `IdleTimeout`       | HTTP/1.1 handler          | 2min   | 连接空闲超时     |
+| `UDPIdleTimeout`    | SOCKS5 UDP / UDP 转发     | 2min   | UDP 会话空闲超时 |
+| `DNSTimeout`        | 路由规则 DNS 解析         | 5s     | DNS 查询超时     |
+
+### 限制配置
+
+| 配置项           | 适用范围              | 默认值 | 说明             |
+| ---------------- | --------------------- | ------ | ---------------- |
+| `MaxHeaderBytes` | HTTP/1.1 handler      | 1MB    | 请求头最大字节数 |
+| `MaxConnections` | Reverse handler       | 4096   | 最大并发连接数   |
+| `MaxUDPSessions` | SOCKS5 UDP / UDP 转发 | 1024   | 最大 UDP 会话数  |
+
+### 缓冲区配置
+
+| 配置项              | 适用范围     | 默认值 | 说明               |
+| ------------------- | ------------ | ------ | ------------------ |
+| `DefaultCopyBuffer` | TCP 双向复制 | 32KB   | 流复制缓冲区大小   |
+| `DefaultUDPBuffer`  | UDP 转发     | 65535  | UDP 报文最大缓冲区 |
+
+### 未使用的配置项
+
+以下配置项已定义但当前**未被使用**（保留用于未来扩展）：
+
+- `ReadDeadline` - 仅在部分内部逻辑中使用
+- `DialKeepAlive` - TCP KeepAlive 设置，当前未传递
+
+> [!NOTE]
+> 如需使用这些配置项，请检查对应的 handler/dialer 实现是否支持。
