@@ -213,6 +213,7 @@ type Connector interface {
 | **HTTP3 (代理)**    |        ✅        |   ✅ (http3)    |       ✅ (http3)      | HTTP/3 代理 (CONNECT over h3) |
 | **H2 (隧道)**        |        ✅        |     ✅ (h2)     |          ✅           | HTTP/2 传输隧道 (PHT，多路复用) |
 | **H3 (隧道)**        |        ✅        |     ✅ (h3)     |          ✅           | HTTP/3 传输隧道 (PHT，多路复用) |
+| **VLESS+Reality**   |        ✅        |   ✅ (reality)  |        ✅ (vless)      | VLESS 代理 + Reality 传输      |
 | **RTCP**            |        -         |       -        |          -            | 反向 TCP 穿透客户端 (rtcp)     |
 | **RUDP**            |        -         |       -        |          -            | 反向 UDP 穿透客户端 (rudp)     |
 
@@ -222,6 +223,34 @@ type Connector interface {
 *   `socks5+h2://`、`socks5+h3://`、`tcp+h2://`、`tcp+h3://` 用于 H2/H3 传输隧道承载。
 *   反向穿透：公网侧 `tls://`/`https://`/`http3://`/`quic://`/`reality://`/`vless+reality://` 需加 `?bind=true`；内网侧使用 `rtcp://` 或 `rudp://` 并指定目标地址。
 *   `udp+tls`/`udp+dtls` 当前不支持。
+
+---
+
+## 功能清单与测试矩阵
+
+### 功能清单（internal 实现）
+
+- **运行模式**：端口转发、代理服务器、反向穿透（服务端/客户端）
+- **协议代理**：HTTP/HTTPS/TLS、HTTP/2、HTTP/3、SOCKS5/SOCKS5H、VLESS+Reality
+- **传输隧道**：`+tls`/`+dtls`/`+h2`/`+h3`（HTTP/SOCKS5/TCP 组合）
+- **端口转发**：TCP/UDP（含 TCP over TLS/DTLS/H2/H3）
+- **反向穿透**：`rtcp`/`rudp` + `tls`/`https`/`http3`/`quic`/`reality`/`vless+reality`
+- **路由能力**：静态路由、链式转发、基于规则的分流
+- **认证与安全**：HTTP/SOCKS5 用户密码、VLESS UUID、TLS/DTLS/Reality 加密
+- **UDP 能力**：UDP 端口转发；HTTP CONNECT + `X-Forward-Protocol: udp` 与 SOCKS5 UDP ASSOC
+
+### E2E 测试矩阵（`tests/`）
+
+| 功能 | 覆盖测试 | 说明 |
+| --- | --- | --- |
+| TCP 转发 + 传输层组合 | `TestPortForwardTransports` | 覆盖 tcp/tls/dtls/h2/h3 |
+| UDP 端口转发 | `TestUDPPortForward` | 覆盖 udp forward |
+| 代理协议（基础） | `TestProxySchemesTCP` | 覆盖 http/https/tls/http2/http3/socks5/socks5h |
+| 传输隧道代理 | `TestProxyTransportTunnels` | 覆盖 socks5+tls/h2/h3 |
+| 反向穿透 | `TestReverseTCPOverTLS` | 覆盖 rtcp + tls |
+| VLESS+Reality 代理 | `TestProxyVlessReality` | 覆盖 reality 传输 + vless 握手 |
+
+说明：反向 `rudp`、反向 `quic/http3` 与更多路由规则的 e2e 链路暂未覆盖，可按需补充。
 
 ---
 
