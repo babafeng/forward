@@ -273,6 +273,15 @@ func (r *resolver) lookupIPs(ctx context.Context, host string) ([]net.IP, error)
 	if host == "" {
 		return nil, nil
 	}
+
+	// 强制使用 DNS 超时，避免依赖调用方 ctx
+	timeout := r.timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	if len(r.servers) == 0 {
 		return net.DefaultResolver.LookupIP(ctx, "ip", host)
 	}

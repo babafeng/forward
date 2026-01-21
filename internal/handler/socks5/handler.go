@@ -16,15 +16,15 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"forward/base/logging"
-	socks5util "forward/base/utils/socks5"
 	"forward/base/auth"
+	inet "forward/base/io/net"
+	"forward/base/logging"
+	"forward/base/pool"
+	socks5util "forward/base/utils/socks5"
 	"forward/internal/chain"
 	"forward/internal/config"
 	corehandler "forward/internal/handler"
-	inet "forward/base/io/net"
 	"forward/internal/metadata"
-	"forward/base/pool"
 	"forward/internal/registry"
 	"forward/internal/router"
 )
@@ -286,7 +286,10 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 
 	laddr := conn.LocalAddr()
 	var ip net.IP
-	if ta, ok := laddr.(*net.TCPAddr); ok && ta != nil {
+	switch ta := laddr.(type) {
+	case *net.TCPAddr:
+		ip = ta.IP
+	case *net.UDPAddr:
 		ip = ta.IP
 	}
 	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: 0})
@@ -314,8 +317,11 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 	}()
 
 	var expectedIP net.IP
-	if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
-		expectedIP = tcpAddr.IP
+	switch addr := conn.RemoteAddr().(type) {
+	case *net.TCPAddr:
+		expectedIP = addr.IP
+	case *net.UDPAddr:
+		expectedIP = addr.IP
 	}
 
 	sess := newUDPSession(h.options.Router, h.log(), udpLn, h.udpIdle, expectedIP, h.maxUDPSessions)
