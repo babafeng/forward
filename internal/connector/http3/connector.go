@@ -21,7 +21,6 @@ type clientProvider interface {
 
 func init() {
 	registry.ConnectorRegistry().Register("http3", NewConnector)
-	registry.ConnectorRegistry().Register("quic", NewConnector)
 }
 
 type Connector struct {

@@ -17,7 +17,6 @@ func TestProxySchemesTCP(t *testing.T) {
 		"http3",
 		"socks5",
 		"socks5h",
-		"quic",
 	}
 
 	for _, scheme := range cases {
@@ -51,6 +50,7 @@ func TestProxyTransportTunnels(t *testing.T) {
 		"socks5+tls",
 		"socks5+h2",
 		"socks5+h3",
+		"socks5+quic",
 	}
 
 	for _, scheme := range cases {

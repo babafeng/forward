@@ -48,7 +48,6 @@ type Listener struct {
 
 func init() {
 	registry.ListenerRegistry().Register("http3", NewListener)
-	registry.ListenerRegistry().Register("quic", NewListener)
 }
 
 func NewListener(opts ...listener.Option) listener.Listener {

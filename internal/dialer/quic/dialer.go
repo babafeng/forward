@@ -10,11 +10,12 @@ import (
 
 	"forward/internal/dialer"
 	"forward/internal/metadata"
+	"forward/internal/registry"
 	"forward/internal/structs"
 )
 
 func init() {
-	// registry.DialerRegistry().Register("quic", NewDialer)
+	registry.DialerRegistry().Register("quic", NewDialer)
 }
 
 type Dialer struct {
