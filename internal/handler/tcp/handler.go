@@ -2,48 +2,110 @@ package tcp
 
 import (
 	"context"
+	"errors"
 	"net"
+	"strings"
 
-	"forward/internal/config"
-	"forward/internal/dialer"
-	inet "forward/internal/io/net"
-	"forward/internal/logging"
+	inet "forward/base/io/net"
+	"forward/base/logging"
+	"forward/internal/chain"
+	corehandler "forward/internal/handler"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
 )
 
+func init() {
+	registry.HandlerRegistry().Register("tcp", NewHandler)
+}
+
 type Handler struct {
-	target string
-	dialer dialer.Dialer
-	log    *logging.Logger
+	options corehandler.Options
+	target  string
 }
 
-func New(cfg config.Config, d dialer.Dialer) *Handler {
-	return &Handler{
-		target: cfg.Forward.Address(),
-		dialer: d,
-		log:    cfg.Logger,
+func NewHandler(opts ...corehandler.Option) corehandler.Handler {
+	options := corehandler.Options{}
+	for _, opt := range opts {
+		opt(&options)
 	}
+	if options.Router == nil {
+		options.Router = router.NewStatic(chain.NewRoute())
+	}
+	return &Handler{options: options}
 }
 
-func (h *Handler) Handle(ctx context.Context, in net.Conn) {
-	defer in.Close()
+func (h *Handler) Init(md metadata.Metadata) error {
+	if md == nil {
+		return nil
+	}
+	h.target = getString(md.Get("target"))
+	if h.target == "" {
+		h.target = getString(md.Get("forward"))
+	}
+	if h.target == "" {
+		return errors.New("tcp handler: missing target")
+	}
+	return nil
+}
 
-	src := in.RemoteAddr().String()
-	dst := h.target
+func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.HandleOption) error {
+	defer conn.Close()
 
-	h.log.Info("Forward TCP Received connection %s --> %s", src, dst)
-	out, err := h.dialer.DialContext(ctx, "tcp", dst)
+	target := h.target
+	if target == "" {
+		return errors.New("tcp handler: missing target")
+	}
+
+	remote := conn.RemoteAddr().String()
+	local := conn.LocalAddr().String()
+	h.logf(logging.LevelInfo, "TCP connection %s -> %s", remote, local)
+
+	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
-		h.log.Error("Forward tcp error: dial %s: %v", dst, err)
+		h.logf(logging.LevelError, "TCP route error: %v", err)
+		return err
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	h.logf(logging.LevelDebug, "TCP route via %s", chain.RouteSummary(route))
+
+	up, err := route.Dial(ctx, "tcp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "TCP dial %s error: %v", target, err)
+		return err
+	}
+
+	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+	if err != nil && ctx.Err() == nil {
+		h.logf(logging.LevelError, "TCP transfer error: %v", err)
+	}
+	h.logf(logging.LevelDebug, "TCP closed %s -> %s transferred %d bytes in %s", remote, target, bytes, dur)
+	return err
+}
+
+func (h *Handler) logf(level logging.Level, format string, args ...any) {
+	if h.options.Logger == nil {
 		return
 	}
-	defer out.Close()
-
-	h.log.Debug("Forward TCP Connected to upstream %s --> %s", src, dst)
-
-	bytes, dur, err := inet.Bidirectional(ctx, in, out)
-	if err != nil && ctx.Err() == nil {
-		h.log.Error("Forward tcp error: transfer: %v", err)
+	switch level {
+	case logging.LevelDebug:
+		h.options.Logger.Debug(format, args...)
+	case logging.LevelInfo:
+		h.options.Logger.Info(format, args...)
+	case logging.LevelWarn:
+		h.options.Logger.Warn(format, args...)
+	case logging.LevelError:
+		h.options.Logger.Error(format, args...)
 	}
+}
 
-	h.log.Debug("Forward TCP Closed connection %s --> %s transferred %d bytes in %s", src, dst, bytes, dur)
+func getString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	default:
+		return ""
+	}
 }

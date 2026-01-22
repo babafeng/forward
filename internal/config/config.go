@@ -3,9 +3,9 @@ package config
 import (
 	"time"
 
-	"forward/internal/endpoint"
-	"forward/internal/logging"
-	"forward/internal/route"
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
 )
 
 const (
@@ -16,8 +16,9 @@ const (
 	DefaultReadDeadline      = 1 * time.Second
 	DefaultReadHeaderTimeout = 10 * time.Second
 
-	DefaultBufferSize = 64 * 1024 // 64KB
-	DefaultCopyBuffer = 32 * 1024 // 32KB
+	DefaultBufferSize = 64 * 1024  // 64KB
+	DefaultCopyBuffer = 32 * 1024  // 32KB
+	DefaultUDPBuffer  = 65535 + 28 // 最大 UDP 报文 + IP/UDP 头余量
 
 	DefaultMaxHeaderBytes = 1 << 20
 
@@ -65,11 +66,12 @@ func (m RunMode) String() string {
 }
 
 type NodeConfig struct {
-	Name      string
-	Listen    endpoint.Endpoint
-	Listeners []endpoint.Endpoint
-	Forward   *endpoint.Endpoint
-	Insecure  bool
+	Name         string
+	Listen       endpoint.Endpoint
+	Listeners    []endpoint.Endpoint
+	Forward      *endpoint.Endpoint
+	ForwardChain []endpoint.Endpoint
+	Insecure     bool
 }
 
 type Config struct {
@@ -78,8 +80,9 @@ type Config struct {
 	Listeners []endpoint.Endpoint
 	LogLevel  logging.Level
 
-	Forward *endpoint.Endpoint
-	Nodes   []NodeConfig
+	Forward      *endpoint.Endpoint
+	ForwardChain []endpoint.Endpoint
+	Nodes        []NodeConfig
 
 	Route      *route.Config
 	RouteStore *route.Store

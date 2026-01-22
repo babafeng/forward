@@ -2,243 +2,114 @@ package udp
 
 import (
 	"context"
+	"errors"
 	"net"
-	"sync"
-	"sync/atomic"
-	"time"
+	"strings"
 
-	"golang.org/x/sync/singleflight"
-
-	"forward/internal/config"
-	"forward/internal/dialer"
-	"forward/internal/logging"
-	"forward/internal/pool"
+	inet "forward/base/io/net"
+	"forward/base/logging"
+	"forward/internal/chain"
+	corehandler "forward/internal/handler"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
 )
 
+func init() {
+	registry.HandlerRegistry().Register("udp", NewHandler)
+}
+
 type Handler struct {
-	target      string
-	dialer      dialer.Dialer
-	log         *logging.Logger
-	maxSessions int
-	idleTimeout time.Duration
-
-	mu       sync.Mutex
-	sessions map[string]*session
-	sf       singleflight.Group
+	options corehandler.Options
+	target  string
 }
 
-func New(cfg config.Config, d dialer.Dialer) *Handler {
-	idle := cfg.UDPIdleTimeout
-	if idle <= 0 {
-		idle = 2 * time.Minute
+func NewHandler(opts ...corehandler.Option) corehandler.Handler {
+	options := corehandler.Options{}
+	for _, opt := range opts {
+		opt(&options)
 	}
-	maxSessions := cfg.MaxUDPSessions
-	if maxSessions <= 0 {
-		maxSessions = config.DefaultMaxUDPSessions
+	if options.Router == nil {
+		options.Router = router.NewStatic(chain.NewRoute())
 	}
-	return &Handler{
-		target:      cfg.Forward.Address(),
-		dialer:      d,
-		log:         cfg.Logger,
-		maxSessions: maxSessions,
-		idleTimeout: idle,
-		sessions:    make(map[string]*session),
-	}
+	return &Handler{options: options}
 }
 
-func (h *Handler) Handle(ctx context.Context, conn *net.UDPConn, pkt []byte, src *net.UDPAddr) {
-	s := h.getOrCreateSession(ctx, conn, src)
-	if s == nil {
-		pool.Put(pkt)
-		return
+func (h *Handler) Init(md metadata.Metadata) error {
+	if md == nil {
+		return nil
 	}
-
-	s.touch()
-	s.bytesIn.Add(int64(len(pkt)))
-
-	_ = s.upstream.SetWriteDeadline(time.Now().Add(1 * time.Second))
-	if _, err := s.upstream.Write(pkt); err != nil {
-		h.log.Error("Forward UDP error: write upstream: %v", err)
-		s.close()
+	h.target = getString(md.Get("target"))
+	if h.target == "" {
+		h.target = getString(md.Get("forward"))
 	}
-	_ = s.upstream.SetWriteDeadline(time.Time{})
-	pool.Put(pkt)
-}
-
-func (h *Handler) Close() error {
-	h.closeAll()
+	if h.target == "" {
+		return errors.New("udp handler: missing target")
+	}
 	return nil
 }
 
-func (h *Handler) getOrCreateSession(ctx context.Context, lconn *net.UDPConn, src *net.UDPAddr) *session {
-	key := src.String()
+func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.HandleOption) error {
+	defer conn.Close()
 
-	// 快速路径：检查已存在的 session
-	h.mu.Lock()
-	if s := h.sessions[key]; s != nil {
-		h.mu.Unlock()
-		return s
+	if _, ok := conn.(net.PacketConn); !ok {
+		return errors.New("udp handler: packet connection required")
 	}
 
-	// 检查是否超出最大 session 限制
-	if len(h.sessions) >= h.maxSessions {
-		h.mu.Unlock()
-		h.log.Warn("Forward UDP: Too many sessions (%d), dropping packet from %s", h.maxSessions, key)
-		return nil
+	target := h.target
+	if target == "" {
+		return errors.New("udp handler: missing target")
 	}
-	h.mu.Unlock()
 
-	// 使用 singleflight 确保同一 key 只创建一个 session
-	result, _, _ := h.sf.Do(key, func() (interface{}, error) {
-		// 再次检查，可能其他 goroutine 已创建
-		h.mu.Lock()
-		if s := h.sessions[key]; s != nil {
-			h.mu.Unlock()
-			return s, nil
-		}
+	remote := conn.RemoteAddr().String()
+	local := conn.LocalAddr().String()
+	h.logf(logging.LevelInfo, "UDP connection %s -> %s", remote, local)
 
-		// 再次检查限制（在 lock 内部）
-		if len(h.sessions) >= h.maxSessions {
-			h.mu.Unlock()
-			return nil, nil
-		}
-		h.mu.Unlock()
-
-		h.log.Info("Forward UDP Received connection %s --> %s", key, h.target)
-		up, err := h.dialer.DialContext(ctx, "udp", h.target)
-		if err != nil {
-			h.log.Error("Forward UDP error: dial %s: %v", h.target, err)
-			return nil, err
-		}
-		h.log.Debug("Forward UDP Connected to upstream %s --> %s", key, h.target)
-
-		s := &session{
-			h:        h,
-			key:      key,
-			src:      cloneUDPAddr(src),
-			upstream: up,
-			start:    time.Now(),
-			idle:     h.idleTimeout,
-			lconn:    lconn,
-		}
-		s.touch()
-
-		h.mu.Lock()
-		h.sessions[key] = s
-		h.mu.Unlock()
-
-		go s.run()
-
-		return s, nil
-	})
-
-	if result == nil {
-		return nil
+	route, err := h.options.Router.Route(ctx, "udp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "UDP route error: %v", err)
+		return err
 	}
-	return result.(*session)
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	h.logf(logging.LevelDebug, "UDP route via %s", chain.RouteSummary(route))
+
+	up, err := route.Dial(ctx, "udp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "UDP dial %s error: %v", target, err)
+		return err
+	}
+
+	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+	if err != nil && ctx.Err() == nil {
+		h.logf(logging.LevelError, "UDP transfer error: %v", err)
+	}
+	h.logf(logging.LevelDebug, "UDP closed %s -> %s transferred %d bytes in %s", remote, target, bytes, dur)
+	return err
 }
 
-func (h *Handler) deleteSession(key string) {
-	h.mu.Lock()
-	delete(h.sessions, key)
-	h.mu.Unlock()
-}
-
-func (h *Handler) closeAll() {
-	h.mu.Lock()
-	ss := make([]*session, 0, len(h.sessions))
-	for _, s := range h.sessions {
-		ss = append(ss, s)
+func (h *Handler) logf(level logging.Level, format string, args ...any) {
+	if h.options.Logger == nil {
+		return
 	}
-	h.mu.Unlock()
-
-	for _, s := range ss {
-		s.close()
+	switch level {
+	case logging.LevelDebug:
+		h.options.Logger.Debug(format, args...)
+	case logging.LevelInfo:
+		h.options.Logger.Info(format, args...)
+	case logging.LevelWarn:
+		h.options.Logger.Warn(format, args...)
+	case logging.LevelError:
+		h.options.Logger.Error(format, args...)
 	}
 }
 
-type session struct {
-	h   *Handler
-	key string
-
-	src *net.UDPAddr
-
-	upstream net.Conn
-	lconn    *net.UDPConn
-
-	start time.Time
-	idle  time.Duration
-
-	lastSeen atomic.Int64
-
-	bytesIn  atomic.Int64
-	bytesOut atomic.Int64
-
-	closeOnce sync.Once
-}
-
-func (s *session) touch() {
-	s.lastSeen.Store(time.Now().UnixNano())
-}
-
-func (s *session) run() {
-	buf := pool.Get()
-	defer pool.Put(buf)
-
-	for {
-		_ = s.upstream.SetReadDeadline(time.Now().Add(1 * time.Second))
-		n, err := s.upstream.Read(buf)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if s.isIdle() {
-					break
-				}
-				continue
-			}
-			break
-		}
-		if n == 0 {
-			continue
-		}
-
-		s.h.log.Debug("Forward UDP Received %d bytes from upstream for %s", n, s.src.String())
-
-		s.touch()
-		s.bytesOut.Add(int64(n))
-
-		if _, err := s.lconn.WriteToUDP(buf[:n], s.src); err != nil {
-			break
-		}
-	}
-
-	s.close()
-}
-
-func (s *session) isIdle() bool {
-	last := time.Unix(0, s.lastSeen.Load())
-	return time.Since(last) > s.idle
-}
-
-func (s *session) close() {
-	s.closeOnce.Do(func() {
-		_ = s.upstream.Close()
-		s.h.deleteSession(s.key)
-
-		total := s.bytesIn.Load() + s.bytesOut.Load()
-		dur := time.Since(s.start)
-		s.h.log.Debug("Forward UDP Closed connection %s --> %s transferred %d bytes in %s", s.src.String(), s.h.target, total, dur)
-	})
-}
-
-func cloneUDPAddr(a *net.UDPAddr) *net.UDPAddr {
-	if a == nil {
-		return nil
-	}
-	ip := make(net.IP, len(a.IP))
-	copy(ip, a.IP)
-	return &net.UDPAddr{
-		IP:   ip,
-		Port: a.Port,
-		Zone: a.Zone,
+func getString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	default:
+		return ""
 	}
 }

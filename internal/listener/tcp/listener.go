@@ -1,81 +1,143 @@
 package tcp
 
 import (
-	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"sync"
 
-	"forward/internal/config"
-	"forward/internal/logging"
+	"time"
+
+	"forward/base/logging"
+	"forward/internal/listener"
+	"forward/internal/metadata"
+	"forward/internal/registry"
 )
 
-type Handler interface {
-	Handle(ctx context.Context, conn net.Conn)
+const (
+	defaultHandshakeTimeout = 10 * time.Second
+)
+
+func init() {
+	registry.ListenerRegistry().Register("tcp", NewListener)
+	registry.ListenerRegistry().Register("http", NewListener)
+	registry.ListenerRegistry().Register("https", NewListener)
+	registry.ListenerRegistry().Register("http2", NewListener)
+	registry.ListenerRegistry().Register("socks5", NewListener)
+	registry.ListenerRegistry().Register("socks5h", NewListener)
 }
 
 type Listener struct {
-	addr        string
-	handler     Handler
-	log         *logging.Logger
-	wg          sync.WaitGroup
-	forwardDesc string
-	sem         chan struct{}
+	addr      string
+	tlsConfig *tls.Config
+	logger    *logging.Logger
+
+	ln net.Listener
+	mu sync.Mutex
 }
 
-func New(cfg config.Config, h Handler) *Listener {
-	forward := "direct"
-	if cfg.Forward != nil && cfg.Mode != config.ModePortForward {
-		forward = cfg.Forward.Address()
+func NewListener(opts ...listener.Option) listener.Listener {
+	options := listener.Options{}
+	for _, opt := range opts {
+		opt(&options)
 	}
 
 	return &Listener{
-		addr:        cfg.Listen.Address(),
-		handler:     h,
-		log:         cfg.Logger,
-		forwardDesc: forward,
-		sem:         make(chan struct{}, config.DefaultMaxConnections),
+		addr:      options.Addr,
+		tlsConfig: options.TLSConfig,
+		logger:    options.Logger,
 	}
 }
 
-func (l *Listener) Run(ctx context.Context) error {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(ctx, "tcp", l.addr)
+func (l *Listener) Init(_ metadata.Metadata) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ln != nil {
+		return nil
+	}
+	if l.addr == "" {
+		return listener.NewBindError(errMissingAddr)
+	}
+	ln, err := net.Listen("tcp", l.addr)
 	if err != nil {
-		return err
+		return listener.NewBindError(err)
 	}
-	defer ln.Close()
-
-	l.log.Info("Forward TCP listening on %s via %s", l.addr, l.forwardDesc)
-
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
-
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				break
-			}
-			l.log.Error("Forward TCP error: accept: %v", err)
-			continue
-		}
-
-		l.log.Debug("Forward TCP New accept from %s", conn.RemoteAddr().String())
-
-		l.sem <- struct{}{}
-		l.wg.Add(1)
-		go func(c net.Conn) {
-			defer func() {
-				<-l.sem
-				l.wg.Done()
-			}()
-			l.handler.Handle(ctx, c)
-		}(conn)
+	if l.tlsConfig != nil {
+		ln = tls.NewListener(&timeoutListener{
+			Listener: ln,
+			timeout:  defaultHandshakeTimeout,
+		}, l.tlsConfig)
 	}
-
-	l.wg.Wait()
+	l.ln = ln
 	return nil
 }
+
+func (l *Listener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	ln := l.ln
+	l.mu.Unlock()
+	if ln == nil {
+		return nil, listener.ErrClosed
+	}
+	conn, err := ln.Accept()
+	if err != nil {
+		return nil, listener.NewAcceptError(err)
+	}
+	if l.logger != nil {
+		l.logger.Info("Listener accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
+	}
+	// TLS 握手在 tls.NewListener 内部完成，deadline 由 timeoutListener 设置
+	// 握手成功后清除 deadline 以避免影响后续数据传输
+	if l.tlsConfig != nil {
+		// 确保 TLS 握手已完成（tls.NewListener 会在 Accept 时完成握手）
+		if tc, ok := conn.(*tls.Conn); ok {
+			// 握手已在 Accept 时完成，现在可以安全清除 deadline
+			if err := tc.Handshake(); err != nil {
+				conn.Close()
+				return nil, listener.NewAcceptError(err)
+			}
+		}
+		conn.SetDeadline(time.Time{})
+	}
+	return conn, nil
+}
+
+type timeoutListener struct {
+	net.Listener
+	timeout time.Duration
+}
+
+func (l *timeoutListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	conn.SetDeadline(time.Now().Add(l.timeout))
+	return conn, nil
+}
+
+func (l *Listener) Addr() net.Addr {
+	l.mu.Lock()
+	ln := l.ln
+	l.mu.Unlock()
+	if ln == nil {
+		return nil
+	}
+	return ln.Addr()
+}
+
+func (l *Listener) Close() error {
+	l.mu.Lock()
+	ln := l.ln
+	l.ln = nil
+	l.mu.Unlock()
+	if ln != nil {
+		if l.logger != nil {
+			l.logger.Info("Listener closed %s", ln.Addr().String())
+		}
+		return ln.Close()
+	}
+	return nil
+}
+
+var errMissingAddr = errors.New("missing listen address")

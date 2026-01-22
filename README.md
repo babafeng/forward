@@ -1,215 +1,269 @@
 # forward
 
-forward is a security & lightweight & high-performance port forwarding and proxy tool written in Go. It supports TCP/UDP port forwarding, intranet penetration (reverse proxy), and multiple proxy protocols (HTTP, SOCKS5, TLS).
+forward 是一个用 Go 编写的安全、轻量、高性能的端口转发与代理工具。支持 TCP/UDP 端口转发、内网穿透（反向代理）以及多种代理协议
 
-## Features
+## 功能特性
 
-* **Port Forwarding**: TCP/UDP forwarding with support for proxy chains.
-* **Intranet Penetration (Reverse Proxy)**: Expose local services to the internet via a reverse tunnel (TLS/QUIC/VLESS+REALITY).
-* **Proxy Server**: HTTP/SOCKS5/TLS/QUIC/VLESS+REALITY proxy server.
-* **Proxy Routing**: Rule-based routing to multiple upstream proxies (INI config).
-* **Multiplexing**: Uses Yamux for TCP and QUIC for UDP (planned) to improve performance.
+* **端口转发**：支持 TCP/UDP 转发，并支持代理链。
+* **内网穿透（反向代理）**：通过反向隧道将本地服务暴露到公网（TLS/QUIC/VLESS+REALITY）。
+* **代理服务器**：支持 HTTP/SOCKS5/TLS/HTTP3/VLESS+REALITY 代理服务端。
+* **传输协议**：支持 TCP/UDP/TLS/DTLS/HTTP2/HTTP3/QUIC(Raw) 作为底层传输通道。
+* **代理路由**：基于规则将流量路由到多个上游代理（INI 配置）。
+* **多路复用**：TCP 使用 Yamux
 
-## Installation
+## 安装
 
 ```bash
-# From source code
+# 从源码安装
 git clone https://github.com/babafeng/forward.git
 cd forward
 go build -o forward ./cmd/forward && chmod +x forward
 ```
 
 ```bash
-# install latest version
+# 安装最新版本
 bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/install.sh) --install
 ```
 
 ```bash
-# install specific version
+# 安装指定版本
 bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/install.sh)
 ```
 
-## Run as Service
+## 作为系统服务运行
 
-You can register `forward` as a system service on Linux (systemd) or macOS (launchd) using the provided script.
+你可以使用提供的脚本在 Linux（systemd）或 macOS（launchd）上将 `forward` 注册为系统服务。
 
 ```bash
-# This will create a systemd unit and enable it on boot
+# 将创建 systemd unit 并设置为开机自启
 bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward -- -L tcp://:8080/1.2.3.4:80
 
-# Unregister/Remove service
+# 注销/移除服务
 bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-service.sh) --name forward --remove
 ```
 
-## Auth
+## 认证（Auth）
 
-You can set username and password for authentication in proxy URLs.
+你可以在代理 URL 中设置用户名和密码用于认证。
 
 ```bash
 forward -L socks5://user:pass@:1080
 forward -F tls://user:pass@your.server.com:2333
 ```
 
-## Cert
+## 证书（Cert）
 
-You can set cert for tls category service.
+你可以为 tls 类别服务设置证书。
 
 ```bash
-# support tls / quic / http2 / http1 / http3
+# 支持 tls / quic / http2 / http1 / http3
 forward -L "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
 
-# And client, If self-signed cert, set ca option
+# HTTP/3 代理（标准 HTTP/3 代理）
+forward -L http3://:443 --debug
+
+# SOCKS5 over Raw QUIC (无 HTTP 头部，纯 QUIC 隧道)
+forward -L socks5+quic://:443 --debug
+
+# 客户端：如果是自签证书，设置 ca 选项
 forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer&sni=your.server.com"
 ```
 
-## Usage
+## 使用方法（Usage）
 
-### Port Forwarding
+### 端口转发（Port Forwarding）
 
-Forward local port to remote host.
+将本地端口转发到远端主机。
 
-Forward local 8080 --> 1.2.3.4:80, access 8080 == 1.2.3.4:80
+本地 8080 --> 1.2.3.4:80，访问 8080 == 访问 1.2.3.4:80
 
 ```bash
-# Forward TCP
+# 转发 TCP
 forward -L tcp://:8080/1.2.3.4:80
 forward -L tcp://:8080 -F tcp://1.2.3.4:80
 
-# Forward UDP
+# 转发 UDP
 forward -L udp://:5353/8.8.8.8:53
 forward -L udp://:5353 -F udp://8.8.8.8:53
 ```
 
-### Proxy Server
+### 代理服务器（Proxy Server）
 
-Start a proxy server supporting http / socks5 / https / quic / tls / vless+reality (alias: reality)
+启动一个代理服务器，支持 http / socks5 / https / quic / tls / vless+reality（别名：reality）
 
 ```bash
 forward -L http://:1080
 forward -L vless+reality://:443
 forward -L reality://:443
 
-# Optional parameters: uuid / dest / sni / sid / key
+# 可选参数：uuid / dest / sni / sid / key
 forward -L vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key
 ```
 
-Advanced usage
+**进阶用法-代理链:**
+
+使用 `-F` 参数依次指定代理链中的节点，顺序为**从近到远**（先经过的代理先写）：
 
 ```bash
-# —L forward tcp/udp port
-# -F forward to remote host
-forward -L http://:1080 -F tls://user:pass@your.server.com:443
+# 单跳代理
+forward -L http://127.0.0.1:1080 -F tls://proxy.com:1080
+
+# 双跳代理链：本地 -> S2 -> S1 -> 目标
+forward -L http://127.0.0.1:8080 -F http://S2:8080 -F http://S1:8080
+
+# 三跳代理链：本地 -> S3 -> S2 -> S1 -> 目标
+forward -L http://:8080 -F http://S3:8080 -F http://S2:8080 -F http://S1:8080
 ```
 
-### Intranet Reverse Proxy
+**支持的协议组合：**
 
-**Server Side (Public IP):**
+| 基础协议       | 可链接协议                | 说明                         |
+| -------------- | ------------------------- | ---------------------------- |
+| http/https/tls | http/https/tls/socks5     | 标准 TCP 链式代理            |
+| socks5         | quic/http3/http/https/tls | SOCKS5 支持 UDP，可承载 QUIC |
+| vless/reality  | http/https/tls/socks5     | 仅支持 TCP 传输 (`type=tcp`) |
+| tcp            | quic                      | Raw QUIC 隧道                |
 
-Start a reverse proxy server listening on port 2333.
+**QUIC/HTTP3 多跳示例：**
 
 ```bash
-# support all proxy schemes, but recommend using secure ones below: tls / quic / https
+# QUIC 多跳需要 UDP-capable 的 base（如 socks5）
+forward -L http://127.0.0.1:8080 -F socks5://S2:1080 -F quic://S1:443
+forward -L socks5://127.0.0.1:1080 -F quic://S2:1080 -F quic://S1:443
+```
+
+**注意事项：**
+
+* QUIC/HTTP3 协议需要底层支持 UDP，因此不能直接建在纯 TCP 代理（如 http）上
+* VLESS 协议在多跳场景下仅支持 TCP 传输模式
+
+### 内网反向代理（Intranet Reverse Proxy）
+
+**服务端（公网 IP）：**
+
+启动一个反向代理服务端，监听 2333 端口。
+
+```bash
+# 支持所有代理 scheme，但建议使用更安全的：tls / quic / https
 forward -L tls://user:passwd@:2333?bind=true
 
-# VLESS+REALITY (alias: reality)
+# VLESS+REALITY（别名：reality）
 forward -L reality://uuid@:2333?bind=true&key=xxxx&sid=xxxxx&sni=swscan.apple.com
 ```
 
-**Client Side (Intranet):**
+**客户端（内网）：**
 
-Connect to the server and map remote port 11080 to local 1080.
+连接到服务端，并将远端端口 11080 映射到本地 1080。
 
 ```bash
-# Map remote 2222 -> local 127.0.0.1:22
+# 映射：远端 2222 -> 本地 127.0.0.1:22
 forward -L tcp://:2222/127.0.0.1:22 -F tls://your.server.com:2333
 
-# VLESS+REALITY (target defaults to server address, override with target=host:port if needed)
+# VLESS+REALITY（target 默认是服务端地址；如需可用 target=host:port 覆盖）
 forward -L tcp://:2222/127.0.0.1:22 -F "reality://uuid@your.server.com:2333?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=xxx&security=reality&sid=xxxx&sni=swscan.apple.com&type=tcp"
 ```
 
-Now, accessing `your.server.com:2222` will reach the intranet machine's `127.0.0.1:22`.
+现在，访问 `your.server.com:2222` 将会到达内网机器的 `127.0.0.1:22`。
 
-Notes:
-* `reality://` is an alias of `vless+reality://`.
-* Reverse server requires `bind=true`.
-* Reverse client `target=host:port` sets the VLESS request target (default: server host:port).
-* `key` is server private key; `pbk` is client public key; `sid` is short ID; `sni` is server name.
+* `reality://` 是 `vless+reality://` 的别名。
+* 反向代理服务端需要 `bind=true`。
+* 反向代理客户端使用 `target=host:port` 设置 VLESS 请求的目标（默认：服务端 host:port）。
+* `key` 是服务端私钥；`pbk` 是客户端公钥；`sid` 是 short ID；`sni` 是服务端名称。
 
-### Proxy Chaining
+### 多监听（Multiple Listeners）
 
-Forward traffic through a proxy chain.
-
-```bash
-forward -L http://127.0.0.1:1080 -F tls://proxy.com:1080
-```
-
-### Multiple Listeners
-
-You can start multiple services at once.
+你可以一次启动多个服务。
 
 ```bash
 forward -L tcp://:8080/1.2.3.4:80 -L socks5://:1080
 ```
 
-### JSON Config File
+### JSON 配置文件（JSON Config File）
 
-Use a JSON config file instead of command-line arguments.
+在复杂环境中，使用 JSON 配置文件替代命令行参数
 
 ```bash
-# Use config file
+# 使用配置文件
 forward -C config.json
 
-# Default config paths (auto-detected when no arguments):
+# 默认配置路径（无参数时自动探测）：
 #   ~/.forward/forward.json
 #   ~/forward.json
 ```
 
-**Simple config format:**
+**简单配置格式：**
 
 ```json
 {
-  "listeners": ["http://:1080", "socks5://:1081"],
+  "listen": "http://:1080",
   "forward": "tls://user:pass@remote.com:443",
   "insecure": false,
   "debug": false
 }
 ```
 
-**Multi-node config format:**
+**链式转发示例：**
+
+```json
+{
+  "listen": "http://:8080",
+  "forwards": ["http://S2:8080", "http://S1:8080"]
+}
+```
+
+说明：
+
+* `forward` 与 `forwards` 互斥；`forwards` 的顺序为从近到远。
+
+**多节点配置格式：**
 
 ```json
 {
   "nodes": [
     {
       "name": "proxy_server",
-      "listeners": ["http://:8080"],
+      "listen": "http://:8080",
       "forward": "tls://user:pass@remote.com:443",
       "insecure": false
     },
     {
+      "name": "proxy_chain",
+      "listen": "http://:8081",
+      "forwards": ["http://S2:8080", "http://S1:8080"]
+    },
+    {
       "name": "port_forward",
-      "listeners": ["tcp://:2222/10.0.0.1:22"]
+      "listen": "tcp://:2222/10.0.0.1:22"
+    },
+    {
+      "name": "port_forward",
+      "listeners": [
+        "tcp://:2222/10.0.0.1:22",
+        "http://:8080",
+        "socks5://:1080",
+      ]
     }
   ],
   "debug": true
 }
 ```
 
-Each node has independent `listeners`, `forward`, and `insecure` settings.
+每个 node 都有独立的 `listeners`/`listen`、`forward`/`forwards` 与 `insecure` 设置。
 
-### Proxy Route (INI)
+### 代理路由（Proxy Route）
 
-Start a rule-based proxy router with a dedicated INI config file. This mode listens locally and routes traffic to different upstream proxies.
+使用独立的 INI 配置文件启动基于规则的代理路由器。该模式会在本地监听，并将流量路由到不同的上游代理。
 
 ```bash
 forward -R proxy-route.conf
 ```
 
-**Example config:**
+**示例配置：**
 
-```
+```ini
 [General]
 listen = socks5://0.0.0.0:1080, http://0.0.0.0:8080
+debug = false
 skip-proxy = 192.168.0.0/16, 127.0.0.1/32
 dns-server = 8.8.8.8, 8.8.4.4
 mmdb-path = ~/.forward/Country.mmdb
@@ -227,7 +281,6 @@ GEOIP,CN,DIRECT
 FINAL,DIRECT
 ```
 
-Notes:
-* Rules are matched top-to-bottom; first match wins.
-* Use `socks5h://` on clients if you want domain-based rules to match before local DNS resolution.
-* The router auto-reloads when the INI file changes (polled every second).
+* 规则自上而下匹配；命中第一条后即停止
+* 若希望基于域名的规则在本地 DNS 解析前生效，请在客户端使用 `socks5h://`
+* 路由器会在 INI 文件变更时自动热重载（每秒轮询一次）

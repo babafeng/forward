@@ -1,36 +1,49 @@
 package http
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	stdhttp "net/http"
-	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/net/http2"
 
-	"forward/internal/auth"
+	"forward/base/auth"
+	inet "forward/base/io/net"
+	"forward/base/logging"
+	"forward/internal/chain"
 	"forward/internal/config"
-	"forward/internal/dialer"
-	inet "forward/internal/io/net"
-	"forward/internal/logging"
-	"forward/internal/route"
+	ictx "forward/internal/ctx"
+	corehandler "forward/internal/handler"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
 )
 
+func init() {
+	registry.HandlerRegistry().Register("http", NewHandler)
+}
+
 type Handler struct {
-	dialer      dialer.Dialer
-	log         *logging.Logger
-	auth        auth.Authenticator
-	requireAuth bool
-	insecureTLS bool
-	transparent bool
-	routeStore  *route.Store
+	options           corehandler.Options
+	auth              auth.Authenticator
+	requireAuth       bool
+	transparent       bool
+	insecureTLS       bool
+	enableUDP         bool
+	udpIdle           time.Duration
+	maxUDPSessions    int
+	readHeaderTimeout time.Duration
+	maxHeaderBytes    int
+	idleTimeout       time.Duration
 
 	transportOnce sync.Once
 	transport     *stdhttp.Transport
@@ -40,17 +53,513 @@ type routeContextKey int
 
 const routeKey routeContextKey = iota
 
-func New(cfg config.Config, d dialer.Dialer) *Handler {
-	user, pass, ok := cfg.Listen.UserPass()
-	return &Handler{
-		dialer:      d,
-		log:         cfg.Logger,
-		auth:        auth.FromUserPass(user, pass),
-		requireAuth: ok,
-		insecureTLS: cfg.Insecure,
-		transparent: strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
-		routeStore:  cfg.RouteStore,
+func NewHandler(opts ...corehandler.Option) corehandler.Handler {
+	options := corehandler.Options{}
+	for _, opt := range opts {
+		opt(&options)
 	}
+
+	user := ""
+	pass := ""
+	if options.Auth != nil {
+		user = options.Auth.Username()
+		pass, _ = options.Auth.Password()
+	}
+	requireAuth := user != "" || pass != ""
+
+	h := &Handler{
+		options:        options,
+		auth:           auth.FromUserPass(user, pass),
+		requireAuth:    requireAuth,
+		enableUDP:      true,
+		udpIdle:        config.DefaultUDPIdleTimeout,
+		maxUDPSessions: config.DefaultMaxUDPSessions,
+	}
+	if h.options.Router == nil {
+		h.options.Router = router.NewStatic(chain.NewRoute())
+	}
+	return h
+}
+
+func (h *Handler) Init(md metadata.Metadata) error {
+	if md == nil {
+		return nil
+	}
+	if v := md.Get("transparent"); v != nil {
+		h.transparent = parseBool(v)
+	}
+	if v := md.Get("insecure"); v != nil {
+		h.insecureTLS = parseBool(v)
+	}
+	if v := md.Get("udp"); v != nil {
+		h.enableUDP = parseBool(v)
+	}
+	if v := md.Get("udp_idle"); v != nil {
+		if t, ok := v.(time.Duration); ok && t > 0 {
+			h.udpIdle = t
+		}
+	}
+	if v := md.Get("max_udp_sessions"); v != nil {
+		if n, ok := v.(int); ok && n > 0 {
+			h.maxUDPSessions = n
+		}
+	}
+
+	h.readHeaderTimeout = 30 * time.Second
+	if v := md.Get("read_header_timeout"); v != nil {
+		if t, ok := v.(time.Duration); ok && t > 0 {
+			h.readHeaderTimeout = t
+		}
+	}
+	h.maxHeaderBytes = 1 << 20 // 1MB
+	if v := md.Get("max_header_bytes"); v != nil {
+		if n, ok := v.(int); ok && n > 0 {
+			h.maxHeaderBytes = n
+		}
+	}
+	h.idleTimeout = 60 * time.Second
+	if v := md.Get("idle_timeout"); v != nil {
+		if t, ok := v.(time.Duration); ok && t > 0 {
+			h.idleTimeout = t
+		}
+	}
+	return nil
+}
+
+func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.HandleOption) error {
+	defer conn.Close()
+
+	remote := conn.RemoteAddr().String()
+	local := conn.LocalAddr().String()
+	h.logf(logging.LevelInfo, "HTTP connection %s -> %s", remote, local)
+
+	if md := ictx.MetadataFromContext(ctx); md != nil {
+		if w, ok := md.Get(metadata.MetaHTTPResponseWriter).(stdhttp.ResponseWriter); ok && w != nil {
+			if r, ok := md.Get(metadata.MetaHTTPRequest).(*stdhttp.Request); ok && r != nil {
+				h.ServeHTTP(w, r)
+				return nil
+			}
+		}
+	}
+
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return err
+		}
+		if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
+			h2srv := &http2.Server{}
+			h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
+				Context: ctx,
+				Handler: stdhttp.HandlerFunc(h.ServeHTTP),
+			})
+			return nil
+		}
+	}
+
+	// Use http.Server for HTTP/1.x to handle timeouts and limits correctly
+	server := &stdhttp.Server{
+		Handler:           stdhttp.HandlerFunc(h.ServeHTTP),
+		ReadHeaderTimeout: h.readHeaderTimeout,
+		MaxHeaderBytes:    h.maxHeaderBytes,
+		IdleTimeout:       h.idleTimeout,
+		BaseContext: func(l net.Listener) context.Context {
+			return ctx
+		},
+	}
+
+	// Track connection close to avoid premature return
+	done := make(chan struct{})
+	wrappedConn := &closeNotifyConn{
+		Conn: conn,
+		onClose: func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		},
+	}
+
+	ln := &oneShotListener{conn: wrappedConn, addr: conn.LocalAddr()}
+
+	// 使用 WaitGroup 确保 goroutine 正确退出
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// serve in background (it will return quickly due to one-shot listener)
+	go func() {
+		defer wg.Done()
+		_ = server.Serve(ln)
+	}()
+
+	// Wait for connection to be closed by http.Server (IdleTimeout) or Hijacker
+	select {
+	case <-done:
+	case <-ctx.Done():
+		server.Close()
+	}
+
+	// 等待 server goroutine 完全退出，防止泄露
+	wg.Wait()
+
+	return nil
+}
+
+type closeNotifyConn struct {
+	net.Conn
+	onClose func()
+	once    sync.Once
+}
+
+func (c *closeNotifyConn) Close() error {
+	c.once.Do(c.onClose)
+	return c.Conn.Close()
+}
+
+type oneShotListener struct {
+	conn net.Conn
+	addr net.Addr
+	mu   sync.Mutex
+	done bool
+}
+
+func (l *oneShotListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.done {
+		return nil, net.ErrClosed
+	}
+	l.done = true
+	return l.conn, nil
+}
+
+func (l *oneShotListener) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.done = true
+	return nil
+}
+
+func (l *oneShotListener) Addr() net.Addr {
+	return l.addr
+}
+
+// ServeHTTP handles HTTP/1.1, HTTP/2, and HTTP/3 proxy requests when bridged via listener metadata.
+func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	h.logf(logging.LevelInfo, "HTTP request %s %s from %s host=%s", r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
+
+	if isUDPRequest(r) {
+		if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
+			writeSimpleHTTP(w, stdhttp.StatusBadRequest, "bad udp request")
+			return
+		}
+		if hj, ok := w.(stdhttp.Hijacker); ok {
+			conn, bufrw, err := hj.Hijack()
+			if err != nil {
+				h.logf(logging.LevelError, "HTTP UDP hijack error: %v", err)
+				writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "hijack failed")
+				return
+			}
+			h.handleUDP(r.Context(), conn, bufrw.Reader)
+			return
+		}
+	}
+
+	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
+		if !r.URL.IsAbs() && !h.transparent {
+			h.logf(logging.LevelDebug, "HTTP reject non-absolute request from %s: %s", r.RemoteAddr, r.URL.String())
+			writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+			return
+		}
+	}
+
+	if h.requireAuth && !h.authorizeHTTP(w, r) {
+		return
+	}
+
+	if strings.EqualFold(r.Method, stdhttp.MethodConnect) {
+		h.handleConnectHTTP(w, r)
+		return
+	}
+
+	h.handleForwardHTTP(w, r)
+}
+
+func (h *Handler) authorizeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) bool {
+	user, pass, ok := parseProxyAuth(r.Header.Get("Proxy-Authorization"))
+	if ok && h.auth.Check(user, pass) {
+		h.logf(logging.LevelDebug, "HTTP auth success for user %s", user)
+		return true
+	}
+	h.logf(logging.LevelDebug, "HTTP auth failed or missing credentials from %s", r.RemoteAddr)
+	writeAuthRequiredHTTP(w)
+	return false
+}
+
+func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	target := r.Host
+	if target == "" {
+		writeSimpleHTTP(w, stdhttp.StatusBadRequest, "missing host")
+		return
+	}
+	if !strings.Contains(target, ":") {
+		target += ":443"
+	}
+
+	ctx := r.Context()
+	route, err := h.options.Router.Route(ctx, "tcp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "HTTP route error: %v", err)
+		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", chain.RouteSummary(route))
+
+	h.logf(logging.LevelInfo, "HTTP CONNECT %s -> %s", r.RemoteAddr, target)
+	up, err := route.Dial(ctx, "tcp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "HTTP connect dial error: %v", err)
+		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+	defer up.Close()
+
+	if hj, ok := w.(stdhttp.Hijacker); ok {
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			h.logf(logging.LevelError, "HTTP connect hijack error: %v", err)
+			writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "hijack failed")
+			return
+		}
+		defer conn.Close()
+
+		_, _ = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+		_ = bufrw.Flush()
+
+		bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+		h.logf(logging.LevelInfo, "HTTP CONNECT closed %s -> %s bytes=%d dur=%s", r.RemoteAddr, target, bytes, dur)
+		if err != nil {
+			h.logf(logging.LevelDebug, "HTTP CONNECT stream error: %v", err)
+		}
+		return
+	}
+
+	fl, ok := w.(stdhttp.Flusher)
+	if !ok {
+		h.logf(logging.LevelError, "HTTP connect: response writer not flushable")
+		writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "stream not supported")
+		return
+	}
+
+	if err := stdhttp.NewResponseController(w).EnableFullDuplex(); err != nil {
+		h.logf(logging.LevelDebug, "HTTP connect: enable full-duplex failed: %v", err)
+	}
+
+	w.WriteHeader(stdhttp.StatusOK)
+	fl.Flush()
+
+	h.streamWithBody(ctx, w, r.Body, up, fl)
+	h.logf(logging.LevelInfo, "HTTP CONNECT closed %s -> %s", r.RemoteAddr, target)
+}
+
+func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	ctx := r.Context()
+	req, err := h.prepareUpstreamRequest(ctx, r)
+	if err != nil {
+		h.logf(logging.LevelDebug, "HTTP bad request from %s: %v", r.RemoteAddr, err)
+		writeSimpleHTTP(w, stdhttp.StatusBadRequest, "bad request")
+		return
+	}
+
+	target := req.URL.Host
+	route, err := h.options.Router.Route(ctx, "tcp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "HTTP route error: %v", err)
+		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	h.logf(logging.LevelDebug, "HTTP route via %s", chain.RouteSummary(route))
+	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
+
+	h.logf(logging.LevelInfo, "HTTP %s %s -> %s", r.Method, r.URL.String(), target)
+	resp, err := h.transportClient().RoundTrip(req)
+	if err != nil {
+		h.logf(logging.LevelDebug, "HTTP dial failed %s: %v", req.URL.String(), err)
+		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, resp.Body); err != nil && ctx.Err() == nil {
+		h.logf(logging.LevelError, "HTTP error writing response: %v", err)
+		return
+	}
+	h.logf(logging.LevelInfo, "HTTP response %s -> %s %d", r.RemoteAddr, target, resp.StatusCode)
+}
+
+func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {
+	if body == nil {
+		body = io.NopCloser(strings.NewReader(""))
+	}
+	var once sync.Once
+	closer := func() {
+		once.Do(func() {
+			_ = upstream.Close()
+			_ = body.Close()
+		})
+	}
+	defer closer()
+
+	doneCh := make(chan struct{})
+	defer close(doneCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			closer()
+		case <-doneCh:
+		}
+	}()
+
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		_, _ = io.Copy(upstream, body)
+		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+	}()
+
+	respWriter := &flushWriter{w: w, f: fl}
+	_, _ = io.Copy(respWriter, upstream)
+
+	select {
+	case <-clientDone:
+	case <-ctx.Done():
+	}
+}
+
+type flushWriter struct {
+	w io.Writer
+	f stdhttp.Flusher
+}
+
+func (fw *flushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if err == nil {
+		fw.f.Flush()
+	}
+	return n, err
+}
+
+func (h *Handler) authorize(conn net.Conn, req *stdhttp.Request) bool {
+	user, pass, ok := parseProxyAuth(req.Header.Get("Proxy-Authorization"))
+	if ok && h.auth.Check(user, pass) {
+		h.logf(logging.LevelDebug, "HTTP auth success for user %s", user)
+		return true
+	}
+	h.logf(logging.LevelDebug, "HTTP auth failed or missing credentials from %s", req.RemoteAddr)
+	writeAuthRequired(conn)
+	return false
+}
+
+func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Reader, req *stdhttp.Request) error {
+	target := req.Host
+	if target == "" {
+		return writeSimple(conn, stdhttp.StatusBadRequest, "missing host", nil)
+	}
+	if !strings.Contains(target, ":") {
+		target += ":443"
+	}
+
+	route, err := h.options.Router.Route(ctx, "tcp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "HTTP route error: %v", err)
+		return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", chain.RouteSummary(route))
+
+	h.logf(logging.LevelInfo, "HTTP CONNECT %s -> %s", req.RemoteAddr, target)
+	up, err := route.Dial(ctx, "tcp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "HTTP connect dial error: %v", err)
+		return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
+	}
+	defer up.Close()
+
+	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		return err
+	}
+
+	if br != nil && br.Buffered() > 0 {
+		buf, _ := br.Peek(br.Buffered())
+		if len(buf) > 0 {
+			_, _ = up.Write(buf)
+			_, _ = br.Discard(len(buf))
+		}
+	}
+
+	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+	h.logf(logging.LevelInfo, "HTTP CONNECT closed %s -> %s bytes=%d dur=%s", req.RemoteAddr, target, bytes, dur)
+	return err
+}
+
+func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp.Request) (bool, error) {
+	if !strings.EqualFold(req.Method, stdhttp.MethodConnect) {
+		if !req.URL.IsAbs() && !h.transparent {
+			return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
+		}
+	}
+
+	upReq, err := h.prepareUpstreamRequest(ctx, req)
+	if err != nil {
+		return false, writeSimple(conn, stdhttp.StatusBadRequest, "bad request", nil)
+	}
+
+	target := upReq.URL.Host
+	route, err := h.options.Router.Route(ctx, "tcp", target)
+	if err != nil {
+		h.logf(logging.LevelError, "HTTP route error: %v", err)
+		return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	h.logf(logging.LevelDebug, "HTTP route via %s", chain.RouteSummary(route))
+	upReq = upReq.WithContext(context.WithValue(upReq.Context(), routeKey, route))
+
+	h.logf(logging.LevelInfo, "HTTP %s %s -> %s", req.Method, req.URL.String(), target)
+	resp, err := h.transportClient().RoundTrip(upReq)
+	if err != nil {
+		h.logf(logging.LevelDebug, "HTTP dial failed %s: %v", upReq.URL.String(), err)
+		return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
+	}
+	defer resp.Body.Close()
+
+	cleanHopHeaders(resp.Header)
+	resp.Close = req.Close
+
+	bw := bufio.NewWriter(conn)
+	if err := resp.Write(bw); err != nil {
+		return false, err
+	}
+	if err := bw.Flush(); err != nil {
+		return false, err
+	}
+
+	h.logf(logging.LevelInfo, "HTTP response %s -> %s %d", req.RemoteAddr, target, resp.StatusCode)
+	return !req.Close && !resp.Close, nil
 }
 
 func (h *Handler) transportClient() *stdhttp.Transport {
@@ -59,180 +568,27 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 			InsecureSkipVerify: h.insecureTLS,
 		}
 		h.transport = &stdhttp.Transport{
-			Proxy:               nil,
-			DialContext:         h.routeDialContext,
-			ForceAttemptHTTP2:   true,
-			TLSClientConfig:     tlsCfg,
-			DisableCompression:  true,
-			MaxIdleConnsPerHost: 10,
+			Proxy:                 nil,
+			DialContext:           h.routeDialContext,
+			ForceAttemptHTTP2:     true,
+			TLSClientConfig:       tlsCfg,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			DisableCompression:    true,
+			MaxIdleConnsPerHost:   10,
 		}
-		http2.ConfigureTransport(h.transport)
+		_ = http2.ConfigureTransport(h.transport)
 	})
 	return h.transport
 }
 
-func (h *Handler) Close() error {
-	if h.transport != nil {
-		h.transport.CloseIdleConnections()
+func (h *Handler) routeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	route, _ := ctx.Value(routeKey).(chain.Route)
+	if route == nil {
+		route = chain.NewRoute()
 	}
-	return nil
-}
-
-// ServeHTTP implements net/http Handler to support HTTP/1.1, HTTP/2, HTTP/3 entrypoints.
-func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	h.log.Debug("Forward HTTP request %s %s from %s host=%s", r.Method, r.URL.String(), r.RemoteAddr, r.Host)
-
-	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
-		if !r.URL.IsAbs() && !h.transparent {
-			h.log.Debug("Forward HTTP reject non-absolute request from %s: %s", r.RemoteAddr, r.URL.String())
-			writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
-			return
-		}
-	}
-
-	if h.requireAuth && !h.authorize(w, r) {
-		return
-	}
-
-	if strings.EqualFold(r.Method, stdhttp.MethodConnect) {
-		h.handleConnect(w, r)
-		return
-	}
-
-	h.handleForward(w, r)
-}
-
-func (h *Handler) authorize(w stdhttp.ResponseWriter, r *stdhttp.Request) bool {
-	user, pass, ok := parseProxyAuth(r.Header.Get("Proxy-Authorization"))
-	if ok && h.auth.Check(user, pass) {
-		h.log.Debug("Forward HTTP auth success for user %s", user)
-		return true
-	}
-	if h.requireAuth {
-		h.log.Debug("Forward HTTP auth failed or missing credentials from %s", r.RemoteAddr)
-	}
-	writeAuthRequired(w)
-	return false
-}
-
-func (h *Handler) handleConnect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	target := r.Host
-	if target == "" {
-		writeSimple(w, stdhttp.StatusBadRequest, "missing host")
-		return
-	}
-	if !strings.Contains(target, ":") {
-		target += ":443"
-	}
-
-	via, err := route.RouteVia(r.Context(), h.routeStore, h.log, r.RemoteAddr, target)
-	if err != nil {
-		h.log.Error("Forward HTTP route error: %v", err)
-		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
-		return
-	}
-	if route.IsReject(via) {
-		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
-		return
-	}
-
-	h.log.Info("Forward HTTP CONNECT Received connection %s --> %s", r.RemoteAddr, target)
-	up, err := dialer.DialContextVia(r.Context(), h.dialer, "tcp", target, via)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-			(r.Context().Err() != nil && (errors.Is(r.Context().Err(), context.Canceled) || errors.Is(r.Context().Err(), context.DeadlineExceeded))) {
-			h.log.Debug("Forward HTTP connect dial canceled: %v", err)
-		} else {
-			h.log.Error("Forward HTTP connect dial error: %v", err)
-		}
-		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
-		return
-	}
-
-	if hj, ok := w.(stdhttp.Hijacker); ok {
-		conn, bufrw, err := hj.Hijack()
-		if err != nil {
-			h.log.Error("Forward HTTP connect hijack error: %v", err)
-			_ = up.Close()
-			writeSimple(w, stdhttp.StatusInternalServerError, "hijack failed")
-			return
-		}
-		defer conn.Close()
-		defer up.Close()
-
-		_, _ = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
-		_ = bufrw.Flush()
-
-		h.log.Debug("Forward HTTP CONNECT Connected to upstream %s --> %s", r.RemoteAddr, target)
-
-		bytes, dur, err := inet.Bidirectional(r.Context(), conn, up)
-		if err != nil && r.Context().Err() == nil {
-			if errors.Is(err, net.ErrClosed) || strings.Contains(err.Error(), "use of closed network connection") {
-				h.log.Debug("Forward HTTP connect transfer closed: %v", err)
-			} else {
-				h.log.Error("Forward HTTP connect transfer error: %v", err)
-			}
-		}
-		h.log.Debug("Forward HTTP CONNECT Closed connection %s --> %s transferred %d bytes in %s", r.RemoteAddr, target, bytes, dur)
-		return
-	}
-
-	flusher, ok := w.(stdhttp.Flusher)
-	if !ok {
-		h.log.Error("Forward HTTP connect: response writer not flushable")
-		_ = up.Close()
-		writeSimple(w, stdhttp.StatusInternalServerError, "stream not supported")
-		return
-	}
-
-	w.WriteHeader(stdhttp.StatusOK)
-	flusher.Flush()
-
-	h.streamWithBody(r.Context(), w, r.Body, up, flusher)
-}
-
-func (h *Handler) handleForward(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	h.log.Debug("Forward HTTP Received connection from %s", r.RemoteAddr)
-
-	ctx := r.Context()
-	req, err := h.prepareUpstreamRequest(ctx, r)
-	if err != nil {
-		h.log.Debug("Forward HTTP bad request from %s: %v", r.RemoteAddr, err)
-		writeSimple(w, stdhttp.StatusBadRequest, "bad request")
-		return
-	}
-
-	via, err := route.RouteVia(ctx, h.routeStore, h.log, r.RemoteAddr, req.URL.Host)
-	if err != nil {
-		h.log.Error("Forward HTTP route error: %v", err)
-		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
-		return
-	}
-	if route.IsReject(via) {
-		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
-		return
-	}
-	req = req.WithContext(context.WithValue(req.Context(), routeKey, via))
-
-	h.log.Info("Forward HTTP Received connection %s --> %s", r.RemoteAddr, req.URL.Host)
-
-	resp, err := h.transportClient().RoundTrip(req)
-	if err != nil {
-		h.log.Debug("Forward HTTP dial failed %s: %v", req.URL.String(), err)
-		writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
-		return
-	}
-	defer resp.Body.Close()
-
-	h.log.Debug("Forward HTTP response from upstream: %s %d %s", req.URL.Host, resp.StatusCode, resp.Status)
-
-	copyHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil && ctx.Err() == nil {
-		h.log.Error("Forward HTTP error: write client: %v", err)
-		return
-	}
-	h.log.Info("Forward HTTP Close %s %d %s", req.URL.Host, resp.StatusCode, resp.Status)
+	return route.Dial(ctx, network, address)
 }
 
 func (h *Handler) prepareUpstreamRequest(ctx context.Context, r *stdhttp.Request) (*stdhttp.Request, error) {
@@ -258,94 +614,6 @@ func (h *Handler) prepareUpstreamRequest(ctx context.Context, r *stdhttp.Request
 	return req, nil
 }
 
-func (h *Handler) routeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	via, _ := ctx.Value(routeKey).(string)
-	return dialer.DialContextVia(ctx, h.dialer, network, address, via)
-}
-
-func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {
-	var once sync.Once
-	closer := func() {
-		once.Do(func() {
-			upstream.Close()
-			body.Close()
-		})
-	}
-	defer closer()
-
-	doneCh := make(chan struct{})
-	defer close(doneCh)
-
-	go func() {
-		select {
-		case <-ctx.Done():
-			closer()
-		case <-doneCh:
-		}
-	}()
-
-	clientDone := make(chan struct{})
-	go func() {
-		defer close(clientDone)
-		io.Copy(upstream, body)
-		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		} else {
-			// Do not fully close, as we might be reading
-			// But if CloseWrite is not supported, we have to rely on context/defer
-		}
-	}()
-
-	respWriter := &flushWriter{w: w, f: fl}
-	io.Copy(respWriter, upstream)
-
-	select {
-	case <-clientDone:
-	case <-ctx.Done():
-	}
-}
-
-type flushWriter struct {
-	w io.Writer
-	f stdhttp.Flusher
-}
-
-func (fw *flushWriter) Write(p []byte) (int, error) {
-	n, err := fw.w.Write(p)
-	if err == nil {
-		fw.f.Flush()
-	}
-	return n, err
-}
-
-func cleanProxyHeaders(r *stdhttp.Request) {
-	// Remove standard hop-by-hop headers
-	hopByHop := []string{
-		"Connection",
-		"Keep-Alive",
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		"Te",
-		"Trailer",
-		"Transfer-Encoding",
-		// "Upgrade", // Do not remove Upgrade for websocket
-		"Proxy-Connection", // Non-standard but common
-	}
-
-	// Remove headers listed in the Connection header
-	if c := r.Header.Get("Connection"); c != "" {
-		for _, f := range strings.Split(c, ",") {
-			if f = strings.TrimSpace(f); f != "" {
-				r.Header.Del(f)
-			}
-		}
-	}
-
-	for _, h := range hopByHop {
-		r.Header.Del(h)
-	}
-}
-
 func parseProxyAuth(v string) (string, string, bool) {
 	if v == "" {
 		return "", "", false
@@ -365,12 +633,12 @@ func parseProxyAuth(v string) (string, string, bool) {
 	return creds[0], creds[1], true
 }
 
-func writeAuthRequired(w stdhttp.ResponseWriter) {
+func writeAuthRequiredHTTP(w stdhttp.ResponseWriter) {
 	w.Header().Set("Proxy-Authenticate", `Basic realm="`+config.CamouflageRealm+`"`)
-	writeSimple(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
+	writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 }
 
-func writeSimple(w stdhttp.ResponseWriter, status int, title string) {
+func writeSimpleHTTP(w stdhttp.ResponseWriter, status int, title string) {
 	statusText := stdhttp.StatusText(status)
 	if statusText == "" {
 		statusText = "Error"
@@ -420,11 +688,151 @@ func copyHeaders(dst, src stdhttp.Header) {
 	}
 }
 
-func dumpRequest(log *logging.Logger, r *stdhttp.Request) {
-	if log == nil || log.Level() > logging.LevelDebug {
+func writeAuthRequired(conn net.Conn) error {
+	headers := map[string]string{
+		"Proxy-Authenticate": `Basic realm="` + config.CamouflageRealm + `"`,
+	}
+	return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, headers)
+}
+
+func writeSimple(conn net.Conn, status int, title string, extraHeaders map[string]string) error {
+	statusText := stdhttp.StatusText(status)
+	if statusText == "" {
+		statusText = "Error"
+	}
+	if title == "" {
+		title = statusText
+	}
+
+	body := fmt.Sprintf(config.CamouflagePageBody, title, title)
+	resp := &stdhttp.Response{
+		StatusCode:    status,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+		Header:        make(stdhttp.Header),
+	}
+	resp.Header.Set("Content-Type", "text/html")
+	resp.Header.Set("Connection", "close")
+	for k, v := range extraHeaders {
+		resp.Header.Set(k, v)
+	}
+
+	bw := bufio.NewWriter(conn)
+	if err := resp.Write(bw); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+func cleanProxyHeaders(r *stdhttp.Request) {
+	hopByHop := []string{
+		"Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailer",
+		"Transfer-Encoding",
+		"Proxy-Connection",
+	}
+
+	if c := r.Header.Get("Connection"); c != "" {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				r.Header.Del(f)
+			}
+		}
+	}
+
+	for _, h := range hopByHop {
+		r.Header.Del(h)
+	}
+}
+
+func cleanHopHeaders(h stdhttp.Header) {
+	hopByHop := []string{
+		"Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+		"Proxy-Connection",
+	}
+
+	if c := h.Get("Connection"); c != "" {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				h.Del(f)
+			}
+		}
+	}
+
+	for _, name := range hopByHop {
+		h.Del(name)
+	}
+}
+
+func parseBool(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(t, "true") || t == "1"
+	default:
+		return false
+	}
+}
+
+func (h *Handler) logf(level logging.Level, format string, args ...any) {
+	if h.options.Logger == nil {
 		return
 	}
-	if b, err := httputil.DumpRequest(r, false); err == nil {
-		log.Debug("Forward HTTP request dump:\n%s", string(b))
+	switch level {
+	case logging.LevelDebug:
+		h.options.Logger.Debug(format, args...)
+	case logging.LevelInfo:
+		h.options.Logger.Info(format, args...)
+	case logging.LevelWarn:
+		h.options.Logger.Warn(format, args...)
+	case logging.LevelError:
+		h.options.Logger.Error(format, args...)
 	}
+}
+
+func (h *Handler) log() *logging.Logger {
+	return h.options.Logger
+}
+
+// redactURL 移除 URL 中的敏感信息（userinfo 和敏感 query 参数）
+func redactURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	// 复制 URL 避免修改原始对象
+	redacted := *u
+	redacted.User = nil
+
+	// 脱敏敏感 query 参数
+	sensitiveKeys := []string{
+		"password", "pwd", "pass", "passwd",
+		"token", "auth", "key", "secret",
+		"psk", "session", "credential", "api_key",
+	}
+	if redacted.RawQuery != "" {
+		q := redacted.Query()
+		for _, k := range sensitiveKeys {
+			if q.Has(k) {
+				q.Set(k, "[REDACTED]")
+			}
+		}
+		redacted.RawQuery = q.Encode()
+	}
+	return redacted.String()
 }
