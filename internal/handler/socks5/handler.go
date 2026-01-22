@@ -15,14 +15,17 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"forward/internal/auth"
+	"forward/base/auth"
+	inet "forward/base/io/net"
+	"forward/base/logging"
+	"forward/base/pool"
+	socks5util "forward/base/utils/socks5"
+	"forward/internal/chain"
 	"forward/internal/config"
-	"forward/internal/dialer"
-	netio "forward/internal/io/net"
-	"forward/internal/logging"
-	"forward/internal/pool"
-	"forward/internal/route"
-	socks5util "forward/internal/utils/socks5"
+	corehandler "forward/internal/handler"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
 )
 
 const (
@@ -35,76 +38,105 @@ const (
 	cmdUDPAssociate = 0x03
 )
 
+func init() {
+	registry.HandlerRegistry().Register("socks5", NewHandler)
+}
+
 type Handler struct {
-	dialer      dialer.Dialer
-	log         *logging.Logger
-	auth        auth.Authenticator
-	requireAuth bool
+	options corehandler.Options
+	auth    auth.Authenticator
 
-	handshakeTimeout time.Duration
-	udpIdle          time.Duration
-	maxUDPSessions   int
-	routeStore       *route.Store
+	requireAuth     bool
+	handshakeTimout time.Duration
+	udpIdle         time.Duration
+	maxUDPSessions  int
 }
 
-func New(cfg config.Config, d dialer.Dialer) *Handler {
-	user, pass, ok := cfg.Listen.UserPass()
-	idle := cfg.UDPIdleTimeout
-	if idle <= 0 {
-		idle = 2 * time.Minute
+func NewHandler(opts ...corehandler.Option) corehandler.Handler {
+	options := corehandler.Options{}
+	for _, opt := range opts {
+		opt(&options)
 	}
-	maxSessions := cfg.MaxUDPSessions
-	if maxSessions <= 0 {
-		maxSessions = config.DefaultMaxUDPSessions
+
+	user := ""
+	pass := ""
+	if options.Auth != nil {
+		user = options.Auth.Username()
+		pass, _ = options.Auth.Password()
 	}
-	return &Handler{
-		dialer:           d,
-		log:              cfg.Logger,
-		auth:             auth.FromUserPass(user, pass),
-		requireAuth:      ok,
-		handshakeTimeout: cfg.HandshakeTimeout,
-		udpIdle:          idle,
-		maxUDPSessions:   maxSessions,
-		routeStore:       cfg.RouteStore,
+	requireAuth := user != "" || pass != ""
+
+	h := &Handler{
+		options:         options,
+		auth:            auth.FromUserPass(user, pass),
+		requireAuth:     requireAuth,
+		handshakeTimout: config.DefaultHandshakeTimeout,
+		udpIdle:         config.DefaultUDPIdleTimeout,
+		maxUDPSessions:  config.DefaultMaxUDPSessions,
 	}
+	if h.options.Router == nil {
+		h.options.Router = router.NewStatic(chain.NewRoute())
+	}
+	return h
 }
 
-func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
+func (h *Handler) Init(md metadata.Metadata) error {
+	if md == nil {
+		return nil
+	}
+	if v := md.Get("handshake_timeout"); v != nil {
+		if t, ok := v.(time.Duration); ok && t > 0 {
+			h.handshakeTimout = t
+		}
+	}
+	if v := md.Get("udp_idle"); v != nil {
+		if t, ok := v.(time.Duration); ok && t > 0 {
+			h.udpIdle = t
+		}
+	}
+	if v := md.Get("max_udp_sessions"); v != nil {
+		if n, ok := v.(int); ok && n > 0 {
+			h.maxUDPSessions = n
+		}
+	}
+	return nil
+}
+
+func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.HandleOption) error {
 	defer conn.Close()
 
-	h.log.Debug("Forward SOCKS5 Received connection from %s", conn.RemoteAddr())
+	remote := conn.RemoteAddr().String()
+	local := conn.LocalAddr().String()
+	h.logf(logging.LevelInfo, "SOCKS5 connection %s -> %s", remote, local)
 
-	handshakeTimeout := h.handshakeTimeout
-	if handshakeTimeout <= 0 {
-		handshakeTimeout = config.DefaultHandshakeTimeout
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	_ = conn.SetReadDeadline(time.Now().Add(h.handshakeTimout))
 
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
 
 	if err := h.negotiateAuth(br, bw); err != nil {
 		if ctx.Err() == nil {
-			h.log.Error("Forward SOCKS5 error: negotiate: %v", err)
+			h.logf(logging.LevelError, "SOCKS5 negotiate error: %v", err)
 		}
-		return
+		return err
 	}
 
 	cmd, dest, err := h.readRequest(br, bw)
 	if err != nil {
 		if ctx.Err() == nil {
-			h.log.Error("Forward SOCKS5 error: request: %v", err)
+			h.logf(logging.LevelError, "SOCKS5 request error: %v", err)
 		}
-		return
+		return err
 	}
 
 	switch cmd {
 	case cmdConnect:
-		h.handleConnect(ctx, conn, bw, dest)
+		return h.handleConnect(ctx, conn, bw, dest)
 	case cmdUDPAssociate:
-		h.handleUDP(ctx, conn, bw)
+		return h.handleUDP(ctx, conn, bw)
 	default:
-		_ = h.writeReply(bw, 0x07, "") // command not supported
+		_ = h.writeReply(bw, 0x07, "")
+		return nil
 	}
 }
 
@@ -129,6 +161,7 @@ func (h *Handler) negotiateAuth(br *bufio.Reader, bw *bufio.Writer) error {
 	if h.requireAuth {
 		required = methodUserPass
 	}
+	h.logf(logging.LevelDebug, "SOCKS5 auth method selected=%d", required)
 	if !socks5util.Contains(methods, required) {
 		if _, err := bw.Write([]byte{version5, 0xff}); err != nil {
 			return fmt.Errorf("write reject: %w", err)
@@ -212,67 +245,67 @@ func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string,
 		return 0, "", err
 	}
 	dest := net.JoinHostPort(addr, strconv.Itoa(port))
-	h.log.Debug("Forward SOCKS5 request cmd=%d dst=%s", cmd, dest)
+	h.logf(logging.LevelDebug, "SOCKS5 request cmd=%d dst=%s", cmd, dest)
 	return cmd, dest, nil
 }
 
-func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Writer, dest string) {
+func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Writer, dest string) error {
 	_ = conn.SetReadDeadline(time.Time{})
 
-	via, err := route.RouteVia(ctx, h.routeStore, h.log, conn.RemoteAddr().String(), dest)
+	route, err := h.options.Router.Route(ctx, "tcp", dest)
 	if err != nil {
-		h.log.Error("Forward SOCKS5 route error: %v", err)
+		h.logf(logging.LevelError, "SOCKS5 route error: %v", err)
 		_ = h.writeReply(bw, 0x05, "")
-		return
+		return err
 	}
-	if route.IsReject(via) {
-		_ = h.writeReply(bw, 0x05, "")
-		return
+	if route == nil {
+		route = chain.NewRoute()
 	}
+	h.logf(logging.LevelDebug, "SOCKS5 CONNECT route via %s", chain.RouteSummary(route))
 
-	h.log.Info("Forward SOCKS5 Received connection %s --> %s", conn.RemoteAddr(), dest)
-	up, err := dialer.DialContextVia(ctx, h.dialer, "tcp", dest, via)
+	h.logf(logging.LevelInfo, "SOCKS5 CONNECT %s -> %s", conn.RemoteAddr().String(), dest)
+	up, err := route.Dial(ctx, "tcp", dest)
 	if err != nil {
-		h.log.Error("Forward SOCKS5 connect dial error: %v", err)
-		_ = h.writeReply(bw, 0x05, "") // connection refused
-		return
+		h.logf(logging.LevelError, "SOCKS5 connect dial error: %v", err)
+		_ = h.writeReply(bw, 0x05, "")
+		return err
 	}
 	defer up.Close()
 
 	bind := hostPortFromAddr(up.LocalAddr())
 	_ = h.writeReply(bw, 0x00, bind)
 
-	h.log.Debug("Forward SOCKS5 CONNECT Connected to upstream %s --> %s", conn.RemoteAddr(), dest)
-
-	bytes, dur, err := netio.Bidirectional(ctx, conn, up)
-	if err != nil && ctx.Err() == nil {
-		h.log.Error("Forward SOCKS5 connect transfer error: %v", err)
-	}
-	h.log.Debug("Forward SOCKS5 CONNECT Closed connection %s --> %s transferred %d bytes in %s", conn.RemoteAddr(), dest, bytes, dur)
+	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
+	h.logf(logging.LevelInfo, "SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
+	return err
 }
 
-func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer) {
+func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer) error {
 	_ = conn.SetReadDeadline(time.Time{})
 
 	laddr := conn.LocalAddr()
 	var ip net.IP
-	if ta, ok := laddr.(*net.TCPAddr); ok && ta != nil {
+	switch ta := laddr.(type) {
+	case *net.TCPAddr:
+		ip = ta.IP
+	case *net.UDPAddr:
 		ip = ta.IP
 	}
 	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: 0})
 	if err != nil {
-		h.log.Error("Forward SOCKS5 udp listen error: %v", err)
+		h.logf(logging.LevelError, "SOCKS5 udp listen error: %v", err)
 		_ = h.writeReply(bw, 0x01, "")
-		return
+		return err
 	}
 	defer udpLn.Close()
 
-	bind := hostPortFromAddr(udpLn.LocalAddr())
+	// 智能选择返回给客户端的绑定地址，避免泄露内网 IP
+	bind := h.getSafeBindAddr(conn, udpLn)
 	if err := h.writeReply(bw, 0x00, bind); err != nil {
-		return
+		return err
 	}
 
-	h.log.Debug("Forward SOCKS5 UDP relay at %s", bind)
+	h.logf(logging.LevelInfo, "SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -284,12 +317,16 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 	}()
 
 	var expectedIP net.IP
-	if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
-		expectedIP = tcpAddr.IP
+	switch addr := conn.RemoteAddr().(type) {
+	case *net.TCPAddr:
+		expectedIP = addr.IP
+	case *net.UDPAddr:
+		expectedIP = addr.IP
 	}
 
-	sess := newUDPSession(h.dialer, h.routeStore, h.log, udpLn, h.udpIdle, expectedIP, h.maxUDPSessions)
+	sess := newUDPSession(h.options.Router, h.log(), udpLn, h.udpIdle, expectedIP, h.maxUDPSessions)
 	sess.run(ctx)
+	return nil
 }
 
 func (h *Handler) writeReply(bw *bufio.Writer, rep byte, bind string) error {
@@ -312,19 +349,16 @@ func (h *Handler) writeReply(bw *bufio.Writer, rep byte, bind string) error {
 }
 
 type udpSession struct {
-	dialer     dialer.Dialer
-	routeStore *route.Store
-	log        *logging.Logger
+	router  router.Router
+	logger  *logging.Logger
+	relay   *net.UDPConn
+	idle    time.Duration
+	maxSess int
 
-	relay *net.UDPConn
-
-	idle        time.Duration
-	expectedIP  net.IP
-	maxSessions int
-
-	mu       sync.Mutex
-	sessions map[string]*udpPeer
-	sf       singleflight.Group
+	expectedIP net.IP
+	mu         sync.Mutex
+	sessions   map[string]*udpPeer
+	sf         singleflight.Group
 }
 
 type udpPeer struct {
@@ -333,16 +367,15 @@ type udpPeer struct {
 	lastSeen atomic.Int64
 }
 
-func newUDPSession(d dialer.Dialer, routeStore *route.Store, log *logging.Logger, relay *net.UDPConn, idle time.Duration, expectedIP net.IP, maxSessions int) *udpSession {
+func newUDPSession(r router.Router, log *logging.Logger, relay *net.UDPConn, idle time.Duration, expectedIP net.IP, maxSessions int) *udpSession {
 	return &udpSession{
-		dialer:      d,
-		routeStore:  routeStore,
-		log:         log,
-		relay:       relay,
-		idle:        idle,
-		expectedIP:  expectedIP,
-		maxSessions: maxSessions,
-		sessions:    make(map[string]*udpPeer),
+		router:     r,
+		logger:     log,
+		relay:      relay,
+		idle:       idle,
+		expectedIP: expectedIP,
+		maxSess:    maxSessions,
+		sessions:   make(map[string]*udpPeer),
 	}
 }
 
@@ -361,7 +394,7 @@ func (s *udpSession) run(ctx context.Context) {
 				s.cleanupIdle()
 				continue
 			}
-			s.log.Error("Forward SOCKS5 UDP read error: %v", err)
+			s.logf(logging.LevelError, "SOCKS5 UDP read error: %v", err)
 			continue
 		}
 		if n == 0 {
@@ -374,7 +407,7 @@ func (s *udpSession) run(ctx context.Context) {
 
 		dest, payload, err := parseUDPRequest(buf[:n])
 		if err != nil {
-			s.log.Debug("Forward SOCKS5 UDP parse error: %v", err)
+			s.logf(logging.LevelDebug, "SOCKS5 UDP parse error: %v", err)
 			continue
 		}
 
@@ -385,7 +418,7 @@ func (s *udpSession) run(ctx context.Context) {
 		peer.lastSeen.Store(time.Now().UnixNano())
 
 		if _, err := peer.conn.Write(payload); err != nil {
-			s.log.Error("Forward SOCKS5 UDP write upstream error: %v", err)
+			s.logf(logging.LevelError, "SOCKS5 UDP write upstream error: %v", err)
 			continue
 		}
 	}
@@ -398,9 +431,9 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 		s.mu.Unlock()
 		return p
 	}
-	if len(s.sessions) >= s.maxSessions {
+	if len(s.sessions) >= s.maxSess {
 		s.mu.Unlock()
-		s.log.Warn("Forward SOCKS5 UDP session limit reached")
+		s.logf(logging.LevelWarn, "SOCKS5 UDP session limit reached")
 		return nil
 	}
 	s.mu.Unlock()
@@ -411,28 +444,28 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 			s.mu.Unlock()
 			return p, nil
 		}
-		if len(s.sessions) >= s.maxSessions {
+		if len(s.sessions) >= s.maxSess {
 			s.mu.Unlock()
 			return nil, nil
 		}
 		s.mu.Unlock()
 
-		via, err := route.RouteVia(ctx, s.routeStore, s.log, src.String(), dest)
+		route, err := s.router.Route(ctx, "udp", dest)
 		if err != nil {
-			s.log.Error("Forward SOCKS5 UDP route error: %v", err)
+			s.logf(logging.LevelError, "SOCKS5 UDP route error: %v", err)
 			return nil, err
 		}
-		if route.IsReject(via) {
-			return nil, fmt.Errorf("route rejected")
+		if route == nil {
+			route = chain.NewRoute()
 		}
 
-		c, err := dialer.DialContextVia(ctx, s.dialer, "udp", dest, via)
+		c, err := route.Dial(ctx, "udp", dest)
 		if err != nil {
-			s.log.Error("Forward SOCKS5 UDP dial %s error: %v", dest, err)
+			s.logf(logging.LevelError, "SOCKS5 UDP dial %s error: %v", dest, err)
 			return nil, err
 		}
 
-		s.log.Info("Forward SOCKS5 UDP Received connection %s --> %s", src, dest)
+		s.logf(logging.LevelInfo, "SOCKS5 UDP %s -> %s", src.String(), dest)
 
 		p := &udpPeer{
 			conn: c,
@@ -509,6 +542,22 @@ func (s *udpSession) cleanupIdle() {
 	s.mu.Unlock()
 }
 
+func (s *udpSession) logf(level logging.Level, format string, args ...any) {
+	if s.logger == nil {
+		return
+	}
+	switch level {
+	case logging.LevelDebug:
+		s.logger.Debug(format, args...)
+	case logging.LevelInfo:
+		s.logger.Info(format, args...)
+	case logging.LevelWarn:
+		s.logger.Warn(format, args...)
+	case logging.LevelError:
+		s.logger.Error(format, args...)
+	}
+}
+
 func parseUDPRequest(b []byte) (dest string, payload []byte, err error) {
 	if len(b) < 4 {
 		return "", nil, errors.New("short udp request")
@@ -581,4 +630,37 @@ func hostPortFromAddr(a net.Addr) string {
 	default:
 		return a.String()
 	}
+}
+
+// getSafeBindAddr 返回安全的绑定地址，避免泄露内网 IP
+// 当 UDP 监听在 0.0.0.0 时，使用客户端 TCP 连接的本地 IP
+func (h *Handler) getSafeBindAddr(clientConn net.Conn, udpLn *net.UDPConn) string {
+	udpAddr := udpLn.LocalAddr().(*net.UDPAddr)
+	// 如果监听在未指定地址，使用客户端连接的本地地址
+	if udpAddr.IP.IsUnspecified() {
+		if tcpAddr, ok := clientConn.LocalAddr().(*net.TCPAddr); ok {
+			return net.JoinHostPort(tcpAddr.IP.String(), strconv.Itoa(udpAddr.Port))
+		}
+	}
+	return hostPortFromAddr(udpLn.LocalAddr())
+}
+
+func (h *Handler) logf(level logging.Level, format string, args ...any) {
+	if h.options.Logger == nil {
+		return
+	}
+	switch level {
+	case logging.LevelDebug:
+		h.options.Logger.Debug(format, args...)
+	case logging.LevelInfo:
+		h.options.Logger.Info(format, args...)
+	case logging.LevelWarn:
+		h.options.Logger.Warn(format, args...)
+	case logging.LevelError:
+		h.options.Logger.Error(format, args...)
+	}
+}
+
+func (h *Handler) log() *logging.Logger {
+	return h.options.Logger
 }

@@ -1,5 +1,0 @@
-package app
-
-var (
-	version = "v0.2.0"
-)

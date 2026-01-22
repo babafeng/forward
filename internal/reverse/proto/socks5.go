@@ -6,7 +6,7 @@ import (
 	"io"
 	"net"
 
-	socks5util "forward/internal/utils/socks5"
+	socks5util "forward/base/utils/socks5"
 )
 
 const (
@@ -73,7 +73,6 @@ func Socks5ClientBind(conn net.Conn, user, pass, bindHost string, bindPort int, 
 		return err
 	}
 
-	// read reply
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(br, header); err != nil {
 		return err
@@ -198,31 +197,32 @@ func readUserPassAuth(br *bufio.Reader, bw *bufio.Writer, check func(u, p string
 		return fmt.Errorf("socks5: bad auth version %d", head[0])
 	}
 	ulen := int(head[1])
-	ubuf := make([]byte, ulen)
-	if _, err := io.ReadFull(br, ubuf); err != nil {
+	ub := make([]byte, ulen)
+	if _, err := io.ReadFull(br, ub); err != nil {
 		return err
 	}
-	plenBuf := make([]byte, 1)
-	if _, err := io.ReadFull(br, plenBuf); err != nil {
+	plen, err := br.ReadByte()
+	if err != nil {
 		return err
 	}
-	plen := int(plenBuf[0])
-	pbuf := make([]byte, plen)
-	if _, err := io.ReadFull(br, pbuf); err != nil {
+	pb := make([]byte, int(plen))
+	if _, err := io.ReadFull(br, pb); err != nil {
 		return err
 	}
-	ok := check(string(ubuf), string(pbuf))
-	resp := []byte{0x01, 0x00}
-	if !ok {
-		resp[1] = 0x01
+
+	user := string(ub)
+	pass := string(pb)
+	status := byte(0x00)
+	if !check(user, pass) {
+		status = 0x01
 	}
-	if _, err := bw.Write(resp); err != nil {
+	if _, err := bw.Write([]byte{0x01, status}); err != nil {
 		return err
 	}
 	if err := bw.Flush(); err != nil {
 		return err
 	}
-	if !ok {
+	if status != 0x00 {
 		return fmt.Errorf("socks5: auth failed")
 	}
 	return nil

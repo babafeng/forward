@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
 	"forward/internal/config"
-	"forward/internal/endpoint"
-	"forward/internal/logging"
-	"forward/internal/route"
 )
 
 func ParseFile(path string) (config.Config, error) {
@@ -175,7 +175,7 @@ func parseRuleLine(line string) (route.Rule, error) {
 
 	return route.Rule{
 		Type:   ruleType,
-		Value: value,
+		Value:  value,
 		Action: act,
 	}, nil
 }

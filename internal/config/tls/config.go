@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"forward/internal/config"
-	"forward/internal/endpoint"
+	"forward/base/endpoint"
 
 	"golang.org/x/crypto/ssh"
 )
