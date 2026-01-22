@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -262,7 +261,7 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "SOCKS5 CONNECT route via %s", routeSummary(route))
+	h.logf(logging.LevelDebug, "SOCKS5 CONNECT route via %s", chain.RouteSummary(route))
 
 	h.logf(logging.LevelInfo, "SOCKS5 CONNECT %s -> %s", conn.RemoteAddr().String(), dest)
 	up, err := route.Dial(ctx, "tcp", dest)
@@ -300,7 +299,8 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 	}
 	defer udpLn.Close()
 
-	bind := hostPortFromAddr(udpLn.LocalAddr())
+	// 智能选择返回给客户端的绑定地址，避免泄露内网 IP
+	bind := h.getSafeBindAddr(conn, udpLn)
 	if err := h.writeReply(bw, 0x00, bind); err != nil {
 		return err
 	}
@@ -632,6 +632,19 @@ func hostPortFromAddr(a net.Addr) string {
 	}
 }
 
+// getSafeBindAddr 返回安全的绑定地址，避免泄露内网 IP
+// 当 UDP 监听在 0.0.0.0 时，使用客户端 TCP 连接的本地 IP
+func (h *Handler) getSafeBindAddr(clientConn net.Conn, udpLn *net.UDPConn) string {
+	udpAddr := udpLn.LocalAddr().(*net.UDPAddr)
+	// 如果监听在未指定地址，使用客户端连接的本地地址
+	if udpAddr.IP.IsUnspecified() {
+		if tcpAddr, ok := clientConn.LocalAddr().(*net.TCPAddr); ok {
+			return net.JoinHostPort(tcpAddr.IP.String(), strconv.Itoa(udpAddr.Port))
+		}
+	}
+	return hostPortFromAddr(udpLn.LocalAddr())
+}
+
 func (h *Handler) logf(level logging.Level, format string, args ...any) {
 	if h.options.Logger == nil {
 		return
@@ -650,31 +663,4 @@ func (h *Handler) logf(level logging.Level, format string, args ...any) {
 
 func (h *Handler) log() *logging.Logger {
 	return h.options.Logger
-}
-
-func routeSummary(rt chain.Route) string {
-	if rt == nil {
-		return "DIRECT"
-	}
-	nodes := rt.Nodes()
-	if len(nodes) == 0 {
-		return "DIRECT"
-	}
-	parts := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		if node == nil {
-			continue
-		}
-		name := node.Name
-		if name == "" {
-			name = node.Addr
-		} else if node.Addr != "" && name != node.Addr {
-			name = name + "(" + node.Addr + ")"
-		}
-		parts = append(parts, name)
-	}
-	if len(parts) == 0 {
-		return "DIRECT"
-	}
-	return strings.Join(parts, " -> ")
 }

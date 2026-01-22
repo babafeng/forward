@@ -182,8 +182,13 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	ln := &oneShotListener{conn: wrappedConn, addr: conn.LocalAddr()}
 
+	// 使用 WaitGroup 确保 goroutine 正确退出
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	// serve in background (it will return quickly due to one-shot listener)
 	go func() {
+		defer wg.Done()
 		_ = server.Serve(ln)
 	}()
 
@@ -193,6 +198,9 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	case <-ctx.Done():
 		server.Close()
 	}
+
+	// 等待 server goroutine 完全退出，防止泄露
+	wg.Wait()
 
 	return nil
 }
@@ -308,7 +316,7 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", routeSummary(route))
+	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", chain.RouteSummary(route))
 
 	h.logf(logging.LevelInfo, "HTTP CONNECT %s -> %s", r.RemoteAddr, target)
 	up, err := route.Dial(ctx, "tcp", target)
@@ -376,7 +384,7 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "HTTP route via %s", routeSummary(route))
+	h.logf(logging.LevelDebug, "HTTP route via %s", chain.RouteSummary(route))
 	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
 
 	h.logf(logging.LevelInfo, "HTTP %s %s -> %s", r.Method, r.URL.String(), target)
@@ -480,7 +488,7 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Re
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", routeSummary(route))
+	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", chain.RouteSummary(route))
 
 	h.logf(logging.LevelInfo, "HTTP CONNECT %s -> %s", req.RemoteAddr, target)
 	up, err := route.Dial(ctx, "tcp", target)
@@ -528,7 +536,7 @@ func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "HTTP route via %s", routeSummary(route))
+	h.logf(logging.LevelDebug, "HTTP route via %s", chain.RouteSummary(route))
 	upReq = upReq.WithContext(context.WithValue(upReq.Context(), routeKey, route))
 
 	h.logf(logging.LevelInfo, "HTTP %s %s -> %s", req.Method, req.URL.String(), target)
@@ -800,33 +808,6 @@ func (h *Handler) logf(level logging.Level, format string, args ...any) {
 
 func (h *Handler) log() *logging.Logger {
 	return h.options.Logger
-}
-
-func routeSummary(rt chain.Route) string {
-	if rt == nil {
-		return "DIRECT"
-	}
-	nodes := rt.Nodes()
-	if len(nodes) == 0 {
-		return "DIRECT"
-	}
-	parts := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		if node == nil {
-			continue
-		}
-		name := node.Name
-		if name == "" {
-			name = node.Addr
-		} else if node.Addr != "" && name != node.Addr {
-			name = name + "(" + node.Addr + ")"
-		}
-		parts = append(parts, name)
-	}
-	if len(parts) == 0 {
-		return "DIRECT"
-	}
-	return strings.Join(parts, " -> ")
 }
 
 // redactURL 移除 URL 中的敏感信息（userinfo 和敏感 query 参数）

@@ -507,6 +507,7 @@ func startPortForwardServer(t *testing.T, scheme, target string) (endpoint.Endpo
 	lmd := metadata.New(map[string]any{
 		"handshake_timeout": cfg.HandshakeTimeout,
 		"udp_idle":          cfg.UDPIdleTimeout,
+		"udp_block_private": false, // 测试环境允许本地连接
 	})
 	if err := ln.Init(lmd); err != nil {
 		cancel()

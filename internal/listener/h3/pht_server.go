@@ -47,7 +47,8 @@ type serverOptions struct {
 
 type phtSession struct {
 	conn     net.Conn
-	lastSeen int64 // unix nano
+	lastSeen int64  // unix nano
+	sourceIP string // 授权时的源 IP，用于防止 token 劫持
 }
 
 type ServerOption func(opts *serverOptions)
@@ -306,6 +307,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		raddr = &net.TCPAddr{}
 	}
 
+	// 提取源 IP 用于后续验证
+	sourceIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+
 	// Basic Auth Check
 	if s.options.secret != "" {
 		if r.Header.Get("X-PHT-Secret") != s.options.secret && r.URL.Query().Get("secret") != s.options.secret {
@@ -331,7 +335,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write([]byte(fmt.Sprintf("token=%s", cid)))
-	s.conns.Store(cid, &phtSession{conn: c2, lastSeen: time.Now().UnixNano()})
+	s.conns.Store(cid, &phtSession{conn: c2, lastSeen: time.Now().UnixNano(), sourceIP: sourceIP})
 }
 
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
@@ -352,6 +356,17 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess := v.(*phtSession)
+
+	// 验证请求来源 IP 与授权时一致，防止 token 劫持
+	reqIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if sess.sourceIP != "" && reqIP != sess.sourceIP {
+		if s.options.logger != nil {
+			s.options.logger.Warn("pht: push rejected, IP mismatch: expected %s, got %s", sess.sourceIP, reqIP)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
 	atomic.StoreInt64(&sess.lastSeen, time.Now().UnixNano())
 	conn := sess.conn
 
@@ -414,6 +429,17 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sess := v.(*phtSession)
+
+	// 验证请求来源 IP 与授权时一致，防止 token 劫持
+	reqIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if sess.sourceIP != "" && reqIP != sess.sourceIP {
+		if s.options.logger != nil {
+			s.options.logger.Warn("pht: pull rejected, IP mismatch: expected %s, got %s", sess.sourceIP, reqIP)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
 	atomic.StoreInt64(&sess.lastSeen, time.Now().UnixNano())
 	conn := sess.conn
 

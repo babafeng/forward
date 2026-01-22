@@ -358,7 +358,7 @@ func (l *Listener) checkPacket(addr net.Addr) bool {
 		return false
 	}
 
-	if l.md.blockPrivate && ip.IsPrivate() {
+	if l.md.blockPrivate && isReservedIP(ip) {
 		return false
 	}
 
@@ -376,6 +376,24 @@ func (l *Listener) checkPacket(addr net.Addr) bool {
 	}
 
 	return true
+}
+
+// isReservedIP 检查是否为保留 IP（私有、loopback、link-local、CGNAT 等）
+func isReservedIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() ||
+		isCGNAT(ip)
+}
+
+// isCGNAT 检查是否为 CGNAT 地址 (100.64.0.0/10)
+func isCGNAT(ip net.IP) bool {
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4[0] == 100 && (ip4[1]&0xC0) == 64
+	}
+	return false
 }
 
 func getString(v any) string {
