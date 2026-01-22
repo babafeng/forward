@@ -69,7 +69,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "TCP route via %s", routeSummary(route))
+	h.logf(logging.LevelDebug, "TCP route via %s", chain.RouteSummary(route))
 
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
@@ -99,33 +99,6 @@ func (h *Handler) logf(level logging.Level, format string, args ...any) {
 	case logging.LevelError:
 		h.options.Logger.Error(format, args...)
 	}
-}
-
-func routeSummary(rt chain.Route) string {
-	if rt == nil {
-		return "DIRECT"
-	}
-	nodes := rt.Nodes()
-	if len(nodes) == 0 {
-		return "DIRECT"
-	}
-	parts := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		if node == nil {
-			continue
-		}
-		name := node.Name
-		if name == "" {
-			name = node.Addr
-		} else if node.Addr != "" && name != node.Addr {
-			name = name + "(" + node.Addr + ")"
-		}
-		parts = append(parts, name)
-	}
-	if len(parts) == 0 {
-		return "DIRECT"
-	}
-	return strings.Join(parts, " -> ")
 }
 
 func getString(v any) string {
