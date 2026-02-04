@@ -3,6 +3,7 @@ package chain
 type Node struct {
 	Name      string
 	Addr      string
+	Display   string
 	transport Transporter
 }
 

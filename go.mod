@@ -7,19 +7,21 @@ require (
 	golang.org/x/net v0.48.0
 )
 
-require golang.org/x/sync v0.19.0
+require (
+	github.com/gorilla/websocket v1.5.3
+	github.com/pion/dtls/v2 v2.2.12
+	golang.org/x/sync v0.19.0
+)
 
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/cloudflare/circl v1.6.1 // indirect
 	github.com/dgryski/go-metro v0.0.0-20200812162917-85c65e2d0165 // indirect
 	github.com/google/btree v1.1.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/juju/ratelimit v1.0.2 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/miekg/dns v1.1.68 // indirect
-	github.com/pion/dtls/v2 v2.2.12 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/transport/v2 v2.2.4 // indirect
 	github.com/pires/go-proxyproto v0.8.1 // indirect
@@ -51,6 +53,6 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/xtls/xray-core v1.251208.0
 	golang.org/x/crypto v0.46.0 // direct
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sys v0.39.0
 	golang.org/x/text v0.32.0 // indirect
 )
