@@ -17,6 +17,10 @@ func RouteSummary(rt Route) string {
 		if node == nil {
 			continue
 		}
+		if node.Display != "" {
+			parts = append(parts, node.Display)
+			continue
+		}
 		name := node.Name
 		if name == "" {
 			name = node.Addr

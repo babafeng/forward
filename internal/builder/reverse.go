@@ -98,7 +98,7 @@ func BuildReverseRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route
 		)
 
 		if connectorName == "vless" {
-			cmd := buildConnectorMetadata(hop)
+			cmd := buildVlessConnectorMetadata(hop)
 			if err := c.Init(cmd); err != nil {
 				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
 			}

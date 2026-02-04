@@ -11,6 +11,7 @@ import (
 	"forward/internal/config"
 	"forward/internal/handler"
 	"forward/internal/listener"
+	"forward/internal/metadata"
 )
 
 type Service interface {
@@ -116,7 +117,13 @@ func (s *defaultService) Serve() error {
 			if s.logger != nil {
 				s.logger.Debug("Service handling %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
 			}
-			if err := s.handler.Handle(ctx, c); err != nil && s.logger != nil {
+			var hopts []handler.HandleOption
+			if mc, ok := c.(interface{ Metadata() metadata.Metadata }); ok {
+				if md := mc.Metadata(); md != nil {
+					hopts = append(hopts, handler.MetadataHandleOption(md))
+				}
+			}
+			if err := s.handler.Handle(ctx, c, hopts...); err != nil && s.logger != nil {
 				s.logger.Debug("Service handler error %s -> %s: %v", c.RemoteAddr().String(), c.LocalAddr().String(), err)
 			}
 			// ensure connection is closed

@@ -139,7 +139,7 @@ func (c *Client) handleStream(ctx context.Context, stream net.Conn, network, tar
 	defer stream.Close()
 
 	src := stream.RemoteAddr().String()
-	c.log.Info("Forward Reverse Client Received connection %s --> %s", src, target)
+	c.log.Info("Forward Reverse Client Received connection %s -> %s", src, target)
 	c.log.Debug("Reverse %s Received connection from %s", network, src)
 
 	dialTimeout := c.cfg.DialTimeout
@@ -154,7 +154,7 @@ func (c *Client) handleStream(ctx context.Context, stream net.Conn, network, tar
 	}
 	defer out.Close()
 
-	c.log.Debug("Reverse %s Connected to upstream %s --> %s", network, src, target)
+	c.log.Debug("Reverse %s Connected to upstream %s -> %s", network, src, target)
 
 	var bytes int64
 	var dur time.Duration
@@ -169,7 +169,7 @@ func (c *Client) handleStream(ctx context.Context, stream net.Conn, network, tar
 	if err != nil && ctx.Err() == nil {
 		c.log.Error("Reverse client transfer error: %v", err)
 	}
-	c.log.Debug("Reverse %s Closed connection %s --> %s transferred %d bytes in %s", network, src, target, bytes, dur)
+	c.log.Debug("Reverse %s Closed connection %s -> %s transferred %d bytes in %s", network, src, target, bytes, dur)
 }
 
 func (c *Client) dialServer(ctx context.Context) (net.Conn, error) {

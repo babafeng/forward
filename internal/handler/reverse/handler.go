@@ -215,7 +215,7 @@ func (h *Handler) handleBoundConn(ctx context.Context, session *yamux.Session, c
 	tunnelRemote := session.RemoteAddr().String()
 
 	if h.options.Logger != nil {
-		h.options.Logger.Info("Forward Reverse Client Received connection %s --> %s --> %s", src, bound, tunnelRemote)
+		h.options.Logger.Info("Forward Reverse Client Received connection %s -> %s --> %s", src, bound, tunnelRemote)
 	}
 
 	stream, err := session.Open()
@@ -234,7 +234,7 @@ func (h *Handler) handleBoundConn(ctx context.Context, session *yamux.Session, c
 		}
 	}
 	if h.options.Logger != nil {
-		h.options.Logger.Debug("Reverse TCP Closed connection %s --> %s transferred %d bytes in %s", src, stream.RemoteAddr().String(), bytes, dur)
+		h.options.Logger.Debug("Reverse TCP Closed connection %s -> %s transferred %d bytes in %s", src, stream.RemoteAddr().String(), bytes, dur)
 	}
 }
 
@@ -301,7 +301,7 @@ func (h *Handler) handleBoundUDP(ctx context.Context, session *yamux.Session, co
 			}
 
 			if h.options.Logger != nil {
-				h.options.Logger.Info("Forward Reverse Client Received connection %s --> %s --> %s", srcKey, bound, tunnelRemote)
+				h.options.Logger.Info("Forward Reverse Client Received connection %s -> %s --> %s", srcKey, bound, tunnelRemote)
 			}
 
 			stream, err := session.Open()

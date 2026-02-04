@@ -263,11 +263,17 @@ forward -R proxy-route.conf
 ```ini
 [General]
 listen = socks5://0.0.0.0:1080, http://0.0.0.0:8080
+tproxy = 12345
 debug = false
 skip-proxy = 192.168.0.0/16, 127.0.0.1/32
 dns-server = 8.8.8.8, 8.8.4.4
 mmdb-path = ~/.forward/Country.mmdb
 mmdb-link = https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb
+
+[TProxy]
+network = tcp,udp
+sniffing = true
+dest-override = http,tls,quic
 
 [Proxy]
 PROXY_JP = vless+reality://uuid@jp.example.com:443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=...&security=reality&sid=...&sni=swscan.apple.com&type=tcp
@@ -284,3 +290,20 @@ FINAL,DIRECT
 * 规则自上而下匹配；命中第一条后即停止
 * 若希望基于域名的规则在本地 DNS 解析前生效，请在客户端使用 `socks5h://`
 * 路由器会在 INI 文件变更时自动热重载（每秒轮询一次）
+* `tproxy` 仅支持 Linux（TPROXY），需要配合 `fw4 + nftables` 设置透明代理规则
+* `sniffing` 默认开启，用于从 HTTP Host / TLS SNI 中提取域名以匹配 DOMAIN 规则（QUIC 嗅探暂未实现）
+
+**fw4 + nftables 示例（简化版）**
+
+```bash
+# policy routing
+ip rule add fwmark 1 lookup 100
+ip route add local 0.0.0.0/0 dev lo table 100
+
+# nftables (示例：将 TCP/UDP 导流到 12345)
+nft add table inet tproxy
+nft 'add chain inet tproxy prerouting { type filter hook prerouting priority mangle; policy accept; }'
+nft 'add rule inet tproxy prerouting meta l4proto { tcp, udp } tproxy to :12345 mark set 1'
+```
+
+> 注：实际规则需结合白名单/保留地址/本地网段等进行调整。

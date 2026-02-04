@@ -29,6 +29,15 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 			return nil, fmt.Errorf("hop %d: %w", i+1, err)
 		}
 
+		// VMess: check if using WebSocket transport
+		if connectorName == "vmess" {
+			q := hop.Query
+			// vmess://...?obfs=websocket or ...?type=ws or ...?net=ws
+			if strings.EqualFold(q.Get("obfs"), "websocket") || strings.EqualFold(q.Get("type"), "ws") || strings.EqualFold(q.Get("net"), "ws") {
+				dialerName = "ws"
+			}
+		}
+
 		dialerOpts := []dialer.Option{
 			dialer.TimeoutOption(cfg.DialTimeout),
 			dialer.LoggerOption(cfg.Logger),
@@ -67,9 +76,14 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 		}
 		d := newDialer(dialerOpts...)
 
-		// Dialer 初始化：Reality / H2 / H3 需要 metadata
+		// Dialer 初始化：Reality / H2 / H3 / WS 需要 metadata
 		if dialerName == "reality" || dialerName == "h2" || dialerName == "h3" {
 			dmd := buildDialerMetadata(hop)
+			if err := d.Init(dmd); err != nil {
+				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
+			}
+		} else if dialerName == "ws" {
+			dmd := buildWSDialerMetadata(hop)
 			if err := d.Init(dmd); err != nil {
 				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
 			}
@@ -91,7 +105,15 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 
 		// 为 VLESS Connector 初始化 metadata
 		if connectorName == "vless" {
-			cmd := buildConnectorMetadata(hop)
+			cmd := buildVlessConnectorMetadata(hop)
+			if err := c.Init(cmd); err != nil {
+				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
+			}
+		}
+
+		// 为 VMess Connector 初始化 metadata
+		if connectorName == "vmess" {
+			cmd := buildVmessConnectorMetadata(hop)
 			if err := c.Init(cmd); err != nil {
 				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
 			}
@@ -128,8 +150,8 @@ func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	return metadata.New(mdMap)
 }
 
-// buildConnectorMetadata 为 VLESS Connector 构建 metadata
-func buildConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
+// buildVlessConnectorMetadata 为 VLESS Connector 构建 metadata
+func buildVlessConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	q := hop.Query
 	uuid := ""
 	if hop.User != nil {
@@ -140,6 +162,40 @@ func buildConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
 		metadata.KeyFlow:       q.Get("flow"),
 		metadata.KeyEncryption: q.Get("encryption"),
 	})
+}
+
+// buildVmessConnectorMetadata 为 VMess Connector 构建 metadata
+// URL 格式: vmess://security:uuid@host:port?alterId=0
+func buildVmessConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
+	q := hop.Query
+	uuid := ""
+	security := ""
+	if hop.User != nil {
+		security = hop.User.Username() // 加密方式在用户名
+		if p, ok := hop.User.Password(); ok {
+			uuid = p // UUID 在密码
+		}
+	}
+	return metadata.New(map[string]any{
+		metadata.KeyUUID:     uuid,
+		metadata.KeySecurity: security,
+		metadata.KeyAlterID:  q.Get("alterId"),
+	})
+}
+
+func buildWSDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
+	q := hop.Query
+	mdMap := map[string]any{
+		metadata.KeyHost:     q.Get("host"),
+		metadata.KeyPath:     q.Get("path"),
+		metadata.KeySecurity: q.Get("security"), // e.g. "tls"
+		metadata.KeyInsecure: q.Get("insecure") == "true" || q.Get("insecure") == "1",
+	}
+	// Also fallback to endpoint host if "host" not in query?
+	// VMess "sni" query often used for TLS SNI, and "host" for WS Host header.
+	// If "host" query is missing, maybe default to hop.Host if they differ?
+	// Usually for VMess, hop.Host is the server IP, and SNI/Host is for obfuscation.
+	return metadata.New(mdMap)
 }
 
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
@@ -243,6 +299,14 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 	}
 	if scheme == "vless+tls" {
 		return "vless", "tls", nil
+	}
+
+	// VMess 支持
+	if scheme == "vmess" {
+		return "vmess", "tcp", nil
+	}
+	if scheme == "vmess+tls" {
+		return "vmess", "tls", nil
 	}
 
 	switch scheme {

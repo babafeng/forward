@@ -48,10 +48,12 @@ import (
 	_ "forward/internal/dialer/tcp"
 	_ "forward/internal/dialer/tls"
 	_ "forward/internal/dialer/udp"
+	_ "forward/internal/dialer/ws"
 	_ "forward/internal/handler/http"
 	revhandler "forward/internal/handler/reverse"
 	_ "forward/internal/handler/socks5"
 	_ "forward/internal/handler/tcp"
+	_ "forward/internal/handler/tproxy"
 	_ "forward/internal/handler/udp"
 	_ "forward/internal/listener/dtls"
 	_ "forward/internal/listener/h2"
@@ -59,6 +61,7 @@ import (
 	_ "forward/internal/listener/http3"
 	quiclistener "forward/internal/listener/quic"
 	_ "forward/internal/listener/tcp"
+	_ "forward/internal/listener/tproxy"
 	_ "forward/internal/listener/udp"
 
 	// VLESS + Reality
@@ -66,6 +69,10 @@ import (
 	_ "forward/internal/dialer/reality"
 	_ "forward/internal/handler/vless"
 	_ "forward/internal/listener/reality"
+
+	// VMess
+	_ "forward/internal/connector/vmess"
+	_ "forward/internal/handler/vmess"
 )
 
 func Main() int {
@@ -157,7 +164,7 @@ func runOne(ctx context.Context, cfg config.Config) error {
 func runProxyServer(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModeProxyServer
 
-	if !cfg.Listen.HasUserPass() {
+	if !cfg.Listen.HasUserPass() && !strings.EqualFold(cfg.Listen.Scheme, "tproxy") {
 		cfg.Logger.Warn("Proxy server listening on %s without authentication", cfg.Listen.Address())
 	}
 
@@ -249,6 +256,12 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		"dest":              cfg.Listen.Query.Get("dest"),
 		"privatekey":        cfg.Listen.Query.Get("key"),
 	}
+	if listenerScheme == "tproxy" && cfg.TProxy != nil {
+		if len(cfg.TProxy.Network) > 0 {
+			lmdMap["network"] = strings.Join(cfg.TProxy.Network, ",")
+		}
+		lmdMap["udp_idle"] = cfg.UDPIdleTimeout
+	}
 	if cfg.Listen.User != nil {
 		lmdMap[metadata.KeyUUID] = cfg.Listen.User.Username()
 		if p, ok := cfg.Listen.User.Password(); ok {
@@ -272,7 +285,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		handler.LoggerOption(cfg.Logger),
 	)
 
-	md := metadata.New(map[string]any{
+	mdMap := map[string]any{
 		"transparent":         strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
 		"insecure":            cfg.Insecure,
 		"handshake_timeout":   cfg.HandshakeTimeout,
@@ -281,7 +294,31 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		"read_header_timeout": cfg.ReadHeaderTimeout,
 		"max_header_bytes":    cfg.MaxHeaderBytes,
 		"idle_timeout":        cfg.IdleTimeout,
-	})
+	}
+	if handlerScheme == "tproxy" && cfg.TProxy != nil {
+		mdMap["sniffing"] = cfg.TProxy.Sniffing
+		if len(cfg.TProxy.DestOverride) > 0 {
+			mdMap["dest_override"] = strings.Join(cfg.TProxy.DestOverride, ",")
+		}
+		mdMap["sniff_timeout"] = cfg.ReadHeaderTimeout
+	}
+	md := metadata.New(mdMap)
+
+	// VMess Handler 需要额外的配置
+	if handlerScheme == "vmess" {
+		uuid := ""
+		security := ""
+		if cfg.Listen.User != nil {
+			security = cfg.Listen.User.Username() // 加密方式在用户名
+			if p, ok := cfg.Listen.User.Password(); ok {
+				uuid = p // UUID 在密码
+			}
+		}
+		md.Set(metadata.KeyUUID, uuid)
+		md.Set(metadata.KeySecurity, security)
+		md.Set(metadata.KeyAlterID, cfg.Listen.Query.Get("alterId"))
+	}
+
 	if err := h.Init(md); err != nil {
 		return err
 	}
@@ -669,6 +706,11 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		if err != nil {
 			return nil, err
 		}
+		for _, node := range rt.Nodes() {
+			if node != nil {
+				node.Display = name
+			}
+		}
 		proxies[route.NormalizeProxyName(name)] = rt
 	}
 
@@ -803,8 +845,12 @@ func isProxyServer(scheme string) bool {
 	if base == "vless" {
 		return true
 	}
+	// VMess 是代理服务器
+	if base == "vmess" {
+		return true
+	}
 	switch base {
-	case "http", "socks5", "socks5h":
+	case "http", "socks5", "socks5h", "tproxy":
 		return true
 	default:
 		return false
@@ -902,6 +948,11 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 		return "vless", transportNone
 	case "vless+tls":
 		return "vless", transportTLS
+	// VMess
+	case "vmess":
+		return "vmess", transportNone
+	case "vmess+tls":
+		return "vmess", transportTLS
 	}
 	if strings.HasSuffix(s, "+h2") {
 		return strings.TrimSuffix(s, "+h2"), transportH2
@@ -943,6 +994,10 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 		handlerScheme = "vless"
 		listenerScheme = "reality"
 		return handlerScheme, listenerScheme, transportNone
+	// VMess
+	case "vmess":
+		handlerScheme = "vmess"
+		listenerScheme = "tcp" // VMess 使用普通 TCP 监听
 	}
 
 	if transport == transportDTLS {
