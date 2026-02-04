@@ -104,11 +104,20 @@ type Config struct {
 	Mode RunMode
 
 	Insecure bool
+
+	TProxy *TProxyConfig
 }
 
 type DNSConfig struct {
 	Servers []string
 	Timeout time.Duration
+}
+
+type TProxyConfig struct {
+	Port         int
+	Network      []string
+	Sniffing     bool
+	DestOverride []string
 }
 
 func (c *Config) IsMode(m RunMode) bool {

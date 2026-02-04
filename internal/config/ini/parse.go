@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"strings"
@@ -28,6 +29,7 @@ func Parse(data []byte) (config.Config, error) {
 		lineNo    int
 		general   = map[string]string{}
 		proxies   = map[string]string{}
+		tproxy    = map[string]string{}
 		ruleLines []string
 	)
 
@@ -43,7 +45,7 @@ func Parse(data []byte) (config.Config, error) {
 			continue
 		}
 		switch section {
-		case "general", "proxy":
+		case "general", "proxy", "tproxy":
 			key, val, ok := strings.Cut(line, "=")
 			if !ok {
 				return config.Config{}, fmt.Errorf("line %d: invalid key=value", lineNo)
@@ -52,9 +54,13 @@ func Parse(data []byte) (config.Config, error) {
 			val = strings.TrimSpace(val)
 			if section == "general" {
 				general[key] = val
-			} else {
+			} else if section == "proxy" {
 				if key != "" {
 					proxies[key] = val
+				}
+			} else {
+				if key != "" {
+					tproxy[key] = val
 				}
 			}
 		case "rule":
@@ -92,6 +98,19 @@ func Parse(data []byte) (config.Config, error) {
 		LogLevel:  llevel,
 	}
 
+	if tpRaw := strings.TrimSpace(general["tproxy"]); tpRaw != "" {
+		tpCfg, tpEndpoint, err := parseTProxyConfig(tpRaw, tproxy)
+		if err != nil {
+			return config.Config{}, err
+		}
+		if tpEndpoint.Scheme != "" {
+			cfg.TProxy = &tpCfg
+			listeners = append(listeners, tpEndpoint)
+			cfg.Listeners = append(cfg.Listeners, tpEndpoint)
+			cfg.Listen = cfg.Listeners[0]
+		}
+	}
+
 	rcfg := &route.Config{
 		Proxies:    map[string]endpoint.Endpoint{},
 		SkipProxy:  parsePrefixList(general["skip-proxy"]),
@@ -127,6 +146,43 @@ func Parse(data []byte) (config.Config, error) {
 
 	config.ApplyDefaults(&cfg)
 	return cfg, nil
+}
+
+func parseTProxyConfig(raw string, cfg map[string]string) (config.TProxyConfig, endpoint.Endpoint, error) {
+	addr := strings.TrimSpace(raw)
+	if addr == "" {
+		return config.TProxyConfig{}, endpoint.Endpoint{}, nil
+	}
+
+	if !strings.Contains(addr, "://") {
+		if !strings.Contains(addr, ":") {
+			addr = net.JoinHostPort("0.0.0.0", addr)
+		}
+		addr = "tproxy://" + addr
+	}
+
+	tp := config.TProxyConfig{
+		Sniffing:     true,
+		Network:      []string{"tcp", "udp"},
+		DestOverride: []string{"http", "tls", "quic"},
+	}
+
+	if v := strings.TrimSpace(cfg["network"]); v != "" {
+		tp.Network = parseCommaList(v)
+	}
+	if v := strings.TrimSpace(cfg["sniffing"]); v != "" {
+		tp.Sniffing = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(cfg["dest-override"]); v != "" {
+		tp.DestOverride = parseCommaList(v)
+	}
+
+	ep, err := endpoint.Parse(addr)
+	if err != nil {
+		return config.TProxyConfig{}, endpoint.Endpoint{}, fmt.Errorf("tproxy parse error: %w", err)
+	}
+	tp.Port = ep.Port
+	return tp, ep, nil
 }
 
 func parseEndpointList(raw string) ([]endpoint.Endpoint, error) {
