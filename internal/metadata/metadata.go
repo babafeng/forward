@@ -18,6 +18,9 @@ const (
 	KeyFlow        = "flow"
 	KeyEncryption  = "encryption"
 	KeyUUID        = "uuid"
+	KeyAlterID     = "alterid"
+	KeyOriginalDst = "original_dst"
+	KeyPath        = "path"
 )
 
 type Metadata interface {
