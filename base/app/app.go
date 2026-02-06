@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -725,6 +726,7 @@ func parseArgs(args []string) (config.Config, error) {
 	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. http://127.0.0.1:8080 (can be repeated)")
 	var forwardFlags stringSlice
 	fs.Var(&forwardFlags, "F", "Forward target endpoint, e.g. socks5://remote:1080 (can be repeated)")
+	tproxyPort := fs.Int("T", 0, "Enable transparent proxy listener on 127.0.0.1:<port> (use with -F only)")
 	configFile := fs.String("C", "", "Path to JSON config file")
 	routeFile := fs.String("R", "", "Path to proxy route config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
@@ -740,6 +742,15 @@ func parseArgs(args []string) (config.Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return config.Config{}, err
+	}
+
+	if tproxyPort != nil && *tproxyPort > 0 {
+		if *configFile != "" || *routeFile != "" || len(listenFlags) > 0 {
+			return config.Config{}, fmt.Errorf("-T cannot be used with -C/-R/-L")
+		}
+		if len(forwardFlags) == 0 {
+			return config.Config{}, fmt.Errorf("-T requires -F (one or more forward endpoints)")
+		}
 	}
 
 	if *routeFile != "" {
@@ -776,7 +787,7 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 
-	if len(listenFlags) == 0 {
+	if (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
 		defaultPath, err := cjson.FindDefaultConfig()
 		if err != nil {
 			fs.Usage()
@@ -785,14 +796,30 @@ func parseArgs(args []string) (config.Config, error) {
 		return parseConfigFile(defaultPath)
 	}
 
-	for _, l := range listenFlags {
-		ep, err := endpoint.Parse(l)
+	if tproxyPort != nil && *tproxyPort > 0 {
+		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(*tproxyPort))
+		ep, err := endpoint.Parse("tproxy://" + addr)
 		if err != nil {
-			return cfg, fmt.Errorf("parse -L %s: %w", l, err)
+			return cfg, fmt.Errorf("parse -T %d: %w", *tproxyPort, err)
 		}
 		cfg.Listeners = append(cfg.Listeners, ep)
+		cfg.Listen = ep
+		cfg.TProxy = &config.TProxyConfig{
+			Port:         *tproxyPort,
+			Network:      []string{"tcp"},
+			Sniffing:     true,
+			DestOverride: []string{"http", "tls", "quic"},
+		}
+	} else {
+		for _, l := range listenFlags {
+			ep, err := endpoint.Parse(l)
+			if err != nil {
+				return cfg, fmt.Errorf("parse -L %s: %w", l, err)
+			}
+			cfg.Listeners = append(cfg.Listeners, ep)
+		}
+		cfg.Listen = cfg.Listeners[0]
 	}
-	cfg.Listen = cfg.Listeners[0]
 
 	if len(forwardFlags) > 0 {
 		for _, raw := range forwardFlags {
