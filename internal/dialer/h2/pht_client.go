@@ -51,7 +51,7 @@ func (c *phtClient) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	}
 	pushURL := fmt.Sprintf("%s://%s%s?token=%s", scheme, addr, c.PushPath, token)
 	pullURL := fmt.Sprintf("%s://%s%s?token=%s", scheme, addr, c.PullPath, token)
-	return phtshared.NewClientConn(c.Client, pushURL, pullURL, raddr, c.Logger), nil
+	return phtshared.NewClientConn(c.Client, pushURL, pullURL, c.Secret, raddr, c.Logger), nil
 }
 
 func (c *phtClient) authorize(ctx context.Context, addr string) (string, error) {
@@ -64,6 +64,9 @@ func (c *phtClient) authorize(ctx context.Context, addr string) (string, error) 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
+	}
+	if c.Secret != "" {
+		req.Header.Set("X-PHT-Secret", c.Secret)
 	}
 
 	resp, err := c.Client.Do(req)
