@@ -106,6 +106,8 @@ type Config struct {
 	Insecure bool
 
 	TProxy *TProxyConfig
+
+	WarmupURL string
 }
 
 type DNSConfig struct {

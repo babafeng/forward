@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"forward/internal/builder"
 	"forward/internal/chain"
@@ -75,6 +76,8 @@ import (
 	_ "forward/internal/connector/vmess"
 	_ "forward/internal/handler/vmess"
 )
+
+const defaultWarmupURL = "http://www.gstatic.com/generate_204"
 
 func Main() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -324,6 +327,10 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
+	if shouldWarmup(cfg) {
+		startWarmup(ctx, cfg, h)
+	}
+
 	// 如果是 VLESS+Reality，传递 validator 给 Handler
 	if handlerScheme == "vless" && listenerScheme == "reality" {
 		type validatorProvider interface {
@@ -347,6 +354,42 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 
 	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
 	return svc.Serve()
+}
+
+func shouldWarmup(cfg config.Config) bool {
+	if strings.TrimSpace(cfg.WarmupURL) == "" {
+		return false
+	}
+	return len(cfg.ForwardChain) > 0 || cfg.Forward != nil
+}
+
+type warmupCapable interface {
+	Warmup(context.Context, string) (int, error)
+}
+
+func startWarmup(ctx context.Context, cfg config.Config, h handler.Handler) {
+	warmupURL := strings.TrimSpace(cfg.WarmupURL)
+	if warmupURL == "" || h == nil {
+		return
+	}
+
+	wu, ok := h.(warmupCapable)
+	if !ok {
+		cfg.Logger.Warn("Warmup skipped: handler does not support warmup")
+		return
+	}
+
+	go func() {
+		start := time.Now()
+		wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		code, err := wu.Warmup(wctx, warmupURL)
+		if err != nil {
+			cfg.Logger.Warn("Warmup failed: %v", err)
+			return
+		}
+		cfg.Logger.Info("Warmup success: %s (%d) in %s", warmupURL, code, time.Since(start))
+	}()
 }
 
 func runReverseServer(ctx context.Context, cfg config.Config) error {
@@ -730,6 +773,8 @@ func parseArgs(args []string) (config.Config, error) {
 	configFile := fs.String("C", "", "Path to JSON config file")
 	routeFile := fs.String("R", "", "Path to proxy route config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
+	warmup := fs.Bool("warmup", false, "Warm up forward chain once at startup")
+	warmupURL := fs.String("warmup-url", defaultWarmupURL, "Warmup request URL (used with --warmup)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isVersion := fs.Bool("version", false, "Show version information")
 
@@ -765,11 +810,27 @@ func parseArgs(args []string) (config.Config, error) {
 			cfg.Logger = logging.New(logging.Options{Level: logging.LevelDebug})
 			cfg.LogLevel = logging.LevelDebug
 		}
+		if warmup != nil && *warmup {
+			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
+			if cfg.WarmupURL == "" {
+				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+			}
+		}
 		return cfg, nil
 	}
 
 	if *configFile != "" {
-		return parseConfigFile(*configFile)
+		cfg, err := parseConfigFile(*configFile)
+		if err != nil {
+			return config.Config{}, err
+		}
+		if warmup != nil && *warmup {
+			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
+			if cfg.WarmupURL == "" {
+				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+			}
+		}
+		return cfg, nil
 	}
 
 	logLevel := "info"
@@ -836,6 +897,12 @@ func parseArgs(args []string) (config.Config, error) {
 	}
 
 	cfg.Insecure = *insecure
+	if warmup != nil && *warmup {
+		cfg.WarmupURL = strings.TrimSpace(*warmupURL)
+		if cfg.WarmupURL == "" {
+			return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+		}
+	}
 
 	cfg.Nodes = []config.NodeConfig{{
 		Name:         "default",

@@ -137,6 +137,19 @@ forward -L socks5://127.0.0.1:1080 -F quic://S2:1080 -F quic://S1:443
 * QUIC/HTTP3 协议需要底层支持 UDP，因此不能直接建在纯 TCP 代理（如 http）上
 * VLESS 协议在多跳场景下仅支持 TCP 传输模式
 
+**链路预热（减少首请求延迟）：**
+
+```bash
+# 启动后自动发送一次预热请求（默认: http://www.gstatic.com/generate_204）
+forward -L http://:1000 -F vmess://... -F vmess://... --warmup
+
+# 指定预热地址
+forward -L http://:1000 -F vmess://... --warmup --warmup-url http://www.gstatic.com/generate_204
+```
+
+说明：
+* 预热现在会通过 HTTP 处理器的连接池执行，请尽量将 `--warmup-url` 设为你首个真实访问的目标域名（同域名复用效果最佳）。
+
 ### 内网反向代理（Intranet Reverse Proxy）
 
 **服务端（公网 IP）：**
