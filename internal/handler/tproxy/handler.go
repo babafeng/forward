@@ -160,7 +160,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...corehandler
 
 	route, err := h.options.Router.Route(ctx, network, routeAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "TPROXY route error: %v", err)
+		h.logf(logging.LevelError, "TPROXY %s route error: %v ", chain.RouteSummary(route), err)
 		return err
 	}
 	if route == nil {
@@ -176,7 +176,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...corehandler
 
 	up, err := route.Dial(ctx, network, dialAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "TPROXY dial %s error: %v", dialAddr, err)
+		h.logf(logging.LevelError, "TPROXY dial %s %s error: %v", chain.RouteSummary(route), dialAddr, err)
 		return err
 	}
 

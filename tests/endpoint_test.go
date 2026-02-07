@@ -157,6 +157,12 @@ func TestRedactedString(t *testing.T) {
 			contains:    []string{"sni=example.com", "redacted"},
 			notContains: []string{"secret"},
 		},
+		{
+			name:        "hysteria2_userinfo_and_obfs_password_redacted",
+			raw:         "hysteria2://token-abc@localhost:443?obfs=salamander&obfs-password=secret",
+			contains:    []string{"redacted", "obfs=salamander"},
+			notContains: []string{"token-abc", "secret"},
+		},
 	}
 
 	for _, tt := range tests {
