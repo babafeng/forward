@@ -22,6 +22,7 @@ import (
 	"forward/base/logging"
 	"forward/base/route"
 	"forward/internal/handler"
+	hy2server "forward/internal/hysteria2"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
@@ -40,12 +41,14 @@ import (
 	_ "forward/internal/connector/http"
 	_ "forward/internal/connector/http2"
 	_ "forward/internal/connector/http3"
+	_ "forward/internal/connector/hysteria2"
 	_ "forward/internal/connector/socks5"
 	_ "forward/internal/connector/tcp"
 	_ "forward/internal/dialer/dtls"
 	_ "forward/internal/dialer/h2"
 	_ "forward/internal/dialer/h3"
 	_ "forward/internal/dialer/http3"
+	_ "forward/internal/dialer/hysteria2"
 	_ "forward/internal/dialer/quic"
 	_ "forward/internal/dialer/tcp"
 	_ "forward/internal/dialer/tls"
@@ -75,6 +78,10 @@ import (
 	// VMess
 	_ "forward/internal/connector/vmess"
 	_ "forward/internal/handler/vmess"
+
+	// Shadowsocks
+	_ "forward/internal/connector/ss"
+	_ "forward/internal/handler/ss"
 )
 
 const defaultWarmupURL = "http://www.gstatic.com/generate_204"
@@ -178,6 +185,10 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	}
 
 	rawScheme := strings.ToLower(cfg.Listen.Scheme)
+	if rawScheme == "hysteria2" || rawScheme == "hy2" {
+		return runHysteria2ProxyServer(ctx, cfg, rt)
+	}
+
 	handlerScheme, listenerScheme, transport := normalizeProxySchemes(rawScheme)
 
 	// 先创建并初始化 Listener
@@ -323,6 +334,20 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		md.Set(metadata.KeyAlterID, cfg.Listen.Query.Get("alterId"))
 	}
 
+	// SS Handler 需要额外的配置
+	if handlerScheme == "ss" {
+		method := ""
+		password := ""
+		if cfg.Listen.User != nil {
+			method = cfg.Listen.User.Username() // 加密方法在用户名
+			if p, ok := cfg.Listen.User.Password(); ok {
+				password = p // 密码在密码字段
+			}
+		}
+		md.Set(metadata.KeyMethod, method)
+		md.Set(metadata.KeyPassword, password)
+	}
+
 	if err := h.Init(md); err != nil {
 		return err
 	}
@@ -354,6 +379,10 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 
 	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
 	return svc.Serve()
+}
+
+func runHysteria2ProxyServer(ctx context.Context, cfg config.Config, rt router.Router) error {
+	return hy2server.Serve(ctx, cfg, rt)
 }
 
 func shouldWarmup(cfg config.Config) bool {
@@ -943,6 +972,13 @@ func isProxyServer(scheme string) bool {
 	if base == "vmess" {
 		return true
 	}
+	if base == "hysteria2" || base == "hy2" {
+		return true
+	}
+	// Shadowsocks 是代理服务器
+	if base == "ss" || base == "shadowsocks" {
+		return true
+	}
 	switch base {
 	case "http", "socks5", "socks5h", "tproxy":
 		return true
@@ -1037,6 +1073,8 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 		return "http", transportH3
 	case "dtls":
 		return "tcp", transportDTLS
+	case "hysteria2", "hy2":
+		return "hysteria2", transportNone
 	// VLESS + Reality
 	case "vless", "vless+reality", "reality":
 		return "vless", transportNone
@@ -1092,6 +1130,10 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 	case "vmess":
 		handlerScheme = "vmess"
 		listenerScheme = "tcp" // VMess 使用普通 TCP 监听
+	// Shadowsocks
+	case "ss", "shadowsocks":
+		handlerScheme = "ss"
+		listenerScheme = "tcp" // SS 使用普通 TCP 监听
 	}
 
 	if transport == transportDTLS {
