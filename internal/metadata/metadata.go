@@ -21,6 +21,8 @@ const (
 	KeyAlterID     = "alterid"
 	KeyOriginalDst = "original_dst"
 	KeyPath        = "path"
+	KeyMethod      = "method"
+	KeyPassword    = "password"
 )
 
 type Metadata interface {

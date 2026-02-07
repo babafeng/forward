@@ -141,7 +141,7 @@ type vmessConn struct {
 	session    *encoding.ClientSession
 	request    *protocol.RequestHeader
 	bodyWriter buf.Writer
-	reader     buf.Reader
+	reader     *buf.BufferedReader
 
 	initOnce sync.Once
 	initErr  error
@@ -151,23 +151,7 @@ func (c *vmessConn) Read(p []byte) (int, error) {
 	if err := c.initReader(); err != nil {
 		return 0, err
 	}
-
-	// 使用 buf.Reader 读取
-	mb, err := c.reader.ReadMultiBuffer()
-	if err != nil {
-		return 0, err
-	}
-
-	n := 0
-	for _, b := range mb {
-		copied := copy(p[n:], b.Bytes())
-		n += copied
-		b.Release()
-		if n >= len(p) {
-			break
-		}
-	}
-	return n, nil
+	return c.reader.Read(p)
 }
 
 func (c *vmessConn) Write(p []byte) (int, error) {
@@ -206,7 +190,7 @@ func (c *vmessConn) initReader() error {
 			c.initErr = fmt.Errorf("vmess decode response body failed: %w", err)
 			return
 		}
-		c.reader = bodyReader
+		c.reader = &buf.BufferedReader{Reader: bodyReader}
 	})
 	return c.initErr
 }

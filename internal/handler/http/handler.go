@@ -583,6 +583,52 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 	return h.transport
 }
 
+// Warmup primes the handler's own upstream transport pool.
+func (h *Handler) Warmup(ctx context.Context, rawURL string) (int, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return 0, fmt.Errorf("warmup url is empty")
+	}
+
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, rawURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("build warmup request failed: %w", err)
+	}
+
+	scheme := strings.ToLower(strings.TrimSpace(req.URL.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return 0, fmt.Errorf("warmup url scheme must be http/https")
+	}
+
+	target := req.URL.Host
+	if target == "" {
+		return 0, fmt.Errorf("warmup url missing host")
+	}
+
+	route, err := h.options.Router.Route(ctx, "tcp", target)
+	if err != nil {
+		return 0, fmt.Errorf("warmup route error: %w", err)
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
+	req.Header.Set("User-Agent", "forward-warmup/1.0")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := h.transportClient().RoundTrip(req)
+	if err != nil {
+		return 0, fmt.Errorf("warmup dial failed: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 500 {
+		return resp.StatusCode, fmt.Errorf("warmup response status: %d", resp.StatusCode)
+	}
+	return resp.StatusCode, nil
+}
+
 func (h *Handler) routeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	route, _ := ctx.Value(routeKey).(chain.Route)
 	if route == nil {

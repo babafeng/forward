@@ -2,6 +2,8 @@ package builder
 
 import (
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"forward/base/endpoint"
@@ -82,6 +84,11 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 			if err := d.Init(dmd); err != nil {
 				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
 			}
+		} else if dialerName == "hysteria2" {
+			dmd := buildHysteria2DialerMetadata(hop, cfg.Insecure)
+			if err := d.Init(dmd); err != nil {
+				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
+			}
 		} else if dialerName == "ws" {
 			dmd := buildWSDialerMetadata(hop)
 			if err := d.Init(dmd); err != nil {
@@ -114,6 +121,14 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 		// 为 VMess Connector 初始化 metadata
 		if connectorName == "vmess" {
 			cmd := buildVmessConnectorMetadata(hop)
+			if err := c.Init(cmd); err != nil {
+				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
+			}
+		}
+
+		// 为 Shadowsocks Connector 初始化 metadata
+		if connectorName == "ss" {
+			cmd := buildSSConnectorMetadata(hop)
 			if err := c.Init(cmd); err != nil {
 				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
 			}
@@ -196,6 +211,61 @@ func buildWSDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	// If "host" query is missing, maybe default to hop.Host if they differ?
 	// Usually for VMess, hop.Host is the server IP, and SNI/Host is for obfuscation.
 	return metadata.New(mdMap)
+}
+
+// buildSSConnectorMetadata 为 Shadowsocks Connector 构建 metadata
+// URL 格式: ss://method:password@host:port
+func buildSSConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
+	method := ""
+	password := ""
+	if hop.User != nil {
+		method = hop.User.Username() // 加密方法在用户名
+		if p, ok := hop.User.Password(); ok {
+			password = p // 密码在密码字段
+		}
+	}
+	return metadata.New(map[string]any{
+		metadata.KeyMethod:   method,
+		metadata.KeyPassword: password,
+	})
+}
+
+func buildHysteria2DialerMetadata(hop endpoint.Endpoint, cfgInsecure bool) metadata.Metadata {
+	q := hop.Query
+	auth := ""
+	if hop.User != nil {
+		raw := hop.User.String()
+		decoded, err := url.QueryUnescape(raw)
+		if err == nil {
+			auth = decoded
+		} else {
+			auth = raw
+		}
+	}
+
+	sni := strings.TrimSpace(q.Get("sni"))
+	if sni == "" {
+		sni = strings.TrimSpace(q.Get("peer"))
+	}
+
+	insecure := cfgInsecure
+	if rawInsecure := strings.TrimSpace(q.Get("insecure")); rawInsecure != "" {
+		if parsed, err := strconv.ParseBool(rawInsecure); err == nil {
+			insecure = parsed
+		}
+	}
+
+	return metadata.New(map[string]any{
+		"address":        hop.Address(),
+		"auth":           auth,
+		"sni":            sni,
+		"insecure":       insecure,
+		"pinsha256":      strings.TrimSpace(q.Get("pinSHA256")),
+		"obfs":           strings.TrimSpace(q.Get("obfs")),
+		"obfs_password":  strings.TrimSpace(q.Get("obfs-password")),
+		"ca":             strings.TrimSpace(q.Get("ca")),
+		metadata.KeyALPN: strings.TrimSpace(q.Get("alpn")),
+	})
 }
 
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
@@ -307,6 +377,17 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 	}
 	if scheme == "vmess+tls" {
 		return "vmess", "tls", nil
+	}
+
+	// Shadowsocks 支持
+	if scheme == "ss" || scheme == "shadowsocks" {
+		return "ss", "tcp", nil
+	}
+	if scheme == "ss+tls" || scheme == "shadowsocks+tls" {
+		return "ss", "tls", nil
+	}
+	if scheme == "hysteria2" || scheme == "hy2" {
+		return "hysteria2", "hysteria2", nil
 	}
 
 	switch scheme {

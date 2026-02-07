@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"forward/internal/builder"
 	"forward/internal/chain"
@@ -20,6 +22,7 @@ import (
 	"forward/base/logging"
 	"forward/base/route"
 	"forward/internal/handler"
+	hy2server "forward/internal/hysteria2"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
@@ -38,12 +41,14 @@ import (
 	_ "forward/internal/connector/http"
 	_ "forward/internal/connector/http2"
 	_ "forward/internal/connector/http3"
+	_ "forward/internal/connector/hysteria2"
 	_ "forward/internal/connector/socks5"
 	_ "forward/internal/connector/tcp"
 	_ "forward/internal/dialer/dtls"
 	_ "forward/internal/dialer/h2"
 	_ "forward/internal/dialer/h3"
 	_ "forward/internal/dialer/http3"
+	_ "forward/internal/dialer/hysteria2"
 	_ "forward/internal/dialer/quic"
 	_ "forward/internal/dialer/tcp"
 	_ "forward/internal/dialer/tls"
@@ -73,7 +78,13 @@ import (
 	// VMess
 	_ "forward/internal/connector/vmess"
 	_ "forward/internal/handler/vmess"
+
+	// Shadowsocks
+	_ "forward/internal/connector/ss"
+	_ "forward/internal/handler/ss"
 )
+
+const defaultWarmupURL = "http://www.gstatic.com/generate_204"
 
 func Main() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -174,6 +185,10 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 	}
 
 	rawScheme := strings.ToLower(cfg.Listen.Scheme)
+	if rawScheme == "hysteria2" || rawScheme == "hy2" {
+		return runHysteria2ProxyServer(ctx, cfg, rt)
+	}
+
 	handlerScheme, listenerScheme, transport := normalizeProxySchemes(rawScheme)
 
 	// 先创建并初始化 Listener
@@ -319,8 +334,26 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		md.Set(metadata.KeyAlterID, cfg.Listen.Query.Get("alterId"))
 	}
 
+	// SS Handler 需要额外的配置
+	if handlerScheme == "ss" {
+		method := ""
+		password := ""
+		if cfg.Listen.User != nil {
+			method = cfg.Listen.User.Username() // 加密方法在用户名
+			if p, ok := cfg.Listen.User.Password(); ok {
+				password = p // 密码在密码字段
+			}
+		}
+		md.Set(metadata.KeyMethod, method)
+		md.Set(metadata.KeyPassword, password)
+	}
+
 	if err := h.Init(md); err != nil {
 		return err
+	}
+
+	if shouldWarmup(cfg) {
+		startWarmup(ctx, cfg, h)
 	}
 
 	// 如果是 VLESS+Reality，传递 validator 给 Handler
@@ -346,6 +379,46 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 
 	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
 	return svc.Serve()
+}
+
+func runHysteria2ProxyServer(ctx context.Context, cfg config.Config, rt router.Router) error {
+	return hy2server.Serve(ctx, cfg, rt)
+}
+
+func shouldWarmup(cfg config.Config) bool {
+	if strings.TrimSpace(cfg.WarmupURL) == "" {
+		return false
+	}
+	return len(cfg.ForwardChain) > 0 || cfg.Forward != nil
+}
+
+type warmupCapable interface {
+	Warmup(context.Context, string) (int, error)
+}
+
+func startWarmup(ctx context.Context, cfg config.Config, h handler.Handler) {
+	warmupURL := strings.TrimSpace(cfg.WarmupURL)
+	if warmupURL == "" || h == nil {
+		return
+	}
+
+	wu, ok := h.(warmupCapable)
+	if !ok {
+		cfg.Logger.Warn("Warmup skipped: handler does not support warmup")
+		return
+	}
+
+	go func() {
+		start := time.Now()
+		wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		code, err := wu.Warmup(wctx, warmupURL)
+		if err != nil {
+			cfg.Logger.Warn("Warmup failed: %v", err)
+			return
+		}
+		cfg.Logger.Info("Warmup success: %s (%d) in %s", warmupURL, code, time.Since(start))
+	}()
 }
 
 func runReverseServer(ctx context.Context, cfg config.Config) error {
@@ -725,9 +798,12 @@ func parseArgs(args []string) (config.Config, error) {
 	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. http://127.0.0.1:8080 (can be repeated)")
 	var forwardFlags stringSlice
 	fs.Var(&forwardFlags, "F", "Forward target endpoint, e.g. socks5://remote:1080 (can be repeated)")
+	tproxyPort := fs.Int("T", 0, "Enable transparent proxy listener on 127.0.0.1:<port> (use with -F only)")
 	configFile := fs.String("C", "", "Path to JSON config file")
 	routeFile := fs.String("R", "", "Path to proxy route config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
+	warmup := fs.Bool("warmup", false, "Warm up forward chain once at startup")
+	warmupURL := fs.String("warmup-url", defaultWarmupURL, "Warmup request URL (used with --warmup)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isVersion := fs.Bool("version", false, "Show version information")
 
@@ -742,6 +818,15 @@ func parseArgs(args []string) (config.Config, error) {
 		return config.Config{}, err
 	}
 
+	if tproxyPort != nil && *tproxyPort > 0 {
+		if *configFile != "" || *routeFile != "" || len(listenFlags) > 0 {
+			return config.Config{}, fmt.Errorf("-T cannot be used with -C/-R/-L")
+		}
+		if len(forwardFlags) == 0 {
+			return config.Config{}, fmt.Errorf("-T requires -F (one or more forward endpoints)")
+		}
+	}
+
 	if *routeFile != "" {
 		if *configFile != "" || len(listenFlags) > 0 || len(forwardFlags) > 0 {
 			return config.Config{}, fmt.Errorf("-R cannot be used with -C/-L/-F")
@@ -754,11 +839,27 @@ func parseArgs(args []string) (config.Config, error) {
 			cfg.Logger = logging.New(logging.Options{Level: logging.LevelDebug})
 			cfg.LogLevel = logging.LevelDebug
 		}
+		if warmup != nil && *warmup {
+			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
+			if cfg.WarmupURL == "" {
+				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+			}
+		}
 		return cfg, nil
 	}
 
 	if *configFile != "" {
-		return parseConfigFile(*configFile)
+		cfg, err := parseConfigFile(*configFile)
+		if err != nil {
+			return config.Config{}, err
+		}
+		if warmup != nil && *warmup {
+			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
+			if cfg.WarmupURL == "" {
+				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+			}
+		}
+		return cfg, nil
 	}
 
 	logLevel := "info"
@@ -776,7 +877,7 @@ func parseArgs(args []string) (config.Config, error) {
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 
-	if len(listenFlags) == 0 {
+	if (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
 		defaultPath, err := cjson.FindDefaultConfig()
 		if err != nil {
 			fs.Usage()
@@ -785,14 +886,30 @@ func parseArgs(args []string) (config.Config, error) {
 		return parseConfigFile(defaultPath)
 	}
 
-	for _, l := range listenFlags {
-		ep, err := endpoint.Parse(l)
+	if tproxyPort != nil && *tproxyPort > 0 {
+		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(*tproxyPort))
+		ep, err := endpoint.Parse("tproxy://" + addr)
 		if err != nil {
-			return cfg, fmt.Errorf("parse -L %s: %w", l, err)
+			return cfg, fmt.Errorf("parse -T %d: %w", *tproxyPort, err)
 		}
 		cfg.Listeners = append(cfg.Listeners, ep)
+		cfg.Listen = ep
+		cfg.TProxy = &config.TProxyConfig{
+			Port:         *tproxyPort,
+			Network:      []string{"tcp"},
+			Sniffing:     true,
+			DestOverride: []string{"http", "tls", "quic"},
+		}
+	} else {
+		for _, l := range listenFlags {
+			ep, err := endpoint.Parse(l)
+			if err != nil {
+				return cfg, fmt.Errorf("parse -L %s: %w", l, err)
+			}
+			cfg.Listeners = append(cfg.Listeners, ep)
+		}
+		cfg.Listen = cfg.Listeners[0]
 	}
-	cfg.Listen = cfg.Listeners[0]
 
 	if len(forwardFlags) > 0 {
 		for _, raw := range forwardFlags {
@@ -809,6 +926,12 @@ func parseArgs(args []string) (config.Config, error) {
 	}
 
 	cfg.Insecure = *insecure
+	if warmup != nil && *warmup {
+		cfg.WarmupURL = strings.TrimSpace(*warmupURL)
+		if cfg.WarmupURL == "" {
+			return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+		}
+	}
 
 	cfg.Nodes = []config.NodeConfig{{
 		Name:         "default",
@@ -847,6 +970,13 @@ func isProxyServer(scheme string) bool {
 	}
 	// VMess 是代理服务器
 	if base == "vmess" {
+		return true
+	}
+	if base == "hysteria2" || base == "hy2" {
+		return true
+	}
+	// Shadowsocks 是代理服务器
+	if base == "ss" || base == "shadowsocks" {
 		return true
 	}
 	switch base {
@@ -943,6 +1073,8 @@ func splitSchemeTransport(scheme string) (base string, transport transportKind) 
 		return "http", transportH3
 	case "dtls":
 		return "tcp", transportDTLS
+	case "hysteria2", "hy2":
+		return "hysteria2", transportNone
 	// VLESS + Reality
 	case "vless", "vless+reality", "reality":
 		return "vless", transportNone
@@ -998,6 +1130,10 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 	case "vmess":
 		handlerScheme = "vmess"
 		listenerScheme = "tcp" // VMess 使用普通 TCP 监听
+	// Shadowsocks
+	case "ss", "shadowsocks":
+		handlerScheme = "ss"
+		listenerScheme = "tcp" // SS 使用普通 TCP 监听
 	}
 
 	if transport == transportDTLS {

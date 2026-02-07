@@ -51,6 +51,7 @@ self-rootca.cer
 .github/agents/
 .github/prompts/
 .specify/
+proxy-route.conf
 
 .gocache/
 mem.out
