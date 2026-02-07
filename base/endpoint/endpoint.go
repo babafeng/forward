@@ -38,6 +38,12 @@ func Parse(raw string) (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("empty endpoint")
 	}
 
+	// 预处理：转义 userinfo 部分中的 / 字符（base64 密码可能包含 /）
+	// 格式: scheme://userinfo@host:port/path
+	if strings.Contains(raw, "ss://") {
+		raw = escapeUserinfoSlash(raw)
+	}
+
 	u, err := url.Parse(raw)
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("parse endpoint: %w", err)
@@ -110,7 +116,9 @@ func (e Endpoint) RedactedString() string {
 		Host:   e.Address(),
 	}
 	if e.User != nil {
-		if _, hasPass := e.User.Password(); hasPass {
+		if strings.EqualFold(e.Scheme, "hysteria2") || strings.EqualFold(e.Scheme, "hy2") {
+			u.User = url.User("redacted")
+		} else if _, hasPass := e.User.Password(); hasPass {
 			u.User = url.UserPassword(e.User.Username(), "redacted")
 		} else {
 			u.User = e.User
@@ -118,7 +126,7 @@ func (e Endpoint) RedactedString() string {
 	}
 	if len(e.Query) > 0 {
 		q := url.Values{}
-		sensitiveKeys := []string{"key", "private_key", "pbk", "sid", "uuid", "token", "psk", "password", "secret", "ca"}
+		sensitiveKeys := []string{"key", "private_key", "pbk", "sid", "uuid", "token", "psk", "password", "secret", "ca", "obfs-password"}
 		for k, v := range e.Query {
 			isSensitive := false
 			for _, sk := range sensitiveKeys {
@@ -158,4 +166,31 @@ func (e Endpoint) UserPass() (user, pass string, ok bool) {
 		return "", "", false
 	}
 	return user, pass, true
+}
+
+// escapeUserinfoSlash 转义 URL userinfo 部分中的 / 字符
+// 这对于 base64 编码的密码非常重要，因为 base64 可能包含 / 字符
+// 格式: scheme://userinfo@host:port/path
+func escapeUserinfoSlash(raw string) string {
+	// 找到 scheme://
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd == -1 {
+		return raw
+	}
+	afterScheme := raw[schemeEnd+3:]
+
+	// 找到 @ 符号（userinfo 结束）
+	atIndex := strings.LastIndex(afterScheme, "@")
+	if atIndex == -1 {
+		// 没有 userinfo
+		return raw
+	}
+
+	userinfo := afterScheme[:atIndex]
+	rest := afterScheme[atIndex:]
+
+	// 转义 userinfo 中的 / 为 %2F
+	escapedUserinfo := strings.ReplaceAll(userinfo, "/", "%2F")
+
+	return raw[:schemeEnd+3] + escapedUserinfo + rest
 }

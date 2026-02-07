@@ -6,7 +6,7 @@ forward 是一个用 Go 编写的安全、轻量、高性能的端口转发与�
 
 * **端口转发**：支持 TCP/UDP 转发，并支持代理链。
 * **内网穿透（反向代理）**：通过反向隧道将本地服务暴露到公网（TLS/QUIC/VLESS+REALITY）。
-* **代理服务器**：支持 HTTP/SOCKS5/TLS/HTTP3/VLESS+REALITY 代理服务端。
+* **代理服务器**：支持 HTTP/SOCKS5/TLS/HTTP3/VMess/VLESS+REALITY/Hysteria2 代理服务端。
 * **传输协议**：支持 TCP/UDP/TLS/DTLS/HTTP2/HTTP3/QUIC(Raw) 作为底层传输通道。
 * **代理路由**：基于规则将流量路由到多个上游代理（INI 配置）。
 * **多路复用**：TCP 使用 Yamux
@@ -89,16 +89,23 @@ forward -L udp://:5353 -F udp://8.8.8.8:53
 
 ### 代理服务器（Proxy Server）
 
-启动一个代理服务器，支持 http / socks5 / https / quic / tls / vless+reality（别名：reality）
+启动一个代理服务器，支持 http / socks5 / https / quic / tls / vmess / vless+reality（别名：reality）/ hysteria2（别名：hy2）
 
 ```bash
 forward -L http://:1080
 forward -L vless+reality://:443
 forward -L reality://:443
+forward -L vmess://auto:11111111-1111-1111-1111-111111111111@:10086?alterId=0
+forward -L "hysteria2://your-auth@:443?cert=/path/to/fullchain.pem&key=/path/to/privkey.pem&obfs=salamander&obfs-password=your-obfs-password"
 
 # 可选参数：uuid / dest / sni / sid / key
 forward -L vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key
 ```
+
+说明：
+* `vmess://` 监听格式为 `vmess://<security>:<uuid>@:port?alterId=0`（`security` 在用户名，`uuid` 在密码）。
+* `hysteria2://` 监听格式为 `hysteria2://<auth>@:port?...`；建议显式配置 `cert` 和 `key`。
+* `hy2://` 是 `hysteria2://` 的别名。
 
 **进阶用法-代理链:**
 
@@ -113,16 +120,21 @@ forward -L http://127.0.0.1:8080 -F http://S2:8080 -F http://S1:8080
 
 # 三跳代理链：本地 -> S3 -> S2 -> S1 -> 目标
 forward -L http://:8080 -F http://S3:8080 -F http://S2:8080 -F http://S1:8080
+
+# 使用 Hysteria2 节点作为上游
+forward -L http://:1080 -F "hysteria2://uuid@remote:443?peer=sni&insecure=1"
 ```
 
 **支持的协议组合：**
 
-| 基础协议       | 可链接协议                | 说明                         |
-| -------------- | ------------------------- | ---------------------------- |
-| http/https/tls | http/https/tls/socks5     | 标准 TCP 链式代理            |
-| socks5         | quic/http3/http/https/tls | SOCKS5 支持 UDP，可承载 QUIC |
-| vless/reality  | http/https/tls/socks5     | 仅支持 TCP 传输 (`type=tcp`) |
-| tcp            | quic                      | Raw QUIC 隧道                |
+| 基础协议        | 可链接协议                | 说明                         |
+| --------------- | ------------------------- | ---------------------------- |
+| http/https/tls  | http/https/tls/socks5     | 标准 TCP 链式代理            |
+| socks5          | quic/http3/http/https/tls | SOCKS5 支持 UDP，可承载 QUIC |
+| vmess/vmess+tls | http/https/tls/socks5     | 仅支持 TCP 传输              |
+| vless/reality   | http/https/tls/socks5     | 仅支持 TCP 传输 (`type=tcp`) |
+| hysteria2/hy2   | http/socks5/tcp/udp       | 原生 QUIC 代理，支持 TCP/UDP |
+| tcp             | quic                      | Raw QUIC 隧道                |
 
 **QUIC/HTTP3 多跳示例：**
 
