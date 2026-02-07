@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"forward/internal/config"
 	"forward/base/endpoint"
+	"forward/internal/config"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -57,19 +57,21 @@ func ServerConfig(cfg config.Config, opts ServerOptions) (*tls.Config, error) {
 
 	var clientCAs *x509.CertPool
 	caFile := strings.TrimSpace(cfg.Listen.Query.Get("ca"))
+	clientAuth := tls.NoClientCert
 	if caFile != "" {
 		clientCAs, err = loadCA(caFile)
 		if err != nil {
 			cfg.Logger.Error("Failed to load self CA : %v", err)
 			return nil, fmt.Errorf("Failed to load self CA: %w", err)
 		}
+		clientAuth = tls.RequireAndVerifyClientCert
 	}
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   opts.NextProtos,
 		ClientCAs:    clientCAs,
-		ClientAuth:   tls.NoClientCert,
+		ClientAuth:   clientAuth,
 		MinVersion:   tls.VersionTLS12,
 		MaxVersion:   tls.VersionTLS13,
 	}, nil

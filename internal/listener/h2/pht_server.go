@@ -3,6 +3,7 @@ package h2
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -285,6 +286,11 @@ func (s *Server) Addr() net.Addr {
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	raddr, _ := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if raddr == nil {
 		raddr = &net.TCPAddr{}
@@ -293,12 +299,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// 提取源 IP 用于后续验证
 	sourceIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 
-	// Basic Auth Check
-	if s.options.secret != "" {
-		if r.Header.Get("X-PHT-Secret") != s.options.secret && r.URL.Query().Get("secret") != s.options.secret {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
+	if !authorizedBySecret(r, s.options.secret) {
+		w.WriteHeader(http.StatusForbidden)
+		return
 	}
 
 	cid := newToken()
@@ -324,6 +327,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if !authorizedBySecret(r, s.options.secret) {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -397,6 +404,10 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if !authorizedBySecret(r, s.options.secret) {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -480,4 +491,15 @@ func isIPv4(addr string) bool {
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.To4() != nil
+}
+
+func authorizedBySecret(r *http.Request, secret string) bool {
+	if secret == "" {
+		return true
+	}
+	provided := r.Header.Get("X-PHT-Secret")
+	if len(provided) != len(secret) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) == 1
 }
