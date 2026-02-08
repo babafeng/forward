@@ -856,6 +856,21 @@ func (h *Handler) log() *logging.Logger {
 	return h.options.Logger
 }
 
+var sensitiveQueryKeys = map[string]struct{}{
+	"password":   {},
+	"pwd":        {},
+	"pass":       {},
+	"passwd":     {},
+	"token":      {},
+	"auth":       {},
+	"key":        {},
+	"secret":     {},
+	"psk":        {},
+	"session":    {},
+	"credential": {},
+	"api_key":    {},
+}
+
 // redactURL 移除 URL 中的敏感信息（userinfo 和敏感 query 参数）
 func redactURL(u *url.URL) string {
 	if u == nil {
@@ -865,16 +880,10 @@ func redactURL(u *url.URL) string {
 	redacted := *u
 	redacted.User = nil
 
-	// 脱敏敏感 query 参数
-	sensitiveKeys := []string{
-		"password", "pwd", "pass", "passwd",
-		"token", "auth", "key", "secret",
-		"psk", "session", "credential", "api_key",
-	}
 	if redacted.RawQuery != "" {
 		q := redacted.Query()
-		for _, k := range sensitiveKeys {
-			if q.Has(k) {
+		for k := range q {
+			if _, ok := sensitiveQueryKeys[strings.ToLower(k)]; ok {
 				q.Set(k, "[REDACTED]")
 			}
 		}
