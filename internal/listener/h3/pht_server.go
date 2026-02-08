@@ -33,6 +33,11 @@ const (
 	maxPushBytes             = 1 << 20 // 1MB
 )
 
+var (
+	cleanupTickInterval = 30 * time.Second
+	sessionIdleTimeout  = 60 * time.Second
+)
+
 type serverOptions struct {
 	authorizePath  string
 	pushPath       string
@@ -213,6 +218,7 @@ func (s *Server) ListenAndServe() error {
 			return err
 		}
 		s.addr = addr
+		go s.cleanupLoop()
 		return s.http3Server.ListenAndServe()
 	}
 
@@ -238,7 +244,11 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) cleanupLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	interval := cleanupTickInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -246,8 +256,10 @@ func (s *Server) cleanupLoop() {
 			return
 		case <-ticker.C:
 			now := time.Now().UnixNano()
-			// 1 min timeout
-			timeout := int64(60 * time.Second)
+			timeout := int64(sessionIdleTimeout)
+			if timeout <= 0 {
+				timeout = int64(60 * time.Second)
+			}
 			s.conns.Range(func(key, value any) bool {
 				sess, ok := value.(*phtSession)
 				if !ok {
@@ -281,8 +293,8 @@ func (s *Server) Close() error {
 		close(s.closed)
 
 		s.conns.Range(func(key, value any) bool {
-			if conn, ok := value.(net.Conn); ok {
-				conn.Close()
+			if sess, ok := value.(*phtSession); ok {
+				sess.conn.Close()
 			}
 			s.conns.Delete(key)
 			return true

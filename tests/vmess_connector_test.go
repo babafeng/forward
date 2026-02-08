@@ -1,13 +1,31 @@
-package vmess
+package tests
 
 import (
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/proxy/vmess/encoding"
+
+	_ "unsafe"
 )
+
+//go:linkname vmessConnRead forward/internal/connector/vmess.(*vmessConn).Read
+func vmessConnRead(c *vmessConnMirror, p []byte) (int, error)
+
+type vmessConnMirror struct {
+	net.Conn
+	session    *encoding.ClientSession
+	request    *protocol.RequestHeader
+	bodyWriter buf.Writer
+	reader     *buf.BufferedReader
+	initOnce   sync.Once
+	initErr    error
+}
 
 type stubConn struct{}
 
@@ -36,14 +54,14 @@ func (r *oneShotReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 }
 
 func TestVMessConnRead_NoTailLoss(t *testing.T) {
-	c := &vmessConn{
+	c := &vmessConnMirror{
 		Conn:   stubConn{},
 		reader: &buf.BufferedReader{Reader: &oneShotReader{payload: []byte("abcdef")}},
 	}
 	c.initOnce.Do(func() {})
 
 	part1 := make([]byte, 2)
-	n1, err := c.Read(part1)
+	n1, err := vmessConnRead(c, part1)
 	if err != nil {
 		t.Fatalf("first read failed: %v", err)
 	}
@@ -52,7 +70,7 @@ func TestVMessConnRead_NoTailLoss(t *testing.T) {
 	}
 
 	part2 := make([]byte, 4)
-	n2, err := c.Read(part2)
+	n2, err := vmessConnRead(c, part2)
 	if err != nil {
 		t.Fatalf("second read failed: %v", err)
 	}
