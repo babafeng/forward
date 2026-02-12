@@ -63,7 +63,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "UDP connection %s -> %s", remote, local)
+	h.logf(logging.LevelInfo, "UDP forward %s -> %s -> %s", remote, local, target)
 
 	route, err := h.options.Router.Route(ctx, "udp", target)
 	if err != nil {
@@ -85,7 +85,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	if err != nil && ctx.Err() == nil {
 		h.logf(logging.LevelError, "UDP transfer error: %v", err)
 	}
-	h.logf(logging.LevelDebug, "UDP closed %s -> %s transferred %d bytes in %s", remote, target, bytes, dur)
+	h.logf(logging.LevelDebug, "UDP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
 	return err
 }
 
