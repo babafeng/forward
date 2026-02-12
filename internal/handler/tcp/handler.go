@@ -59,7 +59,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "TCP connection %s -> %s", remote, local)
+	h.logf(logging.LevelInfo, "TCP forward %s -> %s -> %s", remote, local, target)
 
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
@@ -81,7 +81,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	if err != nil && ctx.Err() == nil {
 		h.logf(logging.LevelError, "TCP transfer error: %v", err)
 	}
-	h.logf(logging.LevelDebug, "TCP closed %s -> %s transferred %d bytes in %s", remote, target, bytes, dur)
+	h.logf(logging.LevelDebug, "TCP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
 	return err
 }
 
