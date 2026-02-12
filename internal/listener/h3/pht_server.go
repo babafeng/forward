@@ -3,6 +3,7 @@ package h3
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -30,6 +31,11 @@ const (
 	defaultReadTimeout       = 10 * time.Second
 	defaultReadHeaderTimeout = 30 * time.Second
 	maxPushBytes             = 1 << 20 // 1MB
+)
+
+var (
+	cleanupTickInterval = 30 * time.Second
+	sessionIdleTimeout  = 60 * time.Second
 )
 
 type serverOptions struct {
@@ -212,6 +218,7 @@ func (s *Server) ListenAndServe() error {
 			return err
 		}
 		s.addr = addr
+		go s.cleanupLoop()
 		return s.http3Server.ListenAndServe()
 	}
 
@@ -237,7 +244,11 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) cleanupLoop() {
-	ticker := time.NewTicker(30 * time.Second)
+	interval := cleanupTickInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -245,8 +256,10 @@ func (s *Server) cleanupLoop() {
 			return
 		case <-ticker.C:
 			now := time.Now().UnixNano()
-			// 1 min timeout
-			timeout := int64(60 * time.Second)
+			timeout := int64(sessionIdleTimeout)
+			if timeout <= 0 {
+				timeout = int64(60 * time.Second)
+			}
 			s.conns.Range(func(key, value any) bool {
 				sess, ok := value.(*phtSession)
 				if !ok {
@@ -280,8 +293,8 @@ func (s *Server) Close() error {
 		close(s.closed)
 
 		s.conns.Range(func(key, value any) bool {
-			if conn, ok := value.(net.Conn); ok {
-				conn.Close()
+			if sess, ok := value.(*phtSession); ok {
+				sess.conn.Close()
 			}
 			s.conns.Delete(key)
 			return true
@@ -302,6 +315,11 @@ func (s *Server) Addr() net.Addr {
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	raddr, _ := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if raddr == nil {
 		raddr = &net.TCPAddr{}
@@ -310,12 +328,9 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	// 提取源 IP 用于后续验证
 	sourceIP, _, _ := net.SplitHostPort(r.RemoteAddr)
 
-	// Basic Auth Check
-	if s.options.secret != "" {
-		if r.Header.Get("X-PHT-Secret") != s.options.secret && r.URL.Query().Get("secret") != s.options.secret {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
+	if !authorizedBySecret(r, s.options.secret) {
+		w.WriteHeader(http.StatusForbidden)
+		return
 	}
 
 	cid := newToken()
@@ -341,6 +356,10 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if !authorizedBySecret(r, s.options.secret) {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -414,6 +433,10 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if !authorizedBySecret(r, s.options.secret) {
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 
@@ -497,4 +520,15 @@ func isIPv4(addr string) bool {
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.To4() != nil
+}
+
+func authorizedBySecret(r *http.Request, secret string) bool {
+	if secret == "" {
+		return true
+	}
+	provided := r.Header.Get("X-PHT-Secret")
+	if len(provided) != len(secret) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) == 1
 }

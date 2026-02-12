@@ -15,7 +15,7 @@ import (
 	"forward/base/logging"
 )
 
-func NewClientConn(client *http.Client, pushURL, pullURL string, remoteAddr net.Addr, logger *logging.Logger) net.Conn {
+func NewClientConn(client *http.Client, pushURL, pullURL, secret string, remoteAddr net.Addr, logger *logging.Logger) net.Conn {
 	if remoteAddr == nil {
 		remoteAddr = &net.TCPAddr{}
 	}
@@ -23,6 +23,7 @@ func NewClientConn(client *http.Client, pushURL, pullURL string, remoteAddr net.
 		client:     client,
 		pushURL:    pushURL,
 		pullURL:    pullURL,
+		secret:     secret,
 		rxc:        make(chan []byte, 128),
 		closed:     make(chan struct{}),
 		localAddr:  &net.TCPAddr{},
@@ -51,6 +52,7 @@ type clientConn struct {
 	client     *http.Client
 	pushURL    string
 	pullURL    string
+	secret     string
 	buf        []byte
 	rxc        chan []byte
 	closed     chan struct{}
@@ -101,6 +103,9 @@ func (c *clientConn) write(b []byte) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
+	if c.secret != "" {
+		req.Header.Set("X-PHT-Secret", c.secret)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -130,6 +135,9 @@ func (c *clientConn) readLoop() {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.pullURL, nil)
 			if err != nil {
 				return err
+			}
+			if c.secret != "" {
+				req.Header.Set("X-PHT-Secret", c.secret)
 			}
 
 			resp, err := c.client.Do(req)

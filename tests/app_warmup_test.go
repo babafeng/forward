@@ -1,4 +1,4 @@
-package app
+package tests
 
 import (
 	"testing"
@@ -45,7 +45,7 @@ func TestShouldWarmup(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shouldWarmup(tc.cfg)
+			got := appShouldWarmup(tc.cfg)
 			if got != tc.want {
 				t.Fatalf("shouldWarmup=%v want %v", got, tc.want)
 			}
