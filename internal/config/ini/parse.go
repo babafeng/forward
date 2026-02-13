@@ -212,19 +212,19 @@ func parseRuleLine(line string) (route.Rule, error) {
 
 	ruleType := route.RuleType(strings.ToUpper(parts[0]))
 	value := ""
-	action := ""
+	var actionParts []string
 
 	if ruleType == route.RuleFinal {
-		action = parts[1]
+		actionParts = parts[1:]
 	} else {
 		if len(parts) < 3 {
 			return route.Rule{}, fmt.Errorf("invalid rule: %s", line)
 		}
 		value = parts[1]
-		action = parts[2]
+		actionParts = parts[2:]
 	}
 
-	act, err := parseAction(action)
+	act, err := parseAction(actionParts)
 	if err != nil {
 		return route.Rule{}, err
 	}
@@ -236,17 +236,43 @@ func parseRuleLine(line string) (route.Rule, error) {
 	}, nil
 }
 
-func parseAction(raw string) (route.Action, error) {
-	action := strings.ToUpper(strings.TrimSpace(raw))
-	switch action {
+func parseAction(rawParts []string) (route.Action, error) {
+	parts := make([]string, 0, len(rawParts))
+	for _, raw := range rawParts {
+		part := strings.ToUpper(strings.TrimSpace(raw))
+		if part == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return route.Action{}, fmt.Errorf("rule action is empty")
+	}
+
+	switch parts[0] {
 	case "DIRECT":
+		if len(parts) > 1 {
+			return route.Action{}, fmt.Errorf("DIRECT action cannot be chained")
+		}
 		return route.Action{Type: route.ActionDirect}, nil
 	case "REJECT":
+		if len(parts) > 1 {
+			return route.Action{}, fmt.Errorf("REJECT action cannot be chained")
+		}
 		return route.Action{Type: route.ActionReject}, nil
-	case "":
-		return route.Action{}, fmt.Errorf("rule action is empty")
 	default:
-		return route.Action{Type: route.ActionProxy, Proxy: route.NormalizeProxyName(action)}, nil
+		// Rule chain syntax is target-first, accelerator-last.
+		// Reverse for execution order to align with `-F a -F b` semantics (a accelerates b).
+		proxyChain := make([]string, 0, len(parts))
+		for i := len(parts) - 1; i >= 0; i-- {
+			proxyChain = append(proxyChain, route.NormalizeProxyName(parts[i]))
+		}
+		act := route.Action{
+			Type:       route.ActionProxy,
+			Proxy:      proxyChain[0],
+			ProxyChain: proxyChain,
+		}
+		return act, nil
 	}
 }
 

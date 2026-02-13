@@ -160,32 +160,32 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...corehandler
 
 	route, err := h.options.Router.Route(ctx, network, routeAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "TPROXY %s route error: %v ", chain.RouteSummary(route), err)
+		h.options.Logger.Error("TPROXY %s route error: %v ", chain.RouteSummary(route), err)
 		return err
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "TPROXY route via %s", chain.RouteSummary(route))
+	h.options.Logger.Debug("TPROXY route via %s", chain.RouteSummary(route))
 
 	if len(route.Nodes()) > 0 && sniffHost != "" && shouldOverride(sniffProto, h.destOverride) {
 		dialAddr = routeAddr
 	}
 
-	h.logf(logging.LevelInfo, "TPROXY %s %s %s -> %s %s", chain.RouteSummary(route), strings.ToUpper(network), conn.RemoteAddr().String(), origAddr, dialAddr)
+	h.options.Logger.Info("TPROXY %s %s %s -> %s %s", chain.RouteSummary(route), strings.ToUpper(network), conn.RemoteAddr().String(), origAddr, dialAddr)
 
 	up, err := route.Dial(ctx, network, dialAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "TPROXY dial %s %s error: %v", chain.RouteSummary(route), dialAddr, err)
+		h.options.Logger.Error("TPROXY dial %s %s error: %v", chain.RouteSummary(route), dialAddr, err)
 		return err
 	}
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
 	recordTProxyStats(err)
 	if err != nil && ctx.Err() == nil {
-		h.logf(logging.LevelError, "TPROXY transfer error: %v", err)
+		h.options.Logger.Error("TPROXY transfer error: %v", err)
 	}
-	h.logf(logging.LevelDebug, "TPROXY closed %s -> %s transferred %d bytes in %s", conn.RemoteAddr().String(), dialAddr, bytes, dur)
+	h.options.Logger.Debug("TPROXY closed %s -> %s transferred %d bytes in %s", conn.RemoteAddr().String(), dialAddr, bytes, dur)
 	return err
 }
 

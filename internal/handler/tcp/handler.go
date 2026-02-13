@@ -59,29 +59,29 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "TCP forward %s -> %s -> %s", remote, local, target)
+	h.options.Logger.Info("TCP forward %s -> %s -> %s", remote, local, target)
 
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "TCP route error: %v", err)
+		h.options.Logger.Error("TCP route error: %v", err)
 		return err
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "TCP route via %s", chain.RouteSummary(route))
+	h.options.Logger.Debug("TCP route via %s", chain.RouteSummary(route))
 
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "TCP dial %s error: %v", target, err)
+		h.options.Logger.Error("TCP dial %s error: %v", target, err)
 		return err
 	}
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
 	if err != nil && ctx.Err() == nil {
-		h.logf(logging.LevelError, "TCP transfer error: %v", err)
+		h.options.Logger.Error("TCP transfer error: %v", err)
 	}
-	h.logf(logging.LevelDebug, "TCP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
+	h.options.Logger.Debug("TCP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
 	return err
 }
 
