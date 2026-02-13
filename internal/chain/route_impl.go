@@ -3,9 +3,11 @@ package chain
 import (
 	"context"
 	"net"
+	"strings"
 	"time"
 
 	"forward/internal/config"
+	ictx "forward/internal/ctx"
 )
 
 type defaultRoute struct {
@@ -47,6 +49,13 @@ func SetDefaultResolver(dnsServers []string) {
 }
 
 func (r defaultRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+	tr := ictx.TraceFromContext(ctx)
+	if tr != nil && tr.Logger != nil {
+		tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, RouteSummary(r))
+		tr.Logger.Debug("%sdial start %s %s via %s", tr.Prefix(), strings.ToUpper(network), address, RouteSummary(r))
+	}
+	start := time.Now()
+
 	timeout := r.dialTimeout
 	if timeout <= 0 {
 		timeout = config.DefaultDialTimeout
@@ -58,7 +67,15 @@ func (r defaultRoute) Dial(ctx context.Context, network, address string) (net.Co
 		Timeout:  timeout,
 		Resolver: defaultResolver,
 	}
-	return d.DialContext(ctx, network, address)
+	conn, err := d.DialContext(ctx, network, address)
+	if tr != nil && tr.Logger != nil {
+		if err != nil {
+			tr.Logger.Debug("%sdial error %s %s: %v (dur=%s)", tr.Prefix(), strings.ToUpper(network), address, err, time.Since(start))
+		} else {
+			tr.Logger.Debug("%sdial ok %s %s (dur=%s)", tr.Prefix(), strings.ToUpper(network), address, time.Since(start))
+		}
+	}
+	return conn, err
 }
 
 func (r defaultRoute) Nodes() []*Node {
@@ -94,41 +111,107 @@ func (r *chainRoute) Dial(ctx context.Context, network, address string) (net.Con
 		return defaultRoute{}.Dial(ctx, network, address)
 	}
 
+	tr := ictx.TraceFromContext(ctx)
+	if tr != nil && tr.Logger != nil {
+		tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, RouteSummary(r))
+		tr.Logger.Debug("%sdial start %s %s via %s", tr.Prefix(), strings.ToUpper(network), address, RouteSummary(r))
+	}
+
+	labelNode := func(n *Node) string {
+		if n == nil {
+			return ""
+		}
+		if n.Display != "" {
+			return n.Display
+		}
+		if n.Name != "" {
+			return n.Name
+		}
+		return n.Addr
+	}
+
 	node := r.nodes[0]
+	if tr != nil && tr.Logger != nil {
+		tr.Logger.Debug("%sdial hop=0 node=%s addr=%s", tr.Prefix(), labelNode(node), node.Addr)
+	}
+	hopStart := time.Now()
 	conn, err := node.Transport().Dial(ctx, node.Addr)
 	if err != nil {
+		if tr != nil && tr.Logger != nil {
+			tr.Logger.Debug("%sdial hop=0 error node=%s addr=%s: %v (dur=%s)", tr.Prefix(), labelNode(node), node.Addr, err, time.Since(hopStart))
+		}
 		return nil, err
 	}
+	if tr != nil && tr.Logger != nil {
+		tr.Logger.Debug("%sdial hop=0 ok node=%s addr=%s (dur=%s)", tr.Prefix(), labelNode(node), node.Addr, time.Since(hopStart))
+		tr.Logger.Debug("%shandshake hop=0 node=%s", tr.Prefix(), labelNode(node))
+	}
+	hsStart := time.Now()
 	hc, err := node.Transport().Handshake(ctx, conn)
 	if err != nil {
+		if tr != nil && tr.Logger != nil {
+			tr.Logger.Debug("%shandshake hop=0 error node=%s: %v (dur=%s)", tr.Prefix(), labelNode(node), err, time.Since(hsStart))
+		}
 		conn.Close()
 		return nil, err
+	}
+	if tr != nil && tr.Logger != nil {
+		tr.Logger.Debug("%shandshake hop=0 ok node=%s (dur=%s)", tr.Prefix(), labelNode(node), time.Since(hsStart))
 	}
 	conn = hc
 
 	prev := node
-	for _, node = range r.nodes[1:] {
+	for i, node := range r.nodes[1:] {
+		hop := i + 1
+		if tr != nil && tr.Logger != nil {
+			tr.Logger.Debug("%sconnect hop=%d prev=%s -> node=%s addr=%s", tr.Prefix(), hop, labelNode(prev), labelNode(node), node.Addr)
+		}
+		csStart := time.Now()
 		cc, err := prev.Transport().Connect(ctx, conn, "tcp", node.Addr)
 		if err != nil {
+			if tr != nil && tr.Logger != nil {
+				tr.Logger.Debug("%sconnect hop=%d error prev=%s -> node=%s addr=%s: %v (dur=%s)", tr.Prefix(), hop, labelNode(prev), labelNode(node), node.Addr, err, time.Since(csStart))
+			}
 			conn.Close()
 			return nil, err
 		}
+		if tr != nil && tr.Logger != nil {
+			tr.Logger.Debug("%sconnect hop=%d ok prev=%s -> node=%s (dur=%s)", tr.Prefix(), hop, labelNode(prev), labelNode(node), time.Since(csStart))
+			tr.Logger.Debug("%shandshake hop=%d node=%s", tr.Prefix(), hop, labelNode(node))
+		}
 		conn = cc
-
+		hsStart := time.Now()
 		cc, err = node.Transport().Handshake(ctx, conn)
 		if err != nil {
+			if tr != nil && tr.Logger != nil {
+				tr.Logger.Debug("%shandshake hop=%d error node=%s: %v (dur=%s)", tr.Prefix(), hop, labelNode(node), err, time.Since(hsStart))
+			}
 			conn.Close()
 			return nil, err
+		}
+		if tr != nil && tr.Logger != nil {
+			tr.Logger.Debug("%shandshake hop=%d ok node=%s (dur=%s)", tr.Prefix(), hop, labelNode(node), time.Since(hsStart))
 		}
 		conn = cc
 
 		prev = node
 	}
 
+	if tr != nil && tr.Logger != nil {
+		tr.Logger.Debug("%sconnect dest prev=%s -> %s %s", tr.Prefix(), labelNode(prev), strings.ToUpper(network), address)
+	}
+	finalStart := time.Now()
 	cc, err := prev.Transport().Connect(ctx, conn, network, address)
 	if err != nil {
+		if tr != nil && tr.Logger != nil {
+			tr.Logger.Debug("%sconnect dest error prev=%s -> %s %s: %v (dur=%s)", tr.Prefix(), labelNode(prev), strings.ToUpper(network), address, err, time.Since(finalStart))
+		}
 		conn.Close()
 		return nil, err
+	}
+	if tr != nil && tr.Logger != nil {
+		tr.Logger.Debug("%sconnect dest ok prev=%s -> %s %s (dur=%s)", tr.Prefix(), labelNode(prev), strings.ToUpper(network), address, time.Since(finalStart))
+		tr.Logger.Debug("%sdial done %s %s via %s", tr.Prefix(), strings.ToUpper(network), address, RouteSummary(r))
 	}
 	return cc, nil
 }

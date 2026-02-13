@@ -125,9 +125,6 @@ func (l *Listener) Init(md metadata.Metadata) error {
 func (l *Listener) Accept() (net.Conn, error) {
 	select {
 	case c := <-l.cqueue:
-		if l.logger != nil {
-			l.logger.Info("Listener accepted %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
-		}
 		return c, nil
 	case <-l.closed:
 		return nil, listener.ErrClosed

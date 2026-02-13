@@ -131,7 +131,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.options.Logger.Info("HTTP connection %s -> %s", remote, local)
+	h.options.Logger.Debug("HTTP connection %s -> %s", remote, local)
 
 	if md := ictx.MetadataFromContext(ctx); md != nil {
 		if w, ok := md.Get(metadata.MetaHTTPResponseWriter).(stdhttp.ResponseWriter); ok && w != nil {
@@ -246,7 +246,7 @@ func (l *oneShotListener) Addr() net.Addr {
 
 // ServeHTTP handles HTTP/1.1, HTTP/2, and HTTP/3 proxy requests when bridged via listener metadata.
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	h.options.Logger.Info("HTTP request %s %s from %s host=%s", r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
+	h.options.Logger.Debug("HTTP request %s %s from %s host=%s", r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
 
 	if isUDPRequest(r) {
 		if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
@@ -318,7 +318,7 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	}
 	h.options.Logger.Debug("HTTP CONNECT route via %s", chain.RouteSummary(route))
 
-	h.options.Logger.Info("HTTP CONNECT %s -> %s", r.RemoteAddr, target)
+	h.options.Logger.Debug("HTTP CONNECT %s -> %s", r.RemoteAddr, target)
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("HTTP connect dial error: %v", err)
@@ -340,7 +340,7 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 		_ = bufrw.Flush()
 
 		bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-		h.options.Logger.Info("HTTP CONNECT closed %s -> %s bytes=%d dur=%s", r.RemoteAddr, target, bytes, dur)
+		h.options.Logger.Debug("HTTP CONNECT closed %s -> %s bytes=%d dur=%s", r.RemoteAddr, target, bytes, dur)
 		if err != nil {
 			h.options.Logger.Debug("HTTP CONNECT stream error: %v", err)
 		}
@@ -362,7 +362,7 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	fl.Flush()
 
 	h.streamWithBody(ctx, w, r.Body, up, fl)
-	h.options.Logger.Info("HTTP CONNECT closed %s -> %s", r.RemoteAddr, target)
+	h.options.Logger.Debug("HTTP CONNECT closed %s -> %s", r.RemoteAddr, target)
 }
 
 func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -386,7 +386,7 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	}
 	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
 
-	h.options.Logger.Info("HTTP Route %s %s -> %s via %s", r.Method, redactURL(r.URL), target, chain.RouteSummary(route))
+	h.options.Logger.Debug("HTTP Route %s %s -> %s via %s", r.Method, redactURL(r.URL), target, chain.RouteSummary(route))
 	resp, err := h.transportClient().RoundTrip(req)
 	if err != nil {
 		h.options.Logger.Debug("HTTP dial failed %s: %v", req.URL.String(), err)
@@ -401,7 +401,7 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 		h.options.Logger.Error("HTTP error writing response: %v", err)
 		return
 	}
-	h.options.Logger.Info("HTTP response %s -> %s %d", r.RemoteAddr, target, resp.StatusCode)
+	h.options.Logger.Debug("HTTP response %s -> %s %d", r.RemoteAddr, target, resp.StatusCode)
 }
 
 func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {
@@ -489,7 +489,7 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Re
 	}
 	h.options.Logger.Debug("HTTP CONNECT route via %s", chain.RouteSummary(route))
 
-	h.options.Logger.Info("HTTP CONNECT %s -> %s", req.RemoteAddr, target)
+	h.options.Logger.Debug("HTTP CONNECT %s -> %s", req.RemoteAddr, target)
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("HTTP connect dial error: %v", err)
@@ -510,7 +510,7 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Re
 	}
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-	h.options.Logger.Info("HTTP CONNECT closed %s -> %s bytes=%d dur=%s", req.RemoteAddr, target, bytes, dur)
+	h.options.Logger.Debug("HTTP CONNECT closed %s -> %s bytes=%d dur=%s", req.RemoteAddr, target, bytes, dur)
 	return err
 }
 
@@ -538,7 +538,7 @@ func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp
 	h.options.Logger.Debug("HTTP Route via %s", chain.RouteSummary(route))
 	upReq = upReq.WithContext(context.WithValue(upReq.Context(), routeKey, route))
 
-	h.options.Logger.Info("HTTP %s %s -> %s", req.Method, req.URL.String(), target)
+	h.options.Logger.Debug("HTTP %s %s -> %s", req.Method, req.URL.String(), target)
 	resp, err := h.transportClient().RoundTrip(upReq)
 	if err != nil {
 		h.options.Logger.Debug("HTTP dial failed %s: %v", upReq.URL.String(), err)
@@ -557,7 +557,7 @@ func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp
 		return false, err
 	}
 
-	h.options.Logger.Info("HTTP response %s -> %s %d", req.RemoteAddr, target, resp.StatusCode)
+	h.options.Logger.Debug("HTTP response %s -> %s %d", req.RemoteAddr, target, resp.StatusCode)
 	return !req.Close && !resp.Close, nil
 }
 

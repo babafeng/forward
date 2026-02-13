@@ -83,9 +83,6 @@ func (l *Listener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, listener.NewAcceptError(err)
 	}
-	if l.logger != nil {
-		l.logger.Info("Listener accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
-	}
 	// TLS 握手在 tls.NewListener 内部完成，deadline 由 timeoutListener 设置
 	// 握手成功后清除 deadline 以避免影响后续数据传输
 	if l.tlsConfig != nil {

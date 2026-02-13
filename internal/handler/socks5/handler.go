@@ -107,7 +107,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.options.Logger.Info("SOCKS5 connection %s -> %s", remote, local)
+	h.options.Logger.Debug("SOCKS5 connection %s -> %s", remote, local)
 
 	_ = conn.SetReadDeadline(time.Now().Add(h.handshakeTimout))
 
@@ -262,7 +262,6 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 		route = chain.NewRoute()
 	}
 
-	h.options.Logger.Info("SOCKS5 CONNECT Route %s -> %s via %s", conn.RemoteAddr().String(), dest, chain.RouteSummary(route))
 	up, err := route.Dial(ctx, "tcp", dest)
 	if err != nil {
 		h.options.Logger.Error("SOCKS5 connect dial error: %v", err)
@@ -275,7 +274,7 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 	_ = h.writeReply(bw, 0x00, bind)
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-	h.options.Logger.Info("SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
+	h.options.Logger.Debug("SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
 	return err
 }
 
@@ -304,7 +303,7 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 		return err
 	}
 
-	h.options.Logger.Info("SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
+	h.options.Logger.Debug("SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -464,7 +463,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 			return nil, err
 		}
 
-		s.logf(logging.LevelInfo, "SOCKS5 UDP %s -> %s", src.String(), dest)
+		s.logf(logging.LevelDebug, "SOCKS5 UDP %s -> %s", src.String(), dest)
 
 		p := &udpPeer{
 			conn: c,

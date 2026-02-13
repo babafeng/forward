@@ -86,11 +86,11 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	}
 	targetAddr := net.JoinHostPort(request.Address.String(), request.Port.String())
 
-	h.options.Logger.Info("VLESS connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VLESS connect %s -> %s", conn.RemoteAddr(), targetAddr)
 
 	// 检查 Vision 流
 	if requestAddons.Flow == xvless.XRV {
-		h.options.Logger.Info("VLESS Vision flow detected from %s", conn.RemoteAddr())
+		h.options.Logger.Debug("VLESS Vision flow detected from %s", conn.RemoteAddr())
 		if request.Command == protocol.RequestCommandUDP {
 			h.options.Logger.Debug("VLESS Vision flow rejected for UDP from %s", conn.RemoteAddr())
 			return fmt.Errorf("vision flow does not support udp")
@@ -155,7 +155,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 		return err
 	}
 
-	h.options.Logger.Info("VLESS closed %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VLESS closed %s -> %s", conn.RemoteAddr(), targetAddr)
 	return nil
 }
 

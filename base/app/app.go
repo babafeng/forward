@@ -1186,12 +1186,14 @@ func (h *xrayLogHandler) Handle(msg xlog.Message) {
 			h.logger.Debug("%s", txt)
 		}
 	case xlog.Severity_Info:
-		h.logger.Info("%s", txt)
+		// Keep info-level output from xray components out of the user's default info logs.
+		// Users can enable debug to see full xray chatter.
+		h.logger.Debug("%s", txt)
 	case xlog.Severity_Warning:
 		h.logger.Warn("%s", txt)
 	case xlog.Severity_Error:
 		h.logger.Error("%s", txt)
 	default:
-		h.logger.Info("%s", txt)
+		h.logger.Debug("%s", txt)
 	}
 }
