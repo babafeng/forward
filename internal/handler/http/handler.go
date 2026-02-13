@@ -131,7 +131,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.options.Logger.Debug("HTTP connection %s -> %s", remote, local)
+	h.debugVerbose(ctx, "%sHTTP connection %s -> %s", h.tracePrefix(ctx), remote, local)
 
 	if md := ictx.MetadataFromContext(ctx); md != nil {
 		if w, ok := md.Get(metadata.MetaHTTPResponseWriter).(stdhttp.ResponseWriter); ok && w != nil {
@@ -246,7 +246,8 @@ func (l *oneShotListener) Addr() net.Addr {
 
 // ServeHTTP handles HTTP/1.1, HTTP/2, and HTTP/3 proxy requests when bridged via listener metadata.
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	h.options.Logger.Debug("HTTP request %s %s from %s host=%s", r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
+	prefix := h.tracePrefix(r.Context())
+	h.debugVerbose(r.Context(), "%sHTTP request %s %s from %s host=%s", prefix, r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
 
 	if isUDPRequest(r) {
 		if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
@@ -267,7 +268,7 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if !r.URL.IsAbs() && !h.transparent {
-			h.options.Logger.Debug("HTTP reject non-absolute request from %s: %s", r.RemoteAddr, r.URL.String())
+			h.options.Logger.Debug("%sHTTP reject non-absolute request from %s: %s", prefix, r.RemoteAddr, r.URL.String())
 			writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 			return
 		}
@@ -286,12 +287,13 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (h *Handler) authorizeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) bool {
+	prefix := h.tracePrefix(r.Context())
 	user, pass, ok := parseProxyAuth(r.Header.Get("Proxy-Authorization"))
 	if ok && h.auth.Check(user, pass) {
-		h.options.Logger.Debug("HTTP auth success for user %s", user)
+		h.debugVerbose(r.Context(), "%sHTTP auth success for user %s", prefix, user)
 		return true
 	}
-	h.options.Logger.Debug("HTTP auth failed or missing credentials from %s", r.RemoteAddr)
+	h.options.Logger.Debug("%sHTTP auth failed or missing credentials from %s", prefix, r.RemoteAddr)
 	writeAuthRequiredHTTP(w)
 	return false
 }
@@ -307,6 +309,8 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	}
 
 	ctx := r.Context()
+	start := time.Now()
+	prefix := h.tracePrefix(ctx)
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("HTTP Route error: %v", err)
@@ -316,9 +320,6 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.options.Logger.Debug("HTTP CONNECT route via %s", chain.RouteSummary(route))
-
-	h.options.Logger.Debug("HTTP CONNECT %s -> %s", r.RemoteAddr, target)
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("HTTP connect dial error: %v", err)
@@ -339,10 +340,11 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 		_, _ = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 		_ = bufrw.Flush()
 
-		bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-		h.options.Logger.Debug("HTTP CONNECT closed %s -> %s bytes=%d dur=%s", r.RemoteAddr, target, bytes, dur)
-		if err != nil {
-			h.options.Logger.Debug("HTTP CONNECT stream error: %v", err)
+		bytes, dur, streamErr := inet.Bidirectional(ctx, conn, up)
+		if streamErr != nil && ctx.Err() == nil {
+			h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s err=%v", prefix, r.RemoteAddr, target, bytes, dur, streamErr)
+		} else {
+			h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s", prefix, r.RemoteAddr, target, bytes, dur)
 		}
 		return
 	}
@@ -355,21 +357,23 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	}
 
 	if err := stdhttp.NewResponseController(w).EnableFullDuplex(); err != nil {
-		h.options.Logger.Debug("HTTP connect: enable full-duplex failed: %v", err)
+		h.debugVerbose(ctx, "%sHTTP connect: enable full-duplex failed: %v", prefix, err)
 	}
 
 	w.WriteHeader(stdhttp.StatusOK)
 	fl.Flush()
 
 	h.streamWithBody(ctx, w, r.Body, up, fl)
-	h.options.Logger.Debug("HTTP CONNECT closed %s -> %s", r.RemoteAddr, target)
+	h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s dur=%s", prefix, r.RemoteAddr, target, time.Since(start))
 }
 
 func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	ctx := r.Context()
+	start := time.Now()
+	prefix := h.tracePrefix(ctx)
 	req, err := h.prepareUpstreamRequest(ctx, r)
 	if err != nil {
-		h.options.Logger.Debug("HTTP bad request from %s: %v", r.RemoteAddr, err)
+		h.options.Logger.Debug("%sHTTP bad request from %s: %v", prefix, r.RemoteAddr, err)
 		writeSimpleHTTP(w, stdhttp.StatusBadRequest, "bad request")
 		return
 	}
@@ -386,10 +390,9 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	}
 	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
 
-	h.options.Logger.Debug("HTTP Route %s %s -> %s via %s", r.Method, redactURL(r.URL), target, chain.RouteSummary(route))
 	resp, err := h.transportClient().RoundTrip(req)
 	if err != nil {
-		h.options.Logger.Debug("HTTP dial failed %s: %v", req.URL.String(), err)
+		h.options.Logger.Debug("%sHTTP %s %s -> %s failed: %v dur=%s", prefix, r.Method, redactURL(r.URL), target, err, time.Since(start))
 		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 		return
 	}
@@ -401,7 +404,7 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 		h.options.Logger.Error("HTTP error writing response: %v", err)
 		return
 	}
-	h.options.Logger.Debug("HTTP response %s -> %s %d", r.RemoteAddr, target, resp.StatusCode)
+	h.options.Logger.Debug("%sHTTP %s %s -> %s status=%d dur=%s", prefix, r.Method, redactURL(r.URL), target, resp.StatusCode, time.Since(start))
 }
 
 func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {
@@ -457,108 +460,6 @@ func (fw *flushWriter) Write(p []byte) (int, error) {
 		fw.f.Flush()
 	}
 	return n, err
-}
-
-func (h *Handler) authorize(conn net.Conn, req *stdhttp.Request) bool {
-	user, pass, ok := parseProxyAuth(req.Header.Get("Proxy-Authorization"))
-	if ok && h.auth.Check(user, pass) {
-		h.options.Logger.Debug("HTTP auth success for user %s", user)
-		return true
-	}
-	h.options.Logger.Debug("HTTP auth failed or missing credentials from %s", req.RemoteAddr)
-	writeAuthRequired(conn)
-	return false
-}
-
-func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Reader, req *stdhttp.Request) error {
-	target := req.Host
-	if target == "" {
-		return writeSimple(conn, stdhttp.StatusBadRequest, "missing host", nil)
-	}
-	if !strings.Contains(target, ":") {
-		target += ":443"
-	}
-
-	route, err := h.options.Router.Route(ctx, "tcp", target)
-	if err != nil {
-		h.options.Logger.Error("HTTP Route error: %v", err)
-		return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-	h.options.Logger.Debug("HTTP CONNECT route via %s", chain.RouteSummary(route))
-
-	h.options.Logger.Debug("HTTP CONNECT %s -> %s", req.RemoteAddr, target)
-	up, err := route.Dial(ctx, "tcp", target)
-	if err != nil {
-		h.options.Logger.Error("HTTP connect dial error: %v", err)
-		return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	defer up.Close()
-
-	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return err
-	}
-
-	if br != nil && br.Buffered() > 0 {
-		buf, _ := br.Peek(br.Buffered())
-		if len(buf) > 0 {
-			_, _ = up.Write(buf)
-			_, _ = br.Discard(len(buf))
-		}
-	}
-
-	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-	h.options.Logger.Debug("HTTP CONNECT closed %s -> %s bytes=%d dur=%s", req.RemoteAddr, target, bytes, dur)
-	return err
-}
-
-func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp.Request) (bool, error) {
-	if !strings.EqualFold(req.Method, stdhttp.MethodConnect) {
-		if !req.URL.IsAbs() && !h.transparent {
-			return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-		}
-	}
-
-	upReq, err := h.prepareUpstreamRequest(ctx, req)
-	if err != nil {
-		return false, writeSimple(conn, stdhttp.StatusBadRequest, "bad request", nil)
-	}
-
-	target := upReq.URL.Host
-	route, err := h.options.Router.Route(ctx, "tcp", target)
-	if err != nil {
-		h.options.Logger.Error("HTTP Route error: %v", err)
-		return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-	h.options.Logger.Debug("HTTP Route via %s", chain.RouteSummary(route))
-	upReq = upReq.WithContext(context.WithValue(upReq.Context(), routeKey, route))
-
-	h.options.Logger.Debug("HTTP %s %s -> %s", req.Method, req.URL.String(), target)
-	resp, err := h.transportClient().RoundTrip(upReq)
-	if err != nil {
-		h.options.Logger.Debug("HTTP dial failed %s: %v", upReq.URL.String(), err)
-		return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	defer resp.Body.Close()
-
-	cleanHopHeaders(resp.Header)
-	resp.Close = req.Close
-
-	bw := bufio.NewWriter(conn)
-	if err := resp.Write(bw); err != nil {
-		return false, err
-	}
-	if err := bw.Flush(); err != nil {
-		return false, err
-	}
-
-	h.options.Logger.Debug("HTTP response %s -> %s %d", req.RemoteAddr, target, resp.StatusCode)
-	return !req.Close && !resp.Close, nil
 }
 
 func (h *Handler) transportClient() *stdhttp.Transport {
@@ -733,13 +634,6 @@ func copyHeaders(dst, src stdhttp.Header) {
 	}
 }
 
-func writeAuthRequired(conn net.Conn) error {
-	headers := map[string]string{
-		"Proxy-Authenticate": `Basic realm="` + config.CamouflageRealm + `"`,
-	}
-	return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, headers)
-}
-
 func writeSimple(conn net.Conn, status int, title string, extraHeaders map[string]string) error {
 	statusText := stdhttp.StatusText(status)
 	if statusText == "" {
@@ -849,6 +743,25 @@ func (h *Handler) logf(level logging.Level, format string, args ...any) {
 	case logging.LevelError:
 		h.options.Logger.Error(format, args...)
 	}
+}
+
+func (h *Handler) tracePrefix(ctx context.Context) string {
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil {
+		return ""
+	}
+	return tr.Prefix()
+}
+
+func (h *Handler) debugVerbose(ctx context.Context, format string, args ...any) {
+	if h.options.Logger == nil {
+		return
+	}
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil || !tr.Verbose {
+		return
+	}
+	h.options.Logger.Debug(format, args...)
 }
 
 func (h *Handler) log() *logging.Logger {

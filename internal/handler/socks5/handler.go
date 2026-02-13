@@ -22,6 +22,7 @@ import (
 	socks5util "forward/base/utils/socks5"
 	"forward/internal/chain"
 	"forward/internal/config"
+	ictx "forward/internal/ctx"
 	corehandler "forward/internal/handler"
 	"forward/internal/metadata"
 	"forward/internal/registry"
@@ -107,21 +108,21 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.options.Logger.Debug("SOCKS5 connection %s -> %s", remote, local)
+	h.debugVerbose(ctx, "%sSOCKS5 connection %s -> %s", h.tracePrefix(ctx), remote, local)
 
 	_ = conn.SetReadDeadline(time.Now().Add(h.handshakeTimout))
 
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
 
-	if err := h.negotiateAuth(br, bw); err != nil {
+	if err := h.negotiateAuth(ctx, br, bw); err != nil {
 		if ctx.Err() == nil {
 			h.options.Logger.Error("SOCKS5 negotiate error: %v", err)
 		}
 		return err
 	}
 
-	cmd, dest, err := h.readRequest(br, bw)
+	cmd, dest, err := h.readRequest(ctx, br, bw)
 	if err != nil {
 		if ctx.Err() == nil {
 			h.options.Logger.Error("SOCKS5 request error: %v", err)
@@ -140,7 +141,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	}
 }
 
-func (h *Handler) negotiateAuth(br *bufio.Reader, bw *bufio.Writer) error {
+func (h *Handler) negotiateAuth(ctx context.Context, br *bufio.Reader, bw *bufio.Writer) error {
 	ver, err := br.ReadByte()
 	if err != nil {
 		return err
@@ -161,7 +162,7 @@ func (h *Handler) negotiateAuth(br *bufio.Reader, bw *bufio.Writer) error {
 	if h.requireAuth {
 		required = methodUserPass
 	}
-	h.options.Logger.Debug("SOCKS5 auth method selected=%d", required)
+	h.debugVerbose(ctx, "%sSOCKS5 auth method selected=%d", h.tracePrefix(ctx), required)
 	if !socks5util.Contains(methods, required) {
 		if _, err := bw.Write([]byte{version5, 0xff}); err != nil {
 			return fmt.Errorf("write reject: %w", err)
@@ -229,7 +230,7 @@ func (h *Handler) handleUserPass(br *bufio.Reader, bw *bufio.Writer) error {
 	return fmt.Errorf("auth failed for user %q", string(uname))
 }
 
-func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string, error) {
+func (h *Handler) readRequest(ctx context.Context, br *bufio.Reader, bw *bufio.Writer) (byte, string, error) {
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(br, head); err != nil {
 		return 0, "", err
@@ -245,7 +246,7 @@ func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string,
 		return 0, "", err
 	}
 	dest := net.JoinHostPort(addr, strconv.Itoa(port))
-	h.options.Logger.Debug("SOCKS5 request cmd=%d dst=%s", cmd, dest)
+	h.debugVerbose(ctx, "%sSOCKS5 request cmd=%d dst=%s", h.tracePrefix(ctx), cmd, dest)
 	return cmd, dest, nil
 }
 
@@ -657,6 +658,25 @@ func (h *Handler) logf(level logging.Level, format string, args ...any) {
 	case logging.LevelError:
 		h.options.Logger.Error(format, args...)
 	}
+}
+
+func (h *Handler) tracePrefix(ctx context.Context) string {
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil {
+		return ""
+	}
+	return tr.Prefix()
+}
+
+func (h *Handler) debugVerbose(ctx context.Context, format string, args ...any) {
+	if h.options.Logger == nil {
+		return
+	}
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil || !tr.Verbose {
+		return
+	}
+	h.options.Logger.Debug(format, args...)
 }
 
 func (h *Handler) log() *logging.Logger {

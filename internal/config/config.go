@@ -79,6 +79,9 @@ type Config struct {
 	Listen    endpoint.Endpoint
 	Listeners []endpoint.Endpoint
 	LogLevel  logging.Level
+	// DebugVerbose enables high-volume per-hop/per-request debug traces.
+	// Keep this off by default to avoid noisy debug output.
+	DebugVerbose bool
 
 	Forward      *endpoint.Endpoint
 	ForwardChain []endpoint.Endpoint

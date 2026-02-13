@@ -95,7 +95,11 @@ func Main() int {
 	if logger == nil {
 		logger = logging.New(logging.Options{Level: logging.LevelError})
 	}
-	xlog.RegisterHandler(&xrayLogHandler{level: cfg.LogLevel.String(), logger: logger})
+	xlog.RegisterHandler(&xrayLogHandler{
+		level:   cfg.LogLevel.String(),
+		logger:  logger,
+		verbose: cfg.DebugVerbose,
+	})
 
 	if err != nil {
 		if err == flag.ErrHelp {
@@ -371,7 +375,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		}
 	}
 
-	svc := service.NewService(ln, h, cfg.Logger)
+	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
@@ -478,7 +482,7 @@ func runReverseServer(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	svc := service.NewService(ln, h, cfg.Logger)
+	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
@@ -555,7 +559,7 @@ func runReverseRealityServer(ctx context.Context, cfg config.Config, revHandler 
 		}
 	}
 
-	svc := service.NewService(ln, vlessHandler, cfg.Logger)
+	svc := service.NewService(ln, vlessHandler, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
@@ -731,7 +735,7 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	svc := service.NewService(ln, h, cfg.Logger)
+	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
@@ -805,6 +809,7 @@ func parseArgs(args []string) (config.Config, error) {
 	warmup := fs.Bool("warmup", false, "Warm up forward chain once at startup")
 	warmupURL := fs.String("warmup-url", defaultWarmupURL, "Warmup request URL (used with --warmup)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
+	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
 	isVersion := fs.Bool("version", false, "Show version information")
 
 	fmt.Printf("Forward internal %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
@@ -835,10 +840,7 @@ func parseArgs(args []string) (config.Config, error) {
 		if err != nil {
 			return config.Config{}, err
 		}
-		if isDebug != nil && *isDebug {
-			cfg.Logger = logging.New(logging.Options{Level: logging.LevelDebug})
-			cfg.LogLevel = logging.LevelDebug
-		}
+		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
 		if warmup != nil && *warmup {
 			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 			if cfg.WarmupURL == "" {
@@ -853,6 +855,7 @@ func parseArgs(args []string) (config.Config, error) {
 		if err != nil {
 			return config.Config{}, err
 		}
+		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
 		if warmup != nil && *warmup {
 			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 			if cfg.WarmupURL == "" {
@@ -863,7 +866,7 @@ func parseArgs(args []string) (config.Config, error) {
 	}
 
 	logLevel := "info"
-	if isDebug != nil && *isDebug {
+	if (isDebug != nil && *isDebug) || (isDebugVerbose != nil && *isDebugVerbose) {
 		logLevel = "debug"
 	}
 
@@ -876,6 +879,7 @@ func parseArgs(args []string) (config.Config, error) {
 	logger := logging.New(logging.Options{Level: llevel})
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
+	cfg.DebugVerbose = isDebugVerbose != nil && *isDebugVerbose
 
 	if (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
 		defaultPath, err := cjson.FindDefaultConfig()
@@ -883,7 +887,12 @@ func parseArgs(args []string) (config.Config, error) {
 			fs.Usage()
 			return cfg, err
 		}
-		return parseConfigFile(defaultPath)
+		dcfg, err := parseConfigFile(defaultPath)
+		if err != nil {
+			return config.Config{}, err
+		}
+		applyDebugFlags(&dcfg, *isDebug, *isDebugVerbose)
+		return dcfg, nil
 	}
 
 	if tproxyPort != nil && *tproxyPort > 0 {
@@ -956,6 +965,23 @@ func parseRouteConfig(path string) (config.Config, error) {
 		return cini.ParseFile(path)
 	default:
 		return config.Config{}, fmt.Errorf("route config must be .ini/.conf/.cfg")
+	}
+}
+
+func applyDebugFlags(cfg *config.Config, debug, debugVerbose bool) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = logging.New(logging.Options{Level: logging.LevelInfo})
+		cfg.LogLevel = logging.LevelInfo
+	}
+	if debug || debugVerbose {
+		cfg.Logger.SetLevel(logging.LevelDebug)
+		cfg.LogLevel = logging.LevelDebug
+	}
+	if debugVerbose {
+		cfg.DebugVerbose = true
 	}
 }
 
@@ -1162,8 +1188,9 @@ func (s *stringSlice) Set(value string) error {
 }
 
 type xrayLogHandler struct {
-	level  string
-	logger *logging.Logger
+	level   string
+	logger  *logging.Logger
+	verbose bool
 }
 
 func (h *xrayLogHandler) Handle(msg xlog.Message) {
@@ -1182,18 +1209,21 @@ func (h *xrayLogHandler) Handle(msg xlog.Message) {
 
 	switch severity {
 	case xlog.Severity_Debug:
-		if h.level == "debug" {
+		if h.level == "debug" && h.verbose {
 			h.logger.Debug("%s", txt)
 		}
 	case xlog.Severity_Info:
-		// Keep info-level output from xray components out of the user's default info logs.
-		// Users can enable debug to see full xray chatter.
-		h.logger.Debug("%s", txt)
+		// Keep xray component chatter opt-in to avoid overwhelming debug logs.
+		if h.level == "debug" && h.verbose {
+			h.logger.Debug("%s", txt)
+		}
 	case xlog.Severity_Warning:
 		h.logger.Warn("%s", txt)
 	case xlog.Severity_Error:
 		h.logger.Error("%s", txt)
 	default:
-		h.logger.Debug("%s", txt)
+		if h.level == "debug" && h.verbose {
+			h.logger.Debug("%s", txt)
+		}
 	}
 }

@@ -48,13 +48,14 @@ type NodeFileConfig struct {
 }
 
 type FileConfig struct {
-	Nodes     []NodeFileConfig `json:"nodes,omitempty"`
-	Listeners []string         `json:"listeners,omitempty"`
-	Listen    string           `json:"listen,omitempty"`
-	Forward   string           `json:"forward,omitempty"`
-	Forwards  []string         `json:"forwards,omitempty"`
-	Insecure  bool             `json:"insecure,omitempty"`
-	Debug     bool             `json:"debug,omitempty"`
+	Nodes        []NodeFileConfig `json:"nodes,omitempty"`
+	Listeners    []string         `json:"listeners,omitempty"`
+	Listen       string           `json:"listen,omitempty"`
+	Forward      string           `json:"forward,omitempty"`
+	Forwards     []string         `json:"forwards,omitempty"`
+	Insecure     bool             `json:"insecure,omitempty"`
+	Debug        bool             `json:"debug,omitempty"`
+	DebugVerbose bool             `json:"debug_verbose,omitempty"`
 }
 
 func ParseFile(path string) (config.Config, error) {
@@ -77,7 +78,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	cfg := config.Config{}
 
 	logLevel := "info"
-	if fc.Debug {
+	if fc.Debug || fc.DebugVerbose {
 		logLevel = "debug"
 	}
 	llevel, err := logging.ParseLevel(logLevel)
@@ -86,6 +87,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	}
 	cfg.Logger = logging.New(logging.Options{Level: llevel})
 	cfg.LogLevel = llevel
+	cfg.DebugVerbose = fc.DebugVerbose
 
 	if len(fc.Nodes) > 0 {
 		for i, n := range fc.Nodes {

@@ -83,7 +83,9 @@ func Parse(data []byte) (config.Config, error) {
 	}
 
 	logLevel := "info"
-	if strings.EqualFold(strings.TrimSpace(general["debug"]), "true") {
+	debugEnabled := strings.EqualFold(strings.TrimSpace(general["debug"]), "true")
+	debugVerbose := strings.EqualFold(strings.TrimSpace(general["debug-verbose"]), "true")
+	if debugEnabled || debugVerbose {
 		logLevel = "debug"
 	}
 	llevel, err := logging.ParseLevel(logLevel)
@@ -92,10 +94,11 @@ func Parse(data []byte) (config.Config, error) {
 	}
 
 	cfg := config.Config{
-		Listeners: listeners,
-		Listen:    listeners[0],
-		Logger:    logging.New(logging.Options{Level: llevel}),
-		LogLevel:  llevel,
+		Listeners:    listeners,
+		Listen:       listeners[0],
+		Logger:       logging.New(logging.Options{Level: llevel}),
+		LogLevel:     llevel,
+		DebugVerbose: debugVerbose,
 	}
 
 	if tpRaw := strings.TrimSpace(general["tproxy"]); tpRaw != "" {
