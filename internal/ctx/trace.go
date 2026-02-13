@@ -21,6 +21,8 @@ type Trace struct {
 
 	// Logger is the logger used to emit trace logs.
 	Logger *logging.Logger
+	// Verbose indicates whether verbose trace logs are enabled.
+	Verbose bool
 }
 
 type traceKey struct{}

@@ -65,6 +65,9 @@ forward -L http3://:443 --debug
 # SOCKS5 over Raw QUIC (无 HTTP 头部，纯 QUIC 隧道)
 forward -L socks5+quic://:443 --debug
 
+# 需要逐跳排障时再开启高噪音详细日志
+forward -L http://:1080 -F tls://your.server.com:2333 --debug --debug-verbose
+
 # 客户端：如果是自签证书，设置 ca 选项
 forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer&sni=your.server.com"
 ```
@@ -223,7 +226,8 @@ forward -C config.json
   "listen": "http://:1080",
   "forward": "tls://user:pass@remote.com:443",
   "insecure": false,
-  "debug": false
+  "debug": false,
+  "debug_verbose": false
 }
 ```
 
@@ -269,7 +273,8 @@ forward -C config.json
       ]
     }
   ],
-  "debug": true
+  "debug": true,
+  "debug_verbose": false
 }
 ```
 
@@ -290,6 +295,7 @@ forward -R proxy-route.conf
 listen = socks5://0.0.0.0:1080, http://0.0.0.0:8080
 tproxy = 12345
 debug = false
+debug-verbose = false
 skip-proxy = 192.168.0.0/16, 127.0.0.1/32
 dns-server = 8.8.8.8, 8.8.4.4
 mmdb-path = ~/.forward/Country.mmdb

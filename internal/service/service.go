@@ -28,14 +28,16 @@ type defaultService struct {
 	listener listener.Listener
 	handler  handler.Handler
 	logger   *logging.Logger
+	verbose  bool
 	conns    sync.Map
 }
 
-func NewService(ln listener.Listener, h handler.Handler, logger *logging.Logger) Service {
+func NewService(ln listener.Listener, h handler.Handler, logger *logging.Logger, verbose bool) Service {
 	return &defaultService{
 		listener: ln,
 		handler:  h,
 		logger:   logger,
+		verbose:  verbose,
 	}
 }
 
@@ -91,9 +93,9 @@ func (s *defaultService) Serve() error {
 		src := conn.RemoteAddr().String()
 		local := conn.LocalAddr().String()
 		id := connSeq.Add(1)
-		trace := &ictx.Trace{ID: id, Src: src, Local: local, Logger: s.logger}
+		trace := &ictx.Trace{ID: id, Src: src, Local: local, Logger: s.logger, Verbose: s.verbose}
 
-		if s.logger != nil {
+		if s.logger != nil && s.verbose {
 			s.logger.Debug("%saccept %s -> %s", trace.Prefix(), src, local)
 		}
 
@@ -125,7 +127,7 @@ func (s *defaultService) Serve() error {
 			defer s.conns.Delete(c)
 			defer cancel()
 
-			if s.logger != nil {
+			if s.logger != nil && s.verbose {
 				s.logger.Debug("%shandle %s -> %s", tr.Prefix(), tr.Src, tr.Local)
 			}
 			var hopts []handler.HandleOption
@@ -134,12 +136,12 @@ func (s *defaultService) Serve() error {
 					hopts = append(hopts, handler.MetadataHandleOption(md))
 				}
 			}
-			if err := s.handler.Handle(cctx, c, hopts...); err != nil && s.logger != nil {
+			if err := s.handler.Handle(cctx, c, hopts...); err != nil && s.logger != nil && cctx.Err() == nil {
 				s.logger.Debug("%shandler error %s -> %s: %v", tr.Prefix(), tr.Src, tr.Local, err)
 			}
 			// ensure connection is closed
 			c.Close()
-			if s.logger != nil {
+			if s.logger != nil && s.verbose {
 				s.logger.Debug("%sclose %s -> %s", tr.Prefix(), tr.Src, tr.Local)
 			}
 		}(conn, ctx, cancel, trace)
