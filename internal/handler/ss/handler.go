@@ -123,7 +123,7 @@ func (s *ssHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M
 	targetAddr := metadata.Destination.String()
 	network := "tcp"
 
-	s.h.options.Logger.Info("SS connect %s -> %s", metadata.Source, targetAddr)
+	s.h.options.Logger.Debug("SS connect %s -> %s", metadata.Source, targetAddr)
 
 	// 获取路由
 	route, err := s.h.options.Router.Route(ctx, network, targetAddr)
@@ -149,7 +149,7 @@ func (s *ssHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M
 		return err
 	}
 
-	s.h.options.Logger.Info("SS closed %s -> %s", metadata.Source, targetAddr)
+	s.h.options.Logger.Debug("SS closed %s -> %s", metadata.Source, targetAddr)
 	return nil
 }
 

@@ -127,7 +127,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	}
 	targetAddr := net.JoinHostPort(request.Address.String(), request.Port.String())
 
-	h.options.Logger.Info("VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
 
 	// 获取路由
 	route, err := h.options.Router.Route(ctx, network, targetAddr)
@@ -175,7 +175,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 		return err
 	}
 
-	h.options.Logger.Info("VMess closed %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VMess closed %s -> %s", conn.RemoteAddr(), targetAddr)
 	return nil
 }
 

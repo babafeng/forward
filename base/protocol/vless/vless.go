@@ -56,8 +56,8 @@ type Request struct {
 	Command byte
 	Port    uint16
 	Host    string
-	Address string  // "host:port" 格式
-	Network string  // "tcp" 或 "udp"
+	Address string // "host:port" 格式
+	Network string // "tcp" 或 "udp"
 }
 
 // ReadRequest 从 Reader 中读取 VLESS 请求

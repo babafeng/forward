@@ -107,10 +107,10 @@ func (d *Dialer) buildStreamSettings(md metadata.Metadata) (*internet.MemoryStre
 			alpnList = &sl
 		}
 		streamConf.TLSSettings = &conf.TLSConfig{
-			ServerName:  md.GetString(metadata.KeySNI),
-			Fingerprint: fpOrDefault(md.GetString(metadata.KeyFingerprint)),
-			ALPN:        alpnList,
-			Insecure:    md.GetBool(metadata.KeyInsecure),
+			ServerName:    md.GetString(metadata.KeySNI),
+			Fingerprint:   fpOrDefault(md.GetString(metadata.KeyFingerprint)),
+			ALPN:          alpnList,
+			AllowInsecure: md.GetBool(metadata.KeyInsecure),
 		}
 	}
 

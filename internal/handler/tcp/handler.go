@@ -59,7 +59,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.options.Logger.Info("TCP forward %s -> %s -> %s", remote, local, target)
+	h.options.Logger.Debug("TCP forward %s -> %s -> %s", remote, local, target)
 
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
@@ -69,7 +69,6 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.options.Logger.Debug("TCP route via %s", chain.RouteSummary(route))
 
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {

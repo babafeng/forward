@@ -81,7 +81,7 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 		return nil, fmt.Errorf("invalid target address %q", address)
 	}
 
-	c.logf(logging.LevelInfo, "SS connect %s -> %s (%s)", conn.RemoteAddr(), address, network)
+	c.logf(logging.LevelDebug, "SS connect %s -> %s (%s)", conn.RemoteAddr(), address, network)
 
 	// TCP 使用 DialEarlyConn（支持 0-RTT）
 	if network == "tcp" {

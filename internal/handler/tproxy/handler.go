@@ -166,13 +166,12 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...corehandler
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.options.Logger.Debug("TPROXY route via %s", chain.RouteSummary(route))
 
 	if len(route.Nodes()) > 0 && sniffHost != "" && shouldOverride(sniffProto, h.destOverride) {
 		dialAddr = routeAddr
 	}
 
-	h.options.Logger.Info("TPROXY %s %s %s -> %s %s", chain.RouteSummary(route), strings.ToUpper(network), conn.RemoteAddr().String(), origAddr, dialAddr)
+	h.options.Logger.Debug("TPROXY %s %s %s -> %s %s", chain.RouteSummary(route), strings.ToUpper(network), conn.RemoteAddr().String(), origAddr, dialAddr)
 
 	up, err := route.Dial(ctx, network, dialAddr)
 	if err != nil {

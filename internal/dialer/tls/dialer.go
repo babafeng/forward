@@ -6,9 +6,9 @@ import (
 	"net"
 
 	"forward/internal/dialer"
+	tcpdialer "forward/internal/dialer/tcp"
 	"forward/internal/metadata"
 	"forward/internal/registry"
-	tcpdialer "forward/internal/dialer/tcp"
 )
 
 func init() {

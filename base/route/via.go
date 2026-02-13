@@ -16,7 +16,7 @@ func RouteVia(ctx context.Context, store *Store, log *logging.Logger, src, dst s
 		return "DIRECT", err
 	}
 	if log != nil {
-		log.Info("Forward Route %s -> %s via %s", src, dst, decision.Via)
+		log.Debug("Forward Route %s -> %s via %s", src, dst, decision.Via)
 	}
 	return decision.Via, nil
 }

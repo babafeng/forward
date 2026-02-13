@@ -63,7 +63,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.options.Logger.Info("UDP forward %s -> %s -> %s", remote, local, target)
+	h.options.Logger.Debug("UDP forward %s -> %s -> %s", remote, local, target)
 
 	route, err := h.options.Router.Route(ctx, "udp", target)
 	if err != nil {
@@ -73,7 +73,6 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.options.Logger.Debug("UDP route via %s", chain.RouteSummary(route))
 
 	up, err := route.Dial(ctx, "udp", target)
 	if err != nil {
