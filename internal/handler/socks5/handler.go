@@ -107,7 +107,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "SOCKS5 connection %s -> %s", remote, local)
+	h.options.Logger.Info("SOCKS5 connection %s -> %s", remote, local)
 
 	_ = conn.SetReadDeadline(time.Now().Add(h.handshakeTimout))
 
@@ -116,7 +116,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	if err := h.negotiateAuth(br, bw); err != nil {
 		if ctx.Err() == nil {
-			h.logf(logging.LevelError, "SOCKS5 negotiate error: %v", err)
+			h.options.Logger.Error("SOCKS5 negotiate error: %v", err)
 		}
 		return err
 	}
@@ -124,7 +124,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	cmd, dest, err := h.readRequest(br, bw)
 	if err != nil {
 		if ctx.Err() == nil {
-			h.logf(logging.LevelError, "SOCKS5 request error: %v", err)
+			h.options.Logger.Error("SOCKS5 request error: %v", err)
 		}
 		return err
 	}
@@ -161,7 +161,7 @@ func (h *Handler) negotiateAuth(br *bufio.Reader, bw *bufio.Writer) error {
 	if h.requireAuth {
 		required = methodUserPass
 	}
-	h.logf(logging.LevelDebug, "SOCKS5 auth method selected=%d", required)
+	h.options.Logger.Debug("SOCKS5 auth method selected=%d", required)
 	if !socks5util.Contains(methods, required) {
 		if _, err := bw.Write([]byte{version5, 0xff}); err != nil {
 			return fmt.Errorf("write reject: %w", err)
@@ -245,7 +245,7 @@ func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string,
 		return 0, "", err
 	}
 	dest := net.JoinHostPort(addr, strconv.Itoa(port))
-	h.logf(logging.LevelDebug, "SOCKS5 request cmd=%d dst=%s", cmd, dest)
+	h.options.Logger.Debug("SOCKS5 request cmd=%d dst=%s", cmd, dest)
 	return cmd, dest, nil
 }
 
@@ -254,19 +254,18 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 
 	route, err := h.options.Router.Route(ctx, "tcp", dest)
 	if err != nil {
-		h.logf(logging.LevelError, "SOCKS5 route error: %v", err)
+		h.options.Logger.Error("SOCKS5 route error: %v", err)
 		_ = h.writeReply(bw, 0x05, "")
 		return err
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "SOCKS5 CONNECT route via %s", chain.RouteSummary(route))
 
-	h.logf(logging.LevelInfo, "SOCKS5 CONNECT %s -> %s", conn.RemoteAddr().String(), dest)
+	h.options.Logger.Info("SOCKS5 CONNECT Route %s -> %s via %s", conn.RemoteAddr().String(), dest, chain.RouteSummary(route))
 	up, err := route.Dial(ctx, "tcp", dest)
 	if err != nil {
-		h.logf(logging.LevelError, "SOCKS5 connect dial error: %v", err)
+		h.options.Logger.Error("SOCKS5 connect dial error: %v", err)
 		_ = h.writeReply(bw, 0x05, "")
 		return err
 	}
@@ -276,7 +275,7 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 	_ = h.writeReply(bw, 0x00, bind)
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-	h.logf(logging.LevelInfo, "SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
+	h.options.Logger.Info("SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
 	return err
 }
 
@@ -293,7 +292,7 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 	}
 	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: 0})
 	if err != nil {
-		h.logf(logging.LevelError, "SOCKS5 udp listen error: %v", err)
+		h.options.Logger.Error("SOCKS5 udp listen error: %v", err)
 		_ = h.writeReply(bw, 0x01, "")
 		return err
 	}
@@ -305,7 +304,7 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 		return err
 	}
 
-	h.logf(logging.LevelInfo, "SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
+	h.options.Logger.Info("SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

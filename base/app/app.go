@@ -964,18 +964,15 @@ func isProxyServer(scheme string) bool {
 	if base == "http2" || base == "http3" {
 		return transport == transportNone
 	}
-	// VLESS+Reality 是代理服务器
 	if base == "vless" {
 		return true
 	}
-	// VMess 是代理服务器
 	if base == "vmess" {
 		return true
 	}
 	if base == "hysteria2" || base == "hy2" {
 		return true
 	}
-	// Shadowsocks 是代理服务器
 	if base == "ss" || base == "shadowsocks" {
 		return true
 	}

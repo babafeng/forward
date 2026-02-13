@@ -18,7 +18,8 @@ import (
 )
 
 type Decision struct {
-	Via string
+	Via   string
+	Chain []string
 }
 
 type Router struct {
@@ -60,8 +61,10 @@ func NewRouter(cfg *Config, log *logging.Logger) (*Router, error) {
 			if cfg.Proxies == nil {
 				return nil, fmt.Errorf("route rule references proxy %s but no proxies configured", rule.Action.Proxy)
 			}
-			if _, ok := cfg.Proxies[rule.Action.Proxy]; !ok {
-				return nil, fmt.Errorf("route rule references unknown proxy %s", rule.Action.Proxy)
+			for _, name := range rule.Action.ProxyNames() {
+				if _, ok := cfg.Proxies[name]; !ok {
+					return nil, fmt.Errorf("route rule references unknown proxy %s", name)
+				}
 			}
 		}
 		cr, err := compileRule(rule)
@@ -127,7 +130,7 @@ func (r *Router) Decide(ctx context.Context, address string) (Decision, error) {
 
 	for _, rule := range r.rules {
 		if ruleMatch(rule, host, ips, r.mmdb) {
-			return Decision{Via: actionVia(rule.action)}, nil
+			return actionDecision(rule.action), nil
 		}
 	}
 
@@ -204,14 +207,21 @@ func ruleMatch(rule compiledRule, host string, ips []net.IP, db *mmdb.Reader) bo
 	}
 }
 
-func actionVia(a Action) string {
+func actionDecision(a Action) Decision {
 	switch a.Type {
 	case ActionReject:
-		return "REJECT"
+		return Decision{Via: "REJECT"}
 	case ActionProxy:
-		return a.Proxy
+		chain := a.ProxyNames()
+		if len(chain) == 0 {
+			return Decision{Via: "DIRECT"}
+		}
+		return Decision{
+			Via:   strings.Join(chain, " -> "),
+			Chain: chain,
+		}
 	default:
-		return "DIRECT"
+		return Decision{Via: "DIRECT"}
 	}
 }
 

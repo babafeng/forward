@@ -83,7 +83,7 @@ func (h *Handler) Init(md metadata.Metadata) error {
 func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.HandleOption) error {
 	defer conn.Close()
 
-	h.logf(logging.LevelDebug, "SS Handler received connection from %s", conn.RemoteAddr())
+	h.options.Logger.Debug("SS Handler received connection from %s", conn.RemoteAddr())
 
 	if h.service == nil {
 		return fmt.Errorf("shadowsocks service not initialized")
@@ -123,12 +123,12 @@ func (s *ssHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M
 	targetAddr := metadata.Destination.String()
 	network := "tcp"
 
-	s.h.logf(logging.LevelInfo, "SS connect %s -> %s", metadata.Source, targetAddr)
+	s.h.options.Logger.Info("SS connect %s -> %s", metadata.Source, targetAddr)
 
 	// 获取路由
 	route, err := s.h.options.Router.Route(ctx, network, targetAddr)
 	if err != nil {
-		s.h.logf(logging.LevelError, "SS route error: %v", err)
+		s.h.options.Logger.Error("SS route error: %v", err)
 		return err
 	}
 	if route == nil {
@@ -138,31 +138,31 @@ func (s *ssHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M
 	// 建立上游连接
 	targetConn, err := route.Dial(ctx, network, targetAddr)
 	if err != nil {
-		s.h.logf(logging.LevelError, "Dial target %s failed: %v", targetAddr, err)
+		s.h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
 		return err
 	}
 	defer targetConn.Close()
 
 	// 双向转发
 	if err := bidirectionalCopy(ctx, conn, targetConn); err != nil && ctx.Err() == nil {
-		s.h.logf(logging.LevelDebug, "SS transfer error: %v", err)
+		s.h.options.Logger.Debug("SS transfer error: %v", err)
 		return err
 	}
 
-	s.h.logf(logging.LevelInfo, "SS closed %s -> %s", metadata.Source, targetAddr)
+	s.h.options.Logger.Info("SS closed %s -> %s", metadata.Source, targetAddr)
 	return nil
 }
 
 // NewPacketConnection 处理 UDP 连接
 func (s *ssHandler) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) error {
 	// TODO: 实现 UDP 处理
-	s.h.logf(logging.LevelWarn, "SS UDP not implemented yet")
+	s.h.options.Logger.Warn("SS UDP not implemented yet")
 	return nil
 }
 
 // NewError 处理错误
 func (s *ssHandler) NewError(ctx context.Context, err error) {
-	s.h.logf(logging.LevelError, "SS error: %v", err)
+	s.h.options.Logger.Error("SS error: %v", err)
 }
 
 // bidirectionalCopy 双向复制数据

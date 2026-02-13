@@ -63,29 +63,29 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "UDP forward %s -> %s -> %s", remote, local, target)
+	h.options.Logger.Info("UDP forward %s -> %s -> %s", remote, local, target)
 
 	route, err := h.options.Router.Route(ctx, "udp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "UDP route error: %v", err)
+		h.options.Logger.Error("UDP route error: %v", err)
 		return err
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "UDP route via %s", chain.RouteSummary(route))
+	h.options.Logger.Debug("UDP route via %s", chain.RouteSummary(route))
 
 	up, err := route.Dial(ctx, "udp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "UDP dial %s error: %v", target, err)
+		h.options.Logger.Error("UDP dial %s error: %v", target, err)
 		return err
 	}
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
 	if err != nil && ctx.Err() == nil {
-		h.logf(logging.LevelError, "UDP transfer error: %v", err)
+		h.options.Logger.Error("UDP transfer error: %v", err)
 	}
-	h.logf(logging.LevelDebug, "UDP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
+	h.options.Logger.Debug("UDP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
 	return err
 }
 

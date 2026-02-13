@@ -47,7 +47,7 @@ func (d *Dialer) Init(md metadata.Metadata) error {
 		return fmt.Errorf("reality dialer requires metadata")
 	}
 
-	// 解析代理服务器地址
+	// 解析服务器地址
 	d.proxyHost = md.GetString(metadata.KeyHost)
 	d.proxyPort = md.GetInt(metadata.KeyPort)
 	if d.proxyHost == "" || d.proxyPort == 0 {
@@ -123,7 +123,7 @@ func (d *Dialer) buildStreamSettings(md metadata.Metadata) (*internet.MemoryStre
 }
 
 func (d *Dialer) Dial(ctx context.Context, addr string, opts ...dialer.DialOption) (net.Conn, error) {
-	// 对于 Reality Dialer，addr 参数被忽略，使用初始化时配置的代理服务器地址
+	// 对于 Reality Dialer，addr 参数被忽略，使用初始化时配置的服务器地址
 	proxyDest := xnet.TCPDestination(xnet.ParseAddress(d.proxyHost), xnet.Port(d.proxyPort))
 
 	conn, err := internet.Dial(ctx, proxyDest, d.streamSettings)

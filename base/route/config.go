@@ -17,8 +17,9 @@ const (
 )
 
 type Action struct {
-	Type  ActionType
-	Proxy string
+	Type       ActionType
+	Proxy      string
+	ProxyChain []string
 }
 
 type RuleType string
@@ -50,4 +51,21 @@ type Config struct {
 
 func NormalizeProxyName(name string) string {
 	return strings.ToUpper(strings.TrimSpace(name))
+}
+
+func (a Action) ProxyNames() []string {
+	if len(a.ProxyChain) > 0 {
+		out := make([]string, 0, len(a.ProxyChain))
+		for _, name := range a.ProxyChain {
+			normalized := NormalizeProxyName(name)
+			if normalized != "" {
+				out = append(out, normalized)
+			}
+		}
+		return out
+	}
+	if a.Proxy == "" {
+		return nil
+	}
+	return []string{NormalizeProxyName(a.Proxy)}
 }

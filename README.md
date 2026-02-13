@@ -1,14 +1,14 @@
 # forward
 
-forward 是一个用 Go 编写的安全、轻量、高性能的端口转发与代理工具。支持 TCP/UDP 端口转发、内网穿透（反向代理）以及多种代理协议
+forward 是一个用 Go 编写的安全、轻量、高性能的端口转发工具。支持 TCP/UDP 端口转发、内网穿透以及多种转发协议
 
 ## 功能特性
 
-* **端口转发**：支持 TCP/UDP 转发，并支持代理链。
-* **内网穿透（反向代理）**：通过反向隧道将本地服务暴露到公网（TLS/QUIC/VLESS+REALITY）。
-* **代理服务器**：支持 HTTP/SOCKS5/TLS/HTTP3/VMess/VLESS+REALITY/Hysteria2 代理服务端。
+* **端口转发**：支持 TCP/UDP 转发，并支持转发链。
+* **内网穿透**：通过反向隧道将本地服务暴露到公网（TLS/QUIC/VLESS+REALITY）。
+* **服务器**：支持 HTTP/SOCKS5/TLS/HTTP3/VMess/VLESS+REALITY/Hysteria2 服务端。
 * **传输协议**：支持 TCP/UDP/TLS/DTLS/HTTP2/HTTP3/QUIC(Raw) 作为底层传输通道。
-* **代理路由**：基于规则将流量路由到多个上游代理（INI 配置）。
+* **转发路由**：基于规则将流量路由到多个上游转发节点（INI 配置）。
 * **多路复用**：TCP 使用 Yamux
 
 ## 安装
@@ -44,7 +44,7 @@ bash <(curl -fsSL https://github.com/babafeng/forward/raw/main/scripts/register-
 
 ## 认证（Auth）
 
-你可以在代理 URL 中设置用户名和密码用于认证。
+你可以在转发 URL 中设置用户名和密码用于认证。
 
 ```bash
 forward -L socks5://user:pass@:1080
@@ -59,7 +59,7 @@ forward -F tls://user:pass@your.server.com:2333
 # 支持 tls / quic / http2 / http1 / http3
 forward -L "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
 
-# HTTP/3 代理（标准 HTTP/3 代理）
+# HTTP/3 监听（标准 HTTP/3）
 forward -L http3://:443 --debug
 
 # SOCKS5 over Raw QUIC (无 HTTP 头部，纯 QUIC 隧道)
@@ -87,9 +87,9 @@ forward -L udp://:5353/8.8.8.8:53
 forward -L udp://:5353 -F udp://8.8.8.8:53
 ```
 
-### 代理服务器（Proxy Server）
+### 服务器（Proxy Server）
 
-启动一个代理服务器，支持 http / socks5 / https / quic / tls / vmess / vless+reality（别名：reality）/ hysteria2（别名：hy2）
+启动一个服务器，支持 http / socks5 / https / quic / tls / vmess / vless+reality（别名：reality）/ hysteria2（别名：hy2）
 
 ```bash
 forward -L http://:1080
@@ -107,18 +107,18 @@ forward -L vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.
 * `hysteria2://` 监听格式为 `hysteria2://<auth>@:port?...`；建议显式配置 `cert` 和 `key`。
 * `hy2://` 是 `hysteria2://` 的别名。
 
-**进阶用法-代理链:**
+**进阶用法-转发链:**
 
-使用 `-F` 参数依次指定代理链中的节点，顺序为**从近到远**（先经过的代理先写）：
+使用 `-F` 参数依次指定转发链中的节点，顺序为**从近到远**（先经过的节点先写）：
 
 ```bash
-# 单跳代理
+# 单跳转发链：本地 -> S1 -> 目标
 forward -L http://127.0.0.1:1080 -F tls://proxy.com:1080
 
-# 双跳代理链：本地 -> S2 -> S1 -> 目标
+# 双跳转发链：本地 -> S2 -> S1 -> 目标
 forward -L http://127.0.0.1:8080 -F http://S2:8080 -F http://S1:8080
 
-# 三跳代理链：本地 -> S3 -> S2 -> S1 -> 目标
+# 三跳转发链：本地 -> S3 -> S2 -> S1 -> 目标
 forward -L http://:8080 -F http://S3:8080 -F http://S2:8080 -F http://S1:8080
 
 # 使用 Hysteria2 节点作为上游
@@ -129,12 +129,12 @@ forward -L http://:1080 -F "hysteria2://uuid@remote:443?peer=sni&insecure=1"
 
 | 基础协议        | 可链接协议                | 说明                         |
 | --------------- | ------------------------- | ---------------------------- |
-| http/https/tls  | http/https/tls/socks5     | 标准 TCP 链式代理            |
-| socks5          | quic/http3/http/https/tls | SOCKS5 支持 UDP，可承载 QUIC |
+| http/https/tls  | http/https/tls/socks5     | 标准 TCP 链式转发            |
 | vmess/vmess+tls | http/https/tls/socks5     | 仅支持 TCP 传输              |
 | vless/reality   | http/https/tls/socks5     | 仅支持 TCP 传输 (`type=tcp`) |
-| hysteria2/hy2   | http/socks5/tcp/udp       | 原生 QUIC 代理，支持 TCP/UDP |
+| hysteria2/hy2   | http/socks5/tcp/udp       | 原生 QUIC 转发，支持 TCP/UDP |
 | tcp             | quic                      | Raw QUIC 隧道                |
+| socks5          | quic/http3/http/https/tls | SOCKS5 支持 UDP，可承载 QUIC |
 
 **QUIC/HTTP3 多跳示例：**
 
@@ -146,7 +146,7 @@ forward -L socks5://127.0.0.1:1080 -F quic://S2:1080 -F quic://S1:443
 
 **注意事项：**
 
-* QUIC/HTTP3 协议需要底层支持 UDP，因此不能直接建在纯 TCP 代理（如 http）上
+* QUIC/HTTP3 协议需要底层支持 UDP，因此不能直接建在纯 TCP 转发（如 http）上
 * VLESS 协议在多跳场景下仅支持 TCP 传输模式
 
 **链路预热（减少首请求延迟）：**
@@ -162,14 +162,14 @@ forward -L http://:1000 -F vmess://... --warmup --warmup-url http://www.gstatic.
 说明：
 * 预热现在会通过 HTTP 处理器的连接池执行，请尽量将 `--warmup-url` 设为你首个真实访问的目标域名（同域名复用效果最佳）。
 
-### 内网反向代理（Intranet Reverse Proxy）
+### 内网反向转发（Intranet Reverse Proxy）
 
 **服务端（公网 IP）：**
 
-启动一个反向代理服务端，监听 2333 端口。
+启动一个反向转发服务端，监听 2333 端口。
 
 ```bash
-# 支持所有代理 scheme，但建议使用更安全的：tls / quic / https
+# 支持所有转发 scheme，但建议使用更安全的：tls / quic / https
 forward -L tls://user:passwd@:2333?bind=true
 
 # VLESS+REALITY（别名：reality）
@@ -191,8 +191,8 @@ forward -L tcp://:2222/127.0.0.1:22 -F "reality://uuid@your.server.com:2333?encr
 现在，访问 `your.server.com:2222` 将会到达内网机器的 `127.0.0.1:22`。
 
 * `reality://` 是 `vless+reality://` 的别名。
-* 反向代理服务端需要 `bind=true`。
-* 反向代理客户端使用 `target=host:port` 设置 VLESS 请求的目标（默认：服务端 host:port）。
+* 内网穿透服务端需要 `bind=true`。
+* 内网穿透客户端使用 `target=host:port` 设置 VLESS 请求的目标（默认：服务端 host:port）。
 * `key` 是服务端私钥；`pbk` 是客户端公钥；`sid` 是 short ID；`sni` 是服务端名称。
 
 ### 多监听（Multiple Listeners）
@@ -275,9 +275,9 @@ forward -C config.json
 
 每个 node 都有独立的 `listeners`/`listen`、`forward`/`forwards` 与 `insecure` 设置。
 
-### 代理路由（Proxy Route）
+### 路由（Proxy Route）
 
-使用独立的 INI 配置文件启动基于规则的代理路由器。该模式会在本地监听，并将流量路由到不同的上游代理。
+使用独立的 INI 配置文件启动基于规则的路由器。该模式会在本地监听，并将流量路由到不同的上游转发节点。
 
 ```bash
 forward -R proxy-route.conf
@@ -307,15 +307,17 @@ PROXY_SG = socks5://user:pass@sg.example.com:1080
 [Rule]
 DOMAIN,ifconfig.me,PROXY_JP
 DOMAIN-SUFFIX,google.com,PROXY_SG
+DOMAIN,ipconfig.me,PROXY_SG,PROXY_JP
 IP-CIDR,1.1.1.0/24,PROXY_SG
 GEOIP,CN,DIRECT
 FINAL,DIRECT
 ```
 
 * 规则自上而下匹配；命中第一条后即停止
+* `Rule` 支持转发链：`DOMAIN,ipconfig.me,PROXY_2,PROXY_1` 表示 `PROXY_1 -> PROXY_2 -> 目标`（最后一个节点作为前置加速节点）
 * 若希望基于域名的规则在本地 DNS 解析前生效，请在客户端使用 `socks5h://`
 * 路由器会在 INI 文件变更时自动热重载（每秒轮询一次）
-* `tproxy` 仅支持 Linux（TPROXY），需要配合 `fw4 + nftables` 设置透明代理规则
+* `tproxy` 仅支持 Linux（TPROXY），需要配合 `fw4 + nftables` 设置透明转发规则
 * `sniffing` 默认开启，用于从 HTTP Host / TLS SNI 中提取域名以匹配 DOMAIN 规则（QUIC 嗅探暂未实现）
 
 **fw4 + nftables 示例（简化版）**
