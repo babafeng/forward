@@ -393,7 +393,7 @@ func (s *udpSession) run(ctx context.Context) {
 				s.cleanupIdle()
 				continue
 			}
-			s.logf(logging.LevelError, "SOCKS5 UDP read error: %v", err)
+			s.logger.Error("SOCKS5 UDP read error: %v", err)
 			continue
 		}
 		if n == 0 {
@@ -406,7 +406,7 @@ func (s *udpSession) run(ctx context.Context) {
 
 		dest, payload, err := parseUDPRequest(buf[:n])
 		if err != nil {
-			s.logf(logging.LevelDebug, "SOCKS5 UDP parse error: %v", err)
+			s.logger.Debug("SOCKS5 UDP parse error: %v", err)
 			continue
 		}
 
@@ -417,7 +417,7 @@ func (s *udpSession) run(ctx context.Context) {
 		peer.lastSeen.Store(time.Now().UnixNano())
 
 		if _, err := peer.conn.Write(payload); err != nil {
-			s.logf(logging.LevelError, "SOCKS5 UDP write upstream error: %v", err)
+			s.logger.Error("SOCKS5 UDP write upstream error: %v", err)
 			continue
 		}
 	}
@@ -432,7 +432,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 	}
 	if len(s.sessions) >= s.maxSess {
 		s.mu.Unlock()
-		s.logf(logging.LevelWarn, "SOCKS5 UDP session limit reached")
+		s.logger.Warn("SOCKS5 UDP session limit reached")
 		return nil
 	}
 	s.mu.Unlock()
@@ -451,7 +451,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 
 		route, err := s.router.Route(ctx, "udp", dest)
 		if err != nil {
-			s.logf(logging.LevelError, "SOCKS5 UDP route error: %v", err)
+			s.logger.Error("SOCKS5 UDP route error: %v", err)
 			return nil, err
 		}
 		if route == nil {
@@ -460,11 +460,11 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 
 		c, err := route.Dial(ctx, "udp", dest)
 		if err != nil {
-			s.logf(logging.LevelError, "SOCKS5 UDP dial %s error: %v", dest, err)
+			s.logger.Error("SOCKS5 UDP dial %s error: %v", dest, err)
 			return nil, err
 		}
 
-		s.logf(logging.LevelDebug, "SOCKS5 UDP %s -> %s", src.String(), dest)
+		s.logger.Debug("SOCKS5 UDP %s -> %s", src.String(), dest)
 
 		p := &udpPeer{
 			conn: c,
@@ -541,21 +541,7 @@ func (s *udpSession) cleanupIdle() {
 	s.mu.Unlock()
 }
 
-func (s *udpSession) logf(level logging.Level, format string, args ...any) {
-	if s.logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		s.logger.Debug(format, args...)
-	case logging.LevelInfo:
-		s.logger.Info(format, args...)
-	case logging.LevelWarn:
-		s.logger.Warn(format, args...)
-	case logging.LevelError:
-		s.logger.Error(format, args...)
-	}
-}
+
 
 func parseUDPRequest(b []byte) (dest string, payload []byte, err error) {
 	if len(b) < 4 {
@@ -644,21 +630,7 @@ func (h *Handler) getSafeBindAddr(clientConn net.Conn, udpLn *net.UDPConn) strin
 	return hostPortFromAddr(udpLn.LocalAddr())
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
-}
+
 
 func (h *Handler) tracePrefix(ctx context.Context) string {
 	tr := ictx.TraceFromContext(ctx)

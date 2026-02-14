@@ -117,7 +117,7 @@ func (s *udpSession) run(ctx context.Context) {
 		_, err = p.conn.Write(buf[:n])
 		_ = p.conn.SetWriteDeadline(time.Time{})
 		if err != nil {
-			s.logf(logging.LevelError, "HTTP UDP write %s error: %v", dest, err)
+			s.logger.Error("HTTP UDP write %s error: %v", dest, err)
 			s.removePeer(dest)
 			p.conn.Close()
 		}
@@ -132,7 +132,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer 
 	}
 	if len(s.sessions) >= s.maxSess {
 		s.mu.Unlock()
-		s.logf(logging.LevelWarn, "HTTP UDP session limit reached")
+		s.logger.Warn("HTTP UDP session limit reached")
 		return nil
 	}
 	s.mu.Unlock()
@@ -151,7 +151,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer 
 
 		route, err := s.router.Route(ctx, "udp", dest)
 		if err != nil {
-			s.logf(logging.LevelError, "HTTP UDP route error: %v", err)
+			s.logger.Error("HTTP UDP route error: %v", err)
 			return nil, err
 		}
 		if route == nil {
@@ -160,7 +160,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string) *udpPeer 
 
 		c, err := route.Dial(ctx, "udp", dest)
 		if err != nil {
-			s.logf(logging.LevelError, "HTTP UDP dial %s error: %v", dest, err)
+			s.logger.Error("HTTP UDP dial %s error: %v", dest, err)
 			return nil, err
 		}
 
@@ -242,21 +242,7 @@ func (s *udpSession) cleanupIdle() {
 	s.mu.Unlock()
 }
 
-func (s *udpSession) logf(level logging.Level, format string, args ...any) {
-	if s.logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		s.logger.Debug(format, args...)
-	case logging.LevelInfo:
-		s.logger.Info(format, args...)
-	case logging.LevelWarn:
-		s.logger.Warn(format, args...)
-	case logging.LevelError:
-		s.logger.Error(format, args...)
-	}
-}
+
 
 type readWriteConn struct {
 	net.Conn

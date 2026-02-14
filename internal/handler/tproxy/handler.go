@@ -188,21 +188,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...corehandler
 	return err
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
-}
+
 
 func handleMetadata(opts []corehandler.HandleOption) metadata.Metadata {
 	if len(opts) == 0 {

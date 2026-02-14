@@ -13,7 +13,6 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 
-	"forward/base/logging"
 	pss "forward/base/protocol/shadowsocks"
 	"forward/internal/chain"
 	"forward/internal/handler"
@@ -97,21 +96,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	return h.service.NewConnection(ctx, conn, md)
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
-}
+
 
 // ssHandler 实现 shadowsocks.Handler 接口，处理解密后的连接
 type ssHandler struct {
