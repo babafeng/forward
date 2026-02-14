@@ -15,7 +15,6 @@ import (
 	xvmess "github.com/xtls/xray-core/proxy/vmess"
 	"github.com/xtls/xray-core/proxy/vmess/encoding"
 
-	"forward/base/logging"
 	pvmess "forward/base/protocol/vmess"
 	"forward/internal/chain"
 	"forward/internal/handler"
@@ -179,21 +178,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	return nil
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
-}
+
 
 // bidirectionalCopy 双向复制数据
 func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.Conn, clientReader buf.Reader, clientWriter buf.Writer) error {

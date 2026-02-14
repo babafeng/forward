@@ -153,16 +153,16 @@ func (o *routeOutbound) routeDial(network, address string) (net.Conn, error) {
 
 	rt, err := o.router.Route(ctx, network, address)
 	if err != nil {
-		o.logf(logging.LevelError, "Hysteria2 %s route error for %s: %v", strings.ToUpper(network), address, err)
+		o.logger.Error("Hysteria2 %s route error for %s: %v", strings.ToUpper(network), address, err)
 		return nil, err
 	}
 	if rt == nil {
 		rt = chain.NewRouteWithTimeout(o.dialTimeout)
 	}
-	o.logf(logging.LevelDebug, "Hysteria2 %s route via %s -> %s", strings.ToUpper(network), chain.RouteSummary(rt), address)
+	o.logger.Debug("Hysteria2 %s route via %s -> %s", strings.ToUpper(network), chain.RouteSummary(rt), address)
 	conn, err := rt.Dial(ctx, network, address)
 	if err != nil {
-		o.logf(logging.LevelError, "Hysteria2 %s dial error for %s: %v", strings.ToUpper(network), address, err)
+		o.logger.Error("Hysteria2 %s dial error for %s: %v", strings.ToUpper(network), address, err)
 		return nil, err
 	}
 	return conn, nil
@@ -315,76 +315,46 @@ func normalizeUDPAddr(addr string) string {
 	return net.JoinHostPort(h, p)
 }
 
-func (o *routeOutbound) logf(level logging.Level, format string, args ...any) {
-	if o.logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		o.logger.Debug(format, args...)
-	case logging.LevelInfo:
-		o.logger.Info(format, args...)
-	case logging.LevelWarn:
-		o.logger.Warn(format, args...)
-	case logging.LevelError:
-		o.logger.Error(format, args...)
-	}
-}
+
 
 type serverEventLogger struct {
 	logger *logging.Logger
 }
 
 func (l *serverEventLogger) Connect(addr net.Addr, id string, tx uint64) {
-	l.logf(logging.LevelInfo, "Hysteria2 connection %s id=%s tx=%d", addrString(addr), id, tx)
+	l.logger.Info("Hysteria2 connection %s id=%s tx=%d", addrString(addr), id, tx)
 }
 
 func (l *serverEventLogger) Disconnect(addr net.Addr, id string, err error) {
 	if err == nil || errors.Is(err, net.ErrClosed) {
-		l.logf(logging.LevelInfo, "Hysteria2 connection closed %s id=%s", addrString(addr), id)
+		l.logger.Info("Hysteria2 connection closed %s id=%s", addrString(addr), id)
 		return
 	}
-	l.logf(logging.LevelWarn, "Hysteria2 connection closed with error %s id=%s err=%v", addrString(addr), id, err)
+	l.logger.Warn("Hysteria2 connection closed with error %s id=%s err=%v", addrString(addr), id, err)
 }
 
 func (l *serverEventLogger) TCPRequest(addr net.Addr, id, reqAddr string) {
-	l.logf(logging.LevelInfo, "Hysteria2 TCP %s id=%s -> %s", addrString(addr), id, reqAddr)
+	l.logger.Info("Hysteria2 TCP %s id=%s -> %s", addrString(addr), id, reqAddr)
 }
 
 func (l *serverEventLogger) TCPError(addr net.Addr, id, reqAddr string, err error) {
 	if err == nil || errors.Is(err, net.ErrClosed) {
-		l.logf(logging.LevelInfo, "Hysteria2 TCP closed %s id=%s -> %s", addrString(addr), id, reqAddr)
+		l.logger.Info("Hysteria2 TCP closed %s id=%s -> %s", addrString(addr), id, reqAddr)
 		return
 	}
-	l.logf(logging.LevelWarn, "Hysteria2 TCP error %s id=%s -> %s err=%v", addrString(addr), id, reqAddr, err)
+	l.logger.Warn("Hysteria2 TCP error %s id=%s -> %s err=%v", addrString(addr), id, reqAddr, err)
 }
 
 func (l *serverEventLogger) UDPRequest(addr net.Addr, id string, sessionID uint32, reqAddr string) {
-	l.logf(logging.LevelInfo, "Hysteria2 UDP %s id=%s sid=%d -> %s", addrString(addr), id, sessionID, reqAddr)
+	l.logger.Info("Hysteria2 UDP %s id=%s sid=%d -> %s", addrString(addr), id, sessionID, reqAddr)
 }
 
 func (l *serverEventLogger) UDPError(addr net.Addr, id string, sessionID uint32, err error) {
 	if err == nil || errors.Is(err, net.ErrClosed) {
-		l.logf(logging.LevelInfo, "Hysteria2 UDP closed %s id=%s sid=%d", addrString(addr), id, sessionID)
+		l.logger.Info("Hysteria2 UDP closed %s id=%s sid=%d", addrString(addr), id, sessionID)
 		return
 	}
-	l.logf(logging.LevelWarn, "Hysteria2 UDP error %s id=%s sid=%d err=%v", addrString(addr), id, sessionID, err)
-}
-
-func (l *serverEventLogger) logf(level logging.Level, format string, args ...any) {
-	if l.logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		l.logger.Debug(format, args...)
-	case logging.LevelInfo:
-		l.logger.Info(format, args...)
-	case logging.LevelWarn:
-		l.logger.Warn(format, args...)
-	case logging.LevelError:
-		l.logger.Error(format, args...)
-	}
+	l.logger.Warn("Hysteria2 UDP error %s id=%s sid=%d err=%v", addrString(addr), id, sessionID, err)
 }
 
 func addrString(addr net.Addr) string {

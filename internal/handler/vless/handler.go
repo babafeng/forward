@@ -21,7 +21,6 @@ import (
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
 
-	"forward/base/logging"
 	"forward/internal/chain"
 	"forward/internal/handler"
 	"forward/internal/metadata"
@@ -181,22 +180,6 @@ func (h *Handler) readRequest(conn net.Conn) (*buf.BufferedReader, []byte, *prot
 	}
 
 	return reader, userSentID, request, requestAddons, nil
-}
-
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
 }
 
 // bidirectionalCopy 双向复制数据

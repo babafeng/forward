@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	inet "forward/base/io/net"
-	"forward/base/logging"
 	"forward/internal/chain"
 	corehandler "forward/internal/handler"
 	"forward/internal/metadata"
@@ -89,21 +88,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	return err
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
-}
+
 
 func getString(v any) string {
 	switch t := v.(type) {

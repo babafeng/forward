@@ -11,7 +11,6 @@ import (
 	B "github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 
-	"forward/base/logging"
 	pss "forward/base/protocol/shadowsocks"
 	"forward/internal/connector"
 	"forward/internal/metadata"
@@ -66,7 +65,7 @@ func (c *Connector) Init(md metadata.Metadata) error {
 
 	c.method = m
 	c.methodName = method
-	c.logf(logging.LevelDebug, "SS connector initialized with method %s", method)
+	c.options.Logger.Debug("SS connector initialized with method %s", method)
 	return nil
 }
 
@@ -81,7 +80,7 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 		return nil, fmt.Errorf("invalid target address %q", address)
 	}
 
-	c.logf(logging.LevelDebug, "SS connect %s -> %s (%s)", conn.RemoteAddr(), address, network)
+	c.options.Logger.Debug("SS connect %s -> %s (%s)", conn.RemoteAddr(), address, network)
 
 	// TCP 使用 DialEarlyConn（支持 0-RTT）
 	if network == "tcp" {
@@ -101,21 +100,7 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 	return nil, fmt.Errorf("unsupported network: %s", network)
 }
 
-func (c *Connector) logf(level logging.Level, format string, args ...any) {
-	if c.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		c.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		c.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		c.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		c.options.Logger.Error(format, args...)
-	}
-}
+
 
 // ssPacketConn 封装 Shadowsocks UDP 连接
 type ssPacketConn struct {
