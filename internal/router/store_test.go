@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"testing"
 
 	"forward/base/endpoint"
@@ -90,4 +91,86 @@ func TestStoreRouterRouteProxyChain(t *testing.T) {
 	if nodes[1].Display != "PROXY_2" {
 		t.Fatalf("node[1].Display = %s, want PROXY_2", nodes[1].Display)
 	}
+}
+
+func TestStoreRouterProxyBuilderRefreshesOnStoreUpdate(t *testing.T) {
+	store, err := route.NewStore(&route.Config{
+		Proxies: map[string]endpoint.Endpoint{
+			"P1": mustParseEndpoint(t, "socks5://127.0.0.1:1080"),
+		},
+		Rules: []route.Rule{
+			{
+				Type:  route.RuleDomain,
+				Value: "example.com",
+				Action: route.Action{
+					Type:  route.ActionProxy,
+					Proxy: "P1",
+				},
+			},
+			{
+				Type:   route.RuleFinal,
+				Action: route.Action{Type: route.ActionDirect},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("new route store: %v", err)
+	}
+
+	rt := NewStore(store, chain.NewRoute(), nil)
+	buildCount := 0
+	rt.SetProxyBuilder(func(name string) (chain.Route, error) {
+		buildCount++
+		return singleHopRoute(name + "-" + strconv.Itoa(buildCount)), nil
+	})
+
+	first, err := rt.Route(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("first route error: %v", err)
+	}
+	if got := first.Nodes()[0].Display; got != "P1-1" {
+		t.Fatalf("first route display = %s, want P1-1", got)
+	}
+
+	if err := store.Update(&route.Config{
+		Proxies: map[string]endpoint.Endpoint{
+			"P1": mustParseEndpoint(t, "socks5://127.0.0.1:1081"),
+		},
+		Rules: []route.Rule{
+			{
+				Type:  route.RuleDomain,
+				Value: "example.com",
+				Action: route.Action{
+					Type:  route.ActionProxy,
+					Proxy: "P1",
+				},
+			},
+			{
+				Type:   route.RuleFinal,
+				Action: route.Action{Type: route.ActionDirect},
+			},
+		},
+	}, nil); err != nil {
+		t.Fatalf("update route store: %v", err)
+	}
+
+	second, err := rt.Route(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("second route error: %v", err)
+	}
+	if got := second.Nodes()[0].Display; got != "P1-2" {
+		t.Fatalf("second route display = %s, want P1-2", got)
+	}
+	if buildCount != 2 {
+		t.Fatalf("build count = %d, want 2", buildCount)
+	}
+}
+
+func mustParseEndpoint(t *testing.T, raw string) endpoint.Endpoint {
+	t.Helper()
+	ep, err := endpoint.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse endpoint %s: %v", raw, err)
+	}
+	return ep
 }

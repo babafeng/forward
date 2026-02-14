@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"os"
 	"os/signal"
@@ -116,6 +117,10 @@ func Main() int {
 		if node.Insecure {
 			logger.Warn("Node %s: --insecure is enabled, TLS verification is disabled", node.Name)
 		}
+	}
+	if err := initRouteStoreAndHotReload(ctx, &cfg); err != nil {
+		logger.Error("Init route store error: %v", err)
+		return 2
 	}
 
 	var wg sync.WaitGroup
@@ -745,6 +750,132 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 	return svc.Serve()
 }
 
+type routeFileState struct {
+	modTimeUnixNano int64
+	size            int64
+	checksum        uint64
+}
+
+func initRouteStoreAndHotReload(ctx context.Context, cfg *config.Config) error {
+	if cfg == nil || cfg.Route == nil {
+		return nil
+	}
+	if cfg.RouteStore == nil {
+		store, err := route.NewStore(cfg.Route, cfg.Logger)
+		if err != nil {
+			return err
+		}
+		cfg.RouteStore = store
+	}
+	if strings.TrimSpace(cfg.RoutePath) == "" {
+		return nil
+	}
+	go watchRouteConfig(ctx, cfg)
+	return nil
+}
+
+func watchRouteConfig(ctx context.Context, cfg *config.Config) {
+	if cfg == nil || cfg.RouteStore == nil {
+		return
+	}
+	path := strings.TrimSpace(cfg.RoutePath)
+	if path == "" {
+		return
+	}
+
+	readState := func() (routeFileState, error) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return routeFileState{}, err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return routeFileState{}, err
+		}
+		hasher := fnv.New64a()
+		_, _ = hasher.Write(content)
+		return routeFileState{
+			modTimeUnixNano: info.ModTime().UnixNano(),
+			size:            info.Size(),
+			checksum:        hasher.Sum64(),
+		}, nil
+	}
+
+	lastState := routeFileState{}
+	hasState := false
+	lastStatErr := ""
+	if state, err := readState(); err == nil {
+		lastState = state
+		hasState = true
+	} else if cfg.Logger != nil {
+		cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
+		lastStatErr = err.Error()
+	}
+
+	if cfg.Logger != nil {
+		cfg.Logger.Info("Route hot reload enabled: %s (poll: 1s)", path)
+	}
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			state, err := readState()
+			if err != nil {
+				if cfg.Logger != nil {
+					msg := err.Error()
+					if msg != lastStatErr {
+						cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
+						lastStatErr = msg
+					}
+				}
+				continue
+			}
+			lastStatErr = ""
+			if hasState && state == lastState {
+				continue
+			}
+
+			routeCfg, err := parseRouteConfig(path)
+			// Parse/update errors should not break serving. Keep current route and wait for next file change.
+			if err != nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Warn("Route hot reload parse %s failed: %v", path, err)
+				}
+				lastState = state
+				hasState = true
+				continue
+			}
+			if routeCfg.Route == nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Warn("Route hot reload skipped: no route config in %s", path)
+				}
+				lastState = state
+				hasState = true
+				continue
+			}
+			if err := cfg.RouteStore.Update(routeCfg.Route, cfg.Logger); err != nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Warn("Route hot reload update %s failed: %v", path, err)
+				}
+				lastState = state
+				hasState = true
+				continue
+			}
+
+			lastState = state
+			hasState = true
+			if cfg.Logger != nil {
+				cfg.Logger.Info("Route config reloaded from %s (version=%d)", path, cfg.RouteStore.Version())
+			}
+		}
+	}
+}
+
 func buildRouter(cfg config.Config) (router.Router, error) {
 	var hops []endpoint.Endpoint
 	if len(cfg.ForwardChain) > 0 {
@@ -777,8 +908,11 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		store = rstore
 	}
 
-	proxies := map[string]chain.Route{}
-	for name, ep := range cfg.Route.Proxies {
+	buildProxyRoute := func(name string) (chain.Route, error) {
+		ep, ok := store.GetProxy(name)
+		if !ok {
+			return nil, fmt.Errorf("unknown proxy %s", name)
+		}
 		rt, err := builder.BuildRoute(cfg, []endpoint.Endpoint{ep})
 		if err != nil {
 			return nil, err
@@ -788,10 +922,21 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 				node.Display = name
 			}
 		}
+		return rt, nil
+	}
+
+	proxies := map[string]chain.Route{}
+	for name := range cfg.Route.Proxies {
+		rt, err := buildProxyRoute(name)
+		if err != nil {
+			return nil, err
+		}
 		proxies[route.NormalizeProxyName(name)] = rt
 	}
 
-	return router.NewStore(store, defaultRoute, proxies), nil
+	sr := router.NewStore(store, defaultRoute, proxies)
+	sr.SetProxyBuilder(buildProxyRoute)
+	return sr, nil
 }
 
 func parseArgs(args []string) (config.Config, error) {
@@ -847,6 +992,7 @@ func parseArgs(args []string) (config.Config, error) {
 				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
 			}
 		}
+		cfg.RoutePath = *routeFile
 		return cfg, nil
 	}
 
