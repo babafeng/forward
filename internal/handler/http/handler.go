@@ -440,8 +440,9 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 		}
 	}()
 
-	respWriter := &flushWriter{w: w, f: fl}
+	respWriter := newFlushWriter(w, fl)
 	_, _ = io.Copy(respWriter, upstream)
+	respWriter.Flush()
 
 	select {
 	case <-clientDone:
@@ -450,16 +451,46 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 }
 
 type flushWriter struct {
-	w io.Writer
-	f stdhttp.Flusher
+	w             io.Writer
+	f             stdhttp.Flusher
+	pending       int
+	lastFlush     time.Time
+	maxBufferSize int
+	flushInterval time.Duration
+}
+
+func newFlushWriter(w io.Writer, f stdhttp.Flusher) *flushWriter {
+	return &flushWriter{
+		w:             w,
+		f:             f,
+		lastFlush:     time.Now(),
+		maxBufferSize: 128 * 1024,
+		flushInterval: 100 * time.Millisecond,
+	}
 }
 
 func (fw *flushWriter) Write(p []byte) (int, error) {
 	n, err := fw.w.Write(p)
+	if n > 0 {
+		fw.pending += n
+	}
 	if err == nil {
-		fw.f.Flush()
+		now := time.Now()
+		if fw.pending >= fw.maxBufferSize || now.Sub(fw.lastFlush) >= fw.flushInterval {
+			fw.f.Flush()
+			fw.pending = 0
+			fw.lastFlush = now
+		}
 	}
 	return n, err
+}
+
+func (fw *flushWriter) Flush() {
+	if fw.pending > 0 {
+		fw.f.Flush()
+		fw.pending = 0
+		fw.lastFlush = time.Now()
+	}
 }
 
 func (h *Handler) transportClient() *stdhttp.Transport {
@@ -728,8 +759,6 @@ func parseBool(v any) bool {
 		return false
 	}
 }
-
-
 
 func (h *Handler) tracePrefix(ctx context.Context) string {
 	tr := ictx.TraceFromContext(ctx)
