@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"forward/base/logging"
 	"forward/base/mmdb"
+	"golang.org/x/sync/singleflight"
 )
 
 type Decision struct {
@@ -260,9 +262,20 @@ func matchPrefixes(ip net.IP, prefixes []netip.Prefix) bool {
 }
 
 type resolver struct {
-	servers []string
-	timeout time.Duration
+	servers  []string
+	timeout  time.Duration
+	cacheTTL time.Duration
+
+	cache sync.Map
+	sf    singleflight.Group
 }
+
+type dnsCacheEntry struct {
+	ips      []net.IP
+	expireAt int64
+}
+
+const defaultDNSCacheTTL = 30 * time.Second
 
 func newResolver(servers []string, timeout time.Duration) *resolver {
 	clean := make([]string, 0, len(servers))
@@ -274,8 +287,9 @@ func newResolver(servers []string, timeout time.Duration) *resolver {
 		clean = append(clean, s)
 	}
 	return &resolver{
-		servers: clean,
-		timeout: timeout,
+		servers:  clean,
+		timeout:  timeout,
+		cacheTTL: defaultDNSCacheTTL,
 	}
 }
 
@@ -284,6 +298,29 @@ func (r *resolver) lookupIPs(ctx context.Context, host string) ([]net.IP, error)
 		return nil, nil
 	}
 
+	if ips, ok := r.loadCache(host); ok {
+		return ips, nil
+	}
+
+	result, err, _ := r.sf.Do(host, func() (any, error) {
+		if ips, ok := r.loadCache(host); ok {
+			return ips, nil
+		}
+		ips, err := r.lookupUncached(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		r.storeCache(host, ips)
+		return cloneIPs(ips), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	ips, _ := result.([]net.IP)
+	return cloneIPs(ips), nil
+}
+
+func (r *resolver) lookupUncached(ctx context.Context, host string) ([]net.IP, error) {
 	// 强制使用 DNS 超时，避免依赖调用方 ctx
 	timeout := r.timeout
 	if timeout <= 0 {
@@ -293,7 +330,11 @@ func (r *resolver) lookupIPs(ctx context.Context, host string) ([]net.IP, error)
 	defer cancel()
 
 	if len(r.servers) == 0 {
-		return net.DefaultResolver.LookupIP(ctx, "ip", host)
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		return cloneIPs(ips), nil
 	}
 	for _, s := range r.servers {
 		serverAddr := normalizeDNSServer(s)
@@ -306,10 +347,60 @@ func (r *resolver) lookupIPs(ctx context.Context, host string) ([]net.IP, error)
 		}
 		ips, err := res.LookupIP(ctx, "ip", host)
 		if err == nil && len(ips) > 0 {
-			return ips, nil
+			return cloneIPs(ips), nil
 		}
 	}
-	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	return cloneIPs(ips), nil
+}
+
+func (r *resolver) loadCache(host string) ([]net.IP, bool) {
+	if r == nil || r.cacheTTL <= 0 {
+		return nil, false
+	}
+	v, ok := r.cache.Load(host)
+	if !ok {
+		return nil, false
+	}
+	entry, ok := v.(dnsCacheEntry)
+	if !ok {
+		r.cache.Delete(host)
+		return nil, false
+	}
+	if time.Now().UnixNano() >= entry.expireAt {
+		r.cache.Delete(host)
+		return nil, false
+	}
+	return cloneIPs(entry.ips), true
+}
+
+func (r *resolver) storeCache(host string, ips []net.IP) {
+	if r == nil || r.cacheTTL <= 0 || len(ips) == 0 {
+		return
+	}
+	r.cache.Store(host, dnsCacheEntry{
+		ips:      cloneIPs(ips),
+		expireAt: time.Now().Add(r.cacheTTL).UnixNano(),
+	})
+}
+
+func cloneIPs(ips []net.IP) []net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+	out := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		cp := make(net.IP, len(ip))
+		copy(cp, ip)
+		out = append(out, cp)
+	}
+	return out
 }
 
 func normalizeDNSServer(server string) string {
