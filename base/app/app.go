@@ -18,6 +18,7 @@ import (
 	"forward/internal/builder"
 	"forward/internal/chain"
 	"forward/internal/config"
+	"forward/internal/subscribe"
 
 	"forward/base/endpoint"
 	"forward/base/logging"
@@ -91,7 +92,7 @@ func Main() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := parseArgs(os.Args[1:])
+	cfg, subscribeOpts, err := parseArgs(os.Args[1:])
 	logger := cfg.Logger
 	if logger == nil {
 		logger = logging.New(logging.Options{Level: logging.LevelError})
@@ -108,6 +109,11 @@ func Main() int {
 		}
 		logger.Error("Parse args error: %v", err)
 		return 2
+	}
+
+	// 订阅模式：下载 → 保存 → 解析 → 过滤 → 测试延迟
+	if subscribeOpts.URL != "" {
+		return runSubscribe(ctx, subscribeOpts, cfg, logger)
 	}
 	if len(cfg.DNSParameters.Servers) > 0 {
 		chain.SetDefaultResolver(cfg.DNSParameters.Servers)
@@ -939,7 +945,62 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 	return sr, nil
 }
 
-func parseArgs(args []string) (config.Config, error) {
+// subscribeOptions 保存订阅模式相关的选项。
+type subscribeOptions struct {
+	URL        string
+	Filter     string
+	ConnectURL string
+}
+
+func runSubscribe(ctx context.Context, opts subscribeOptions, cfg config.Config, logger *logging.Logger) int {
+	logger.Info("开始下载订阅链接: %s", opts.URL)
+
+	data, err := subscribe.Download(opts.URL)
+	if err != nil {
+		logger.Error("下载订阅链接失败: %v", err)
+		return 1
+	}
+	logger.Info("订阅内容下载完成，大小: %d 字节", len(data))
+
+	// 保存文件
+	savedPath, err := subscribe.SaveToFile(data, opts.URL)
+	if err != nil {
+		logger.Error("保存订阅文件失败: %v", err)
+		return 1
+	}
+	logger.Info("订阅文件已保存到: %s", savedPath)
+
+	// 解析代理节点
+	proxies, err := subscribe.Parse(data)
+	if err != nil {
+		logger.Error("解析订阅内容失败: %v", err)
+		return 1
+	}
+	logger.Info("解析到 %d 个代理节点", len(proxies))
+
+	// 过滤节点
+	if opts.Filter != "" {
+		proxies = subscribe.FilterProxies(proxies, opts.Filter)
+		logger.Info("过滤后剩余 %d 个代理节点", len(proxies))
+	}
+
+	if len(proxies) == 0 {
+		logger.Warn("没有匹配的代理节点")
+		return 0
+	}
+
+	// 测试节点延迟
+	connectURL := opts.ConnectURL
+	if connectURL == "" {
+		connectURL = defaultWarmupURL
+	}
+	logger.Info("开始测试 %d 个节点延迟，测试目标: %s", len(proxies), connectURL)
+	subscribe.TestNodes(ctx, proxies, connectURL, cfg, logger)
+
+	return 0
+}
+
+func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	fs := flag.NewFlagSet("forward-internal", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -953,62 +1014,72 @@ func parseArgs(args []string) (config.Config, error) {
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
 	warmup := fs.Bool("warmup", false, "Warm up forward chain once at startup")
 	warmupURL := fs.String("warmup-url", defaultWarmupURL, "Warmup request URL (used with --warmup)")
+	subscribeURL := fs.String("S", "", "Subscribe URL to download and test nodes (Clash YAML format)")
+	fs.StringVar(subscribeURL, "subscribe", "", "Subscribe URL to download and test nodes (Clash YAML format)")
+	filterExpr := fs.String("filter", "", "Filter expression for node names (e.g. \"美国|US\", \"?!日本&?!JP\")")
+	connectURL := fs.String("connect-url", defaultWarmupURL, "URL to test node latency (used with -S)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
 	isVersion := fs.Bool("version", false, "Show version information")
 
 	fmt.Printf("Forward internal %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
-		return config.Config{}, nil
+		return config.Config{}, subscribeOptions{}, nil
 	}
 
 	fs.Usage = func() { Usage(fs) }
 
 	if err := fs.Parse(args); err != nil {
-		return config.Config{}, err
+		return config.Config{}, subscribeOptions{}, err
+	}
+
+	subOpts := subscribeOptions{
+		URL:        strings.TrimSpace(*subscribeURL),
+		Filter:     strings.TrimSpace(*filterExpr),
+		ConnectURL: strings.TrimSpace(*connectURL),
 	}
 
 	if tproxyPort != nil && *tproxyPort > 0 {
 		if *configFile != "" || *routeFile != "" || len(listenFlags) > 0 {
-			return config.Config{}, fmt.Errorf("-T cannot be used with -C/-R/-L")
+			return config.Config{}, subOpts, fmt.Errorf("-T cannot be used with -C/-R/-L")
 		}
 		if len(forwardFlags) == 0 {
-			return config.Config{}, fmt.Errorf("-T requires -F (one or more forward endpoints)")
+			return config.Config{}, subOpts, fmt.Errorf("-T requires -F (one or more forward endpoints)")
 		}
 	}
 
 	if *routeFile != "" {
 		if *configFile != "" || len(listenFlags) > 0 || len(forwardFlags) > 0 {
-			return config.Config{}, fmt.Errorf("-R cannot be used with -C/-L/-F")
+			return config.Config{}, subOpts, fmt.Errorf("-R cannot be used with -C/-L/-F")
 		}
 		cfg, err := parseRouteConfig(*routeFile)
 		if err != nil {
-			return config.Config{}, err
+			return config.Config{}, subOpts, err
 		}
 		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
 		if warmup != nil && *warmup {
 			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 			if cfg.WarmupURL == "" {
-				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+				return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
 			}
 		}
 		cfg.RoutePath = *routeFile
-		return cfg, nil
+		return cfg, subOpts, nil
 	}
 
 	if *configFile != "" {
 		cfg, err := parseConfigFile(*configFile)
 		if err != nil {
-			return config.Config{}, err
+			return config.Config{}, subOpts, err
 		}
 		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
 		if warmup != nil && *warmup {
 			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 			if cfg.WarmupURL == "" {
-				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+				return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
 			}
 		}
-		return cfg, nil
+		return cfg, subOpts, nil
 	}
 
 	logLevel := "info"
@@ -1020,32 +1091,33 @@ func parseArgs(args []string) (config.Config, error) {
 
 	llevel, err := logging.ParseLevel(logLevel)
 	if err != nil {
-		return config.Config{}, err
+		return config.Config{}, subOpts, err
 	}
 	logger := logging.New(logging.Options{Level: llevel})
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
 	cfg.DebugVerbose = isDebugVerbose != nil && *isDebugVerbose
 
-	if (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
+	// 订阅模式不需要 listen 参数
+	if subOpts.URL == "" && (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
 		defaultPath, err := cjson.FindDefaultConfig()
 		if err != nil {
 			fs.Usage()
-			return cfg, err
+			return cfg, subOpts, err
 		}
 		dcfg, err := parseConfigFile(defaultPath)
 		if err != nil {
-			return config.Config{}, err
+			return config.Config{}, subOpts, err
 		}
 		applyDebugFlags(&dcfg, *isDebug, *isDebugVerbose)
-		return dcfg, nil
+		return dcfg, subOpts, nil
 	}
 
 	if tproxyPort != nil && *tproxyPort > 0 {
 		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(*tproxyPort))
 		ep, err := endpoint.Parse("tproxy://" + addr)
 		if err != nil {
-			return cfg, fmt.Errorf("parse -T %d: %w", *tproxyPort, err)
+			return cfg, subOpts, fmt.Errorf("parse -T %d: %w", *tproxyPort, err)
 		}
 		cfg.Listeners = append(cfg.Listeners, ep)
 		cfg.Listen = ep
@@ -1055,11 +1127,11 @@ func parseArgs(args []string) (config.Config, error) {
 			Sniffing:     true,
 			DestOverride: []string{"http", "tls", "quic"},
 		}
-	} else {
+	} else if len(listenFlags) > 0 {
 		for _, l := range listenFlags {
 			ep, err := endpoint.Parse(l)
 			if err != nil {
-				return cfg, fmt.Errorf("parse -L %s: %w", l, err)
+				return cfg, subOpts, fmt.Errorf("parse -L %s: %w", l, err)
 			}
 			cfg.Listeners = append(cfg.Listeners, ep)
 		}
@@ -1070,7 +1142,7 @@ func parseArgs(args []string) (config.Config, error) {
 		for _, raw := range forwardFlags {
 			ef, err := endpoint.Parse(raw)
 			if err != nil {
-				return cfg, fmt.Errorf("parse -F %s: %w", raw, err)
+				return cfg, subOpts, fmt.Errorf("parse -F %s: %w", raw, err)
 			}
 			cfg.ForwardChain = append(cfg.ForwardChain, ef)
 		}
@@ -1084,20 +1156,22 @@ func parseArgs(args []string) (config.Config, error) {
 	if warmup != nil && *warmup {
 		cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 		if cfg.WarmupURL == "" {
-			return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+			return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
 		}
 	}
 
-	cfg.Nodes = []config.NodeConfig{{
-		Name:         "default",
-		Listeners:    cfg.Listeners,
-		Forward:      cfg.Forward,
-		ForwardChain: cfg.ForwardChain,
-		Insecure:     cfg.Insecure,
-	}}
+	if len(cfg.Listeners) > 0 {
+		cfg.Nodes = []config.NodeConfig{{
+			Name:         "default",
+			Listeners:    cfg.Listeners,
+			Forward:      cfg.Forward,
+			ForwardChain: cfg.ForwardChain,
+			Insecure:     cfg.Insecure,
+		}}
+	}
 
 	config.ApplyDefaults(&cfg)
-	return cfg, nil
+	return cfg, subOpts, nil
 }
 
 func parseConfigFile(path string) (config.Config, error) {
