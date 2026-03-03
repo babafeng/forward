@@ -59,6 +59,8 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
 
+	h.options.Logger.Info("TCP connection %s -> %s", remote, local)
+
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("TCP route error: %v", err)
