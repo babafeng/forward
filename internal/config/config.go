@@ -72,6 +72,9 @@ type NodeConfig struct {
 	Forward      *endpoint.Endpoint
 	ForwardChain []endpoint.Endpoint
 	Insecure     bool
+
+	SubscribeURL    string
+	SubscribeFilter string
 }
 
 type Config struct {
