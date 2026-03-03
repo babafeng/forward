@@ -110,7 +110,9 @@ type Config struct {
 
 	TProxy *TProxyConfig
 
-	WarmupURL string
+	WarmupURL       string
+	SubscribeURL    string
+	SubscribeFilter string
 }
 
 type DNSConfig struct {

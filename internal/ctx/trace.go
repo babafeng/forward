@@ -2,7 +2,6 @@ package ctx
 
 import (
 	"context"
-	"fmt"
 
 	"forward/base/logging"
 )
@@ -47,8 +46,5 @@ func TraceFromContext(ctx context.Context) *Trace {
 // Prefix returns a consistent prefix for logs related to this trace.
 // Example: "conn#42 ". Returns empty string if trace is absent.
 func (t *Trace) Prefix() string {
-	if t == nil || t.ID == 0 {
-		return ""
-	}
-	return fmt.Sprintf("conn#%d ", t.ID)
+	return ""
 }

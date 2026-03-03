@@ -111,8 +111,8 @@ func Main() int {
 		return 2
 	}
 
-	// 订阅模式：下载 → 保存 → 解析 → 过滤 → 测试延迟
-	if subscribeOpts.URL != "" {
+	// 订阅模式：下载 → 保存 → 解析 → 过滤 → 测试延迟 (仅在没有起服务端的时候作为独立测试工具)
+	if subscribeOpts.URL != "" && len(cfg.Nodes) == 0 && cfg.Listen.Scheme == "" {
 		return runSubscribe(ctx, subscribeOpts, cfg, logger)
 	}
 	if len(cfg.DNSParameters.Servers) > 0 {
@@ -891,7 +891,52 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 	}
 
 	var defaultRoute chain.Route
-	if len(hops) > 0 {
+	if cfg.SubscribeURL != "" {
+		if cfg.Logger != nil {
+			cfg.Logger.Info("Downloading subscription from %s", cfg.SubscribeURL)
+		}
+		data, err := subscribe.Download(cfg.SubscribeURL)
+		if err != nil {
+			return nil, fmt.Errorf("download subscribe nodes: %w", err)
+		}
+		proxies, err := subscribe.Parse(data)
+		if err != nil {
+			return nil, fmt.Errorf("parse subscribe nodes: %w", err)
+		}
+		if cfg.SubscribeFilter != "" {
+			proxies = subscribe.FilterProxies(proxies, cfg.SubscribeFilter)
+		}
+		if len(proxies) == 0 {
+			return nil, fmt.Errorf("no matching nodes in subscription")
+		}
+
+		var subNodes []*chain.Node
+		for _, proxy := range proxies {
+			ep, err := subscribe.ProxyToEndpoint(proxy)
+			if err != nil {
+				continue
+			}
+			rt, err := builder.BuildRoute(cfg, []endpoint.Endpoint{ep})
+			if err != nil {
+				continue
+			}
+			nodes := rt.Nodes()
+			if len(nodes) > 0 {
+				nodes[0].Display = proxy.Name
+				subNodes = append(subNodes, nodes[0])
+			}
+		}
+
+		if len(subNodes) == 0 {
+			return nil, fmt.Errorf("no valid matching nodes in subscription")
+		}
+
+		if cfg.Logger != nil {
+			cfg.Logger.Info("Built balancer route with %d nodes from subscription", len(subNodes))
+		}
+
+		defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
+	} else if len(hops) > 0 {
 		rt, err := builder.BuildRoute(cfg, hops)
 		if err != nil {
 			return nil, err
@@ -1171,6 +1216,8 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	}
 
 	config.ApplyDefaults(&cfg)
+	cfg.SubscribeURL = subOpts.URL
+	cfg.SubscribeFilter = subOpts.Filter
 	return cfg, subOpts, nil
 }
 
