@@ -167,15 +167,31 @@ forward -L http://:1000 -F vmess://... --warmup --warmup-url http://www.gstatic.
 
 **订阅节点支持：**
 
-你可以使用 `-S` 参数提供一个订阅链接或包含节点的 base64 文本，并通过 `--filter` 参数指定过滤规则。
-目前支持节点协议：vmess, vless, hysteria2, trojan, ss 等。会自动过滤出支持的节点进行动态负载均衡/容灾切换。如果链接了包含不支持的协议类型也会被自动过滤忽略。
+你可以使用 `-S` 或 `--subscribe` 提供订阅链接，并通过 `--filter` 指定过滤表达式。
+订阅响应支持：Clash YAML、base64 编码 YAML、base64 编码 URI 列表、纯文本 URI 列表。  
+目前支持节点协议：vmess, vless, hysteria2, trojan, ss 等；不支持的协议会被自动忽略。
+
+过滤表达式语法（单个 `--filter` 参数）：
+* `|` 表示 OR，如 `美国|US`
+* `&` 表示 AND，如 `香港&?!01`
+* `?!` 表示 NOT，如 `?!日本&?!JP`
+* `()` 用于分组，如 `(?!日本试用|JP试用)&(美国|US|日本|JP)`
+
+说明：
+* `--filter` 不是可重复叠加参数；重复传入时以后一个值为准。
 
 ```bash
 # 获取订阅中的所有可用节点进行智能建连
 forward -L http://:1080 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx"
 
 # 结合过滤规则，仅使用节点名包含 "Hong Kong" 且不含 "01" 的节点
-forward -L http://:1080 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx" --filter "Hong Kong" --filter "!01"
+forward -L http://:1080 --subscribe "https://sub.website.com/api/v1/client/subscribe?token=xxxx" --filter "Hong Kong&?!01"
+
+# 支持复杂过滤表达式
+forward -L http://:1080 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx" --filter "(?!日本试用|JP试用)&(美国|US|日本|JP)"
+
+# 订阅节点 + 固定上游链：先走订阅筛选节点，再走 -F 指定上游
+forward -L http://local:8080 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx" --filter "日本" -F https://jp.proxy.com:443
 
 # 同样支持作为单双跳转发链节点结合使用
 forward -L tcp://:2222/127.0.0.1:22 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx"

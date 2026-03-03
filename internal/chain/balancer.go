@@ -16,6 +16,7 @@ import (
 type BalancerRoute struct {
 	mu           sync.RWMutex
 	nodes        []*Node
+	routes       map[*Node]Route
 	latencies    map[*Node]time.Duration
 	sortedNodes  []*Node // 根据延迟排序的节点
 	testInterval time.Duration
@@ -23,16 +24,50 @@ type BalancerRoute struct {
 	stopCh       chan struct{}
 }
 
+// BalancerCandidate 表示一个负载均衡候选项。
+// Node 用于探测和排序；Route 为该候选的完整路由（可为多跳）。
+// 若 Route 为空，则退化为使用 Node 自身进行单跳连接。
+type BalancerCandidate struct {
+	Node  *Node
+	Route Route
+}
+
 // NewBalancerRoute 创建一个新的负载均衡路由
 func NewBalancerRoute(nodes []*Node, testInterval time.Duration, dialTimeout time.Duration) *BalancerRoute {
+	candidates := make([]BalancerCandidate, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		candidates = append(candidates, BalancerCandidate{Node: n})
+	}
+	return NewBalancerRouteWithCandidates(candidates, testInterval, dialTimeout)
+}
+
+// NewBalancerRouteWithCandidates 创建支持“候选节点 + 完整路由”的负载均衡路由。
+func NewBalancerRouteWithCandidates(candidates []BalancerCandidate, testInterval time.Duration, dialTimeout time.Duration) *BalancerRoute {
 	if testInterval <= 0 {
 		testInterval = 2 * time.Minute
 	}
 	if dialTimeout <= 0 {
 		dialTimeout = config.DefaultDialTimeout
 	}
+
+	nodes := make([]*Node, 0, len(candidates))
+	routes := make(map[*Node]Route, len(candidates))
+	for _, c := range candidates {
+		if c.Node == nil {
+			continue
+		}
+		nodes = append(nodes, c.Node)
+		if c.Route != nil {
+			routes[c.Node] = c.Route
+		}
+	}
+
 	r := &BalancerRoute{
 		nodes:        nodes,
+		routes:       routes,
 		latencies:    make(map[*Node]time.Duration),
 		sortedNodes:  make([]*Node, len(nodes)),
 		testInterval: testInterval,
@@ -178,40 +213,11 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 			tr.Logger.Debug("%sdial balancer try=%d node=%s addr=%s target=%s", tr.Prefix(), i+1, labelNode(node), node.Addr, address)
 		}
 
-		conn, err := node.Transport().Dial(ctx, node.Addr)
+		cc, err := r.dialCandidate(ctx, node, network, address)
 		if err != nil {
 			lastErr = err
 			if verbose {
-				tr.Logger.Debug("%sdial balancer try=%d dial err node=%s: %v", tr.Prefix(), i+1, labelNode(node), err)
-			}
-			// 失败时动态惩罚延迟
-			r.mu.Lock()
-			r.latencies[node] = time.Hour * 24
-			r.mu.Unlock()
-			continue
-		}
-
-		hc, err := node.Transport().Handshake(ctx, conn)
-		if err != nil {
-			conn.Close()
-			lastErr = err
-			if verbose {
-				tr.Logger.Debug("%sdial balancer try=%d handshake err node=%s: %v", tr.Prefix(), i+1, labelNode(node), err)
-			}
-			r.mu.Lock()
-			r.latencies[node] = time.Hour * 24
-			r.mu.Unlock()
-			continue
-		}
-
-		conn = hc
-
-		cc, err := node.Transport().Connect(ctx, conn, network, address)
-		if err != nil {
-			conn.Close()
-			lastErr = err
-			if verbose {
-				tr.Logger.Debug("%sdial balancer try=%d connect target err prev=%s -> %s %s: %v", tr.Prefix(), i+1, labelNode(node), strings.ToUpper(network), address, err)
+				tr.Logger.Debug("%sdial balancer try=%d route err node=%s: %v", tr.Prefix(), i+1, labelNode(node), err)
 			}
 			r.mu.Lock()
 			r.latencies[node] = time.Hour * 24
@@ -229,6 +235,43 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 		tr.Logger.Debug("%sdial fail balancer %s %s err=%v dur=%s", tr.Prefix(), strings.ToUpper(network), address, lastErr, time.Since(start))
 	}
 	return nil, fmt.Errorf("balancer all nodes failed, last err: %v", lastErr)
+}
+
+func (r *BalancerRoute) dialCandidate(ctx context.Context, node *Node, network, address string) (net.Conn, error) {
+	if node == nil {
+		return nil, fmt.Errorf("balancer: nil node")
+	}
+
+	if rt := r.routeForNode(node); rt != nil {
+		return rt.Dial(ctx, network, address)
+	}
+
+	conn, err := node.Transport().Dial(ctx, node.Addr)
+	if err != nil {
+		return nil, err
+	}
+
+	hc, err := node.Transport().Handshake(ctx, conn)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	cc, err := node.Transport().Connect(ctx, hc, network, address)
+	if err != nil {
+		hc.Close()
+		return nil, err
+	}
+	return cc, nil
+}
+
+func (r *BalancerRoute) routeForNode(node *Node) Route {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.routes == nil {
+		return nil
+	}
+	return r.routes[node]
 }
 
 func (r *BalancerRoute) Nodes() []*Node {
