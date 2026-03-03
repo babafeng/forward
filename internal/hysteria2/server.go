@@ -85,7 +85,7 @@ func Serve(ctx context.Context, cfg config.Config, rt router.Router) error {
 	}()
 
 	if cfg.Logger != nil {
-		cfg.Logger.Info("Forward internal hysteria2 proxy listening on %s", cfg.Listen.Address())
+		cfg.Logger.Info("forward hysteria2 proxy listening on %s", cfg.Listen.Address())
 	}
 
 	err = s.Serve()
