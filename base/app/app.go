@@ -88,6 +88,8 @@ import (
 
 const defaultWarmupURL = "http://www.gstatic.com/generate_204"
 
+var subscribeDownload = subscribe.Download
+
 func Main() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -902,7 +904,7 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		if cfg.Logger != nil {
 			cfg.Logger.Info("Downloading subscription from %s", cfg.SubscribeURL)
 		}
-		data, err := subscribe.Download(cfg.SubscribeURL)
+		data, err := subscribeDownload(cfg.SubscribeURL)
 		if err != nil {
 			return nil, fmt.Errorf("download subscribe nodes: %w", err)
 		}
@@ -918,12 +920,18 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		}
 
 		var subNodes []*chain.Node
+		var subCandidates []chain.BalancerCandidate
 		for _, proxy := range proxies {
 			ep, err := subscribe.ProxyToEndpoint(proxy)
 			if err != nil {
 				continue
 			}
-			rt, err := builder.BuildRoute(cfg, []endpoint.Endpoint{ep})
+
+			routeHops := make([]endpoint.Endpoint, 0, 1+len(hops))
+			routeHops = append(routeHops, ep)
+			routeHops = append(routeHops, hops...)
+
+			rt, err := builder.BuildRoute(cfg, routeHops)
 			if err != nil {
 				continue
 			}
@@ -931,18 +939,30 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 			if len(nodes) > 0 {
 				nodes[0].Display = proxy.Name
 				subNodes = append(subNodes, nodes[0])
+				subCandidates = append(subCandidates, chain.BalancerCandidate{
+					Node:  nodes[0],
+					Route: rt,
+				})
 			}
 		}
 
-		if len(subNodes) == 0 {
+		if len(subCandidates) == 0 {
 			return nil, fmt.Errorf("no valid matching nodes in subscription")
 		}
 
 		if cfg.Logger != nil {
-			cfg.Logger.Info("Built balancer route with %d nodes from subscription", len(subNodes))
+			if len(hops) > 0 {
+				cfg.Logger.Info("Built balancer route with %d nodes from subscription and %d fixed forward hop(s)", len(subCandidates), len(hops))
+			} else {
+				cfg.Logger.Info("Built balancer route with %d nodes from subscription", len(subCandidates))
+			}
 		}
 
-		defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
+		if len(hops) > 0 {
+			defaultRoute = chain.NewBalancerRouteWithCandidates(subCandidates, 2*time.Minute, cfg.DialTimeout)
+		} else {
+			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
+		}
 	} else if len(hops) > 0 {
 		rt, err := builder.BuildRoute(cfg, hops)
 		if err != nil {
@@ -1007,7 +1027,7 @@ type subscribeOptions struct {
 func runSubscribe(ctx context.Context, opts subscribeOptions, cfg config.Config, logger *logging.Logger) int {
 	logger.Info("开始下载订阅链接: %s", opts.URL)
 
-	data, err := subscribe.Download(opts.URL)
+	data, err := subscribeDownload(opts.URL)
 	if err != nil {
 		logger.Error("下载订阅链接失败: %v", err)
 		return 1

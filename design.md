@@ -251,7 +251,7 @@ type Connector interface {
 - **传输隧道**：`+tls`/`+dtls`/`+h2`/`+h3`（HTTP/SOCKS5/TCP 组合）
 - **端口转发**：TCP/UDP（含 TCP over TLS/DTLS/H2/H3）
 - **透明转发**：Linux TPROXY（TCP/UDP）+ 路由分流
-- **动态订阅**：支持 `-S` 载入 base64 订阅链接并使用 `--filter` 过滤节点
+- **动态订阅**：支持 `-S` / `--subscribe` 下载订阅并使用 `--filter` 表达式过滤节点
 - **反向穿透**：`rtcp`/`rudp` + `tls`/`https`/`http3`/`quic`/`reality`/`vless+reality`
 - **路由能力**：静态路由、链式转发、基于规则的分流
 - **认证与安全**：HTTP/SOCKS5 用户密码、VLESS UUID、TLS/DTLS/Reality 加密
@@ -342,6 +342,32 @@ forward -L http://:1080 -F "hysteria2://91691968-cf8b-4cb4-b487-862a4f33baf5@aws
 # SOCKS5 over H2/H3 传输隧道链路
 forward -L socks5://:1080 -F socks5+h2://proxyA:443 -F socks5+h3://proxyB:443 --insecure --debug
 ```
+
+**动态订阅（`-S` / `--subscribe`）**
+```bash
+# 基础用法：将订阅节点作为动态上游（自动忽略不支持的协议类型）
+forward -L http://:1080 --subscribe "https://sub.example.com/api/v1/client/subscribe?token=xxxx"
+
+# 使用单个 --filter 表达式筛选节点
+forward -L http://:1080 -S "https://sub.example.com/api/v1/client/subscribe?token=xxxx" --filter "香港&?!01"
+
+# 复杂表达式：排除试用节点，同时保留指定地区
+forward -L http://:1080 -S "https://sub.example.com/api/v1/client/subscribe?token=xxxx" --filter "(?!日本试用|JP试用)&(美国|US|日本|JP)"
+
+# 订阅节点 + 固定上游链：先走订阅筛选节点，再走 -F 指定上游
+forward -L http://local:8080 -S "https://sub.example.com/api/v1/client/subscribe?token=xxxx" --filter "日本" -F https://jp.proxy.com:443
+```
+
+过滤表达式语法：
+* `|`：OR
+* `&`：AND
+* `?!`：NOT
+* `()`：分组
+
+说明：
+* `--filter` 为单值参数，重复传入时以后一个值为准。
+* 订阅链接返回内容可为 Clash YAML、base64 编码 YAML、base64 编码 URI 列表或纯文本 URI 列表。
+* 当同时配置 `-S` 与 `-F` 时，链路顺序为：`本地 -> 订阅筛选节点 -> -F 链 -> 目标`。
 
 **内网穿透（反向转发）**
 ```bash
