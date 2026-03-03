@@ -168,6 +168,13 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 	cfg.Forward = node.Forward
 	cfg.ForwardChain = node.ForwardChain
 	cfg.Insecure = node.Insecure
+
+	if node.SubscribeURL != "" {
+		cfg.SubscribeURL = node.SubscribeURL
+	}
+	if node.SubscribeFilter != "" {
+		cfg.SubscribeFilter = node.SubscribeFilter
+	}
 	return cfg
 }
 

@@ -94,11 +94,13 @@ func Parse(data []byte) (config.Config, error) {
 	}
 
 	cfg := config.Config{
-		Listeners:    listeners,
-		Listen:       listeners[0],
-		Logger:       logging.New(logging.Options{Level: llevel}),
-		LogLevel:     llevel,
-		DebugVerbose: debugVerbose,
+		Listeners:       listeners,
+		Listen:          listeners[0],
+		Logger:          logging.New(logging.Options{Level: llevel}),
+		LogLevel:        llevel,
+		DebugVerbose:    debugVerbose,
+		SubscribeURL:    strings.TrimSpace(general["subscribe"]),
+		SubscribeFilter: strings.TrimSpace(general["filter"]),
 	}
 
 	if tpRaw := strings.TrimSpace(general["tproxy"]); tpRaw != "" {
