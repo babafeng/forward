@@ -401,7 +401,7 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
+	cfg.Logger.Info("forward %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
 	return svc.Serve()
 }
 
@@ -508,7 +508,7 @@ func runReverseServer(ctx context.Context, cfg config.Config) error {
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
+	cfg.Logger.Info("forward reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
 	return svc.Serve()
 }
 
@@ -585,7 +585,7 @@ func runReverseRealityServer(ctx context.Context, cfg config.Config, revHandler 
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
+	cfg.Logger.Info("forward reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
 	return svc.Serve()
 }
 
@@ -761,7 +761,7 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal %s forward listening on %s -> %s", cfg.Listen.Scheme, cfg.Listen.Address(), target)
+	cfg.Logger.Info("forward %s forward listening on %s -> %s", cfg.Listen.Scheme, cfg.Listen.Address(), target)
 	return svc.Serve()
 }
 
@@ -1094,7 +1094,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
 	isVersion := fs.Bool("version", false, "Show version information")
 
-	fmt.Printf("Forward internal %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	fmt.Printf("forward %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
 		return config.Config{}, subscribeOptions{}, nil
 	}
