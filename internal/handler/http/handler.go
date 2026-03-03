@@ -131,6 +131,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
+	h.options.Logger.Info("%sHTTP connection %s -> %s", h.tracePrefix(ctx), remote, local)
 	h.debugVerbose(ctx, "%sHTTP connection %s -> %s", h.tracePrefix(ctx), remote, local)
 
 	if md := ictx.MetadataFromContext(ctx); md != nil {

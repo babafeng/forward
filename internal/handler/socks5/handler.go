@@ -108,6 +108,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
+	h.options.Logger.Info("%sSOCKS5 connection %s -> %s", h.tracePrefix(ctx), remote, local)
 	h.debugVerbose(ctx, "%sSOCKS5 connection %s -> %s", h.tracePrefix(ctx), remote, local)
 
 	_ = conn.SetReadDeadline(time.Now().Add(h.handshakeTimout))

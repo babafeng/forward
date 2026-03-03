@@ -165,6 +165,22 @@ forward -L http://:1000 -F vmess://... --warmup --warmup-url http://www.gstatic.
 说明：
 * 预热现在会通过 HTTP 处理器的连接池执行，请尽量将 `--warmup-url` 设为你首个真实访问的目标域名（同域名复用效果最佳）。
 
+**订阅节点支持：**
+
+你可以使用 `-S` 参数提供一个订阅链接或包含节点的 base64 文本，并通过 `--filter` 参数指定过滤规则。
+目前支持节点协议：vmess, vless, hysteria2, trojan, ss 等。会自动过滤出支持的节点进行动态负载均衡/容灾切换。如果链接了包含不支持的协议类型也会被自动过滤忽略。
+
+```bash
+# 获取订阅中的所有可用节点进行智能建连
+forward -L http://:1080 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx"
+
+# 结合过滤规则，仅使用节点名包含 "Hong Kong" 且不含 "01" 的节点
+forward -L http://:1080 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx" --filter "Hong Kong" --filter "!01"
+
+# 同样支持作为单双跳转发链节点结合使用
+forward -L tcp://:2222/127.0.0.1:22 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx"
+```
+
 ### 内网反向转发（Intranet Reverse Proxy）
 
 **服务端（公网 IP）：**
