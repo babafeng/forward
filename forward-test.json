@@ -1,6 +1,0 @@
-{
-"listen": "http://:8080",
-"subscribe": "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Sub1.txt",
-"filter": "日本|JP|Japan",
-"forward": "socks5://127.0.0.1:1080"
-}
