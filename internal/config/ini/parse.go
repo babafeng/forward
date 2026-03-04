@@ -93,13 +93,17 @@ func Parse(data []byte) (config.Config, error) {
 		return config.Config{}, err
 	}
 
+	subURL := strings.TrimSpace(general["subscribe"])
+	if subURL == "" {
+		subURL = strings.TrimSpace(general["subscirbe"])
+	}
 	cfg := config.Config{
 		Listeners:       listeners,
 		Listen:          listeners[0],
 		Logger:          logging.New(logging.Options{Level: llevel}),
 		LogLevel:        llevel,
 		DebugVerbose:    debugVerbose,
-		SubscribeURL:    strings.TrimSpace(general["subscribe"]),
+		SubscribeURL:    subURL,
 		SubscribeFilter: strings.TrimSpace(general["filter"]),
 	}
 
