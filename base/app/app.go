@@ -901,67 +901,68 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 
 	var defaultRoute chain.Route
 	if cfg.SubscribeURL != "" {
-		if cfg.Logger != nil {
-			cfg.Logger.Info("Downloading subscription from %s", cfg.SubscribeURL)
-		}
-		data, err := subscribeDownload(cfg.SubscribeURL)
+		subNodes, subCandidates, err := fetchAndBuildSubCandidates(cfg, hops)
 		if err != nil {
-			return nil, fmt.Errorf("download subscribe nodes: %w", err)
-		}
-		proxies, err := subscribe.Parse(data)
-		if err != nil {
-			return nil, fmt.Errorf("parse subscribe nodes: %w", err)
-		}
-		if cfg.SubscribeFilter != "" {
-			proxies = subscribe.FilterProxies(proxies, cfg.SubscribeFilter)
-		}
-		if len(proxies) == 0 {
-			return nil, fmt.Errorf("no matching nodes in subscription")
-		}
-
-		var subNodes []*chain.Node
-		var subCandidates []chain.BalancerCandidate
-		for _, proxy := range proxies {
-			ep, err := subscribe.ProxyToEndpoint(proxy)
-			if err != nil {
-				continue
-			}
-
-			routeHops := make([]endpoint.Endpoint, 0, 1+len(hops))
-			routeHops = append(routeHops, ep)
-			routeHops = append(routeHops, hops...)
-
-			rt, err := builder.BuildRoute(cfg, routeHops)
-			if err != nil {
-				continue
-			}
-			nodes := rt.Nodes()
-			if len(nodes) > 0 {
-				nodes[0].Display = proxy.Name
-				subNodes = append(subNodes, nodes[0])
-				subCandidates = append(subCandidates, chain.BalancerCandidate{
-					Node:  nodes[0],
-					Route: rt,
-				})
-			}
-		}
-
-		if len(subCandidates) == 0 {
-			return nil, fmt.Errorf("no valid matching nodes in subscription")
-		}
-
-		if cfg.Logger != nil {
-			if len(hops) > 0 {
-				cfg.Logger.Info("Built balancer route with %d nodes from subscription and %d fixed forward hop(s)", len(subCandidates), len(hops))
-			} else {
-				cfg.Logger.Info("Built balancer route with %d nodes from subscription", len(subCandidates))
-			}
+			return nil, err
 		}
 
 		if len(hops) > 0 {
 			defaultRoute = chain.NewBalancerRouteWithCandidates(subCandidates, 2*time.Minute, cfg.DialTimeout)
 		} else {
 			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
+		}
+
+		// Start background update loop if enabled
+		if cfg.SubscribeUpdate > 0 {
+			go func(br *chain.BalancerRoute) {
+				ticker := time.NewTicker(time.Duration(cfg.SubscribeUpdate) * time.Minute)
+				defer ticker.Stop()
+
+				for range ticker.C {
+					if cfg.Logger != nil {
+						cfg.Logger.Info("Auto-updating subscription from %s", cfg.SubscribeURL)
+					}
+					var newNodes []*chain.Node
+					var newCandidates []chain.BalancerCandidate
+					var updateErr error
+
+					// Retry logic up to 3 times
+					for retry := 1; retry <= 3; retry++ {
+						newNodes, newCandidates, updateErr = fetchAndBuildSubCandidates(cfg, hops)
+						if updateErr == nil {
+							break
+						}
+						if cfg.Logger != nil {
+							cfg.Logger.Warn("Failed to update subscription (attempt %d/3): %v", retry, updateErr)
+						}
+						if retry < 3 {
+							time.Sleep(5 * time.Second)
+						}
+					}
+
+					if updateErr != nil {
+						if cfg.Logger != nil {
+							cfg.Logger.Error("Subscription update failed after 3 retries, keeping existing nodes.")
+						}
+						continue
+					}
+
+					if cfg.Logger != nil {
+						cfg.Logger.Info("Successfully updated subscription, loaded %d nodes.", len(newCandidates))
+					}
+
+					if len(hops) > 0 {
+						br.UpdateCandidates(newCandidates)
+					} else {
+						// Convert *Node to BalancerCandidate
+						cands := make([]chain.BalancerCandidate, 0, len(newNodes))
+						for _, n := range newNodes {
+							cands = append(cands, chain.BalancerCandidate{Node: n})
+						}
+						br.UpdateCandidates(cands)
+					}
+				}
+			}(defaultRoute.(*chain.BalancerRoute))
 		}
 	} else if len(hops) > 0 {
 		rt, err := builder.BuildRoute(cfg, hops)
@@ -1017,10 +1018,72 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 	return sr, nil
 }
 
+func fetchAndBuildSubCandidates(cfg config.Config, hops []endpoint.Endpoint) ([]*chain.Node, []chain.BalancerCandidate, error) {
+	if cfg.Logger != nil {
+		cfg.Logger.Info("Downloading subscription from %s", cfg.SubscribeURL)
+	}
+	data, err := subscribeDownload(cfg.SubscribeURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("download subscribe nodes: %w", err)
+	}
+	proxies, err := subscribe.Parse(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse subscribe nodes: %w", err)
+	}
+	if cfg.SubscribeFilter != "" {
+		proxies = subscribe.FilterProxies(proxies, cfg.SubscribeFilter)
+	}
+	if len(proxies) == 0 {
+		return nil, nil, fmt.Errorf("no matching nodes in subscription")
+	}
+
+	var subNodes []*chain.Node
+	var subCandidates []chain.BalancerCandidate
+	for _, proxy := range proxies {
+		ep, err := subscribe.ProxyToEndpoint(proxy)
+		if err != nil {
+			continue
+		}
+
+		routeHops := make([]endpoint.Endpoint, 0, 1+len(hops))
+		routeHops = append(routeHops, ep)
+		routeHops = append(routeHops, hops...)
+
+		rt, err := builder.BuildRoute(cfg, routeHops)
+		if err != nil {
+			continue
+		}
+		nodes := rt.Nodes()
+		if len(nodes) > 0 {
+			nodes[0].Display = proxy.Name
+			subNodes = append(subNodes, nodes[0])
+			subCandidates = append(subCandidates, chain.BalancerCandidate{
+				Node:  nodes[0],
+				Route: rt,
+			})
+		}
+	}
+
+	if len(subCandidates) == 0 {
+		return nil, nil, fmt.Errorf("no valid matching nodes in subscription")
+	}
+
+	if cfg.Logger != nil {
+		if len(hops) > 0 {
+			cfg.Logger.Info("Built balancer route with %d nodes from subscription and %d fixed forward hop(s)", len(subCandidates), len(hops))
+		} else {
+			cfg.Logger.Info("Built balancer route with %d nodes from subscription", len(subCandidates))
+		}
+	}
+
+	return subNodes, subCandidates, nil
+}
+
 // subscribeOptions 保存订阅模式相关的选项。
 type subscribeOptions struct {
 	URL        string
 	Filter     string
+	Update     int
 	ConnectURL string
 }
 
@@ -1089,6 +1152,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	subscribeURL := fs.String("S", "", "Subscribe URL to download and test nodes (Clash YAML format)")
 	fs.StringVar(subscribeURL, "subscribe", "", "Subscribe URL to download and test nodes (Clash YAML format)")
 	filterExpr := fs.String("filter", "", "Filter expression for node names (e.g. \"美国|US\", \"?!日本&?!JP\")")
+	subUpdate := fs.Int("sub-update", 60, "Subscription auto-update interval in minutes (0 to disable)")
 	connectURL := fs.String("connect-url", defaultWarmupURL, "URL to test node latency (used with -S)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
@@ -1109,6 +1173,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 		URL:        strings.TrimSpace(*subscribeURL),
 		Filter:     strings.TrimSpace(*filterExpr),
 		ConnectURL: strings.TrimSpace(*connectURL),
+		Update:     *subUpdate,
 	}
 
 	if tproxyPort != nil && *tproxyPort > 0 {
@@ -1245,6 +1310,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	config.ApplyDefaults(&cfg)
 	cfg.SubscribeURL = subOpts.URL
 	cfg.SubscribeFilter = subOpts.Filter
+	cfg.SubscribeUpdate = subOpts.Update
 	return cfg, subOpts, nil
 }
 

@@ -48,6 +48,7 @@ type NodeFileConfig struct {
 	Subscribe       string   `json:"subscribe,omitempty"`
 	SubscribeTypo   string   `json:"subscirbe,omitempty"`
 	SubscribeFilter string   `json:"filter,omitempty"`
+	SubscribeUpdate int      `json:"update,omitempty"`
 }
 
 type FileConfig struct {
@@ -62,6 +63,7 @@ type FileConfig struct {
 	Subscribe       string           `json:"subscribe,omitempty"`
 	SubscribeTypo   string           `json:"subscirbe,omitempty"`
 	SubscribeFilter string           `json:"filter,omitempty"`
+	SubscribeUpdate int              `json:"update,omitempty"`
 }
 
 func ParseFile(path string) (config.Config, error) {
@@ -121,6 +123,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 		Subscribe:       fc.Subscribe,
 		SubscribeTypo:   fc.SubscribeTypo,
 		SubscribeFilter: fc.SubscribeFilter,
+		SubscribeUpdate: fc.SubscribeUpdate,
 	}, 0)
 	if err != nil {
 		return cfg, err
@@ -134,6 +137,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	cfg.Insecure = node.Insecure
 	cfg.SubscribeURL = node.SubscribeURL
 	cfg.SubscribeFilter = node.SubscribeFilter
+	cfg.SubscribeUpdate = node.SubscribeUpdate
 
 	config.ApplyDefaults(&cfg)
 	return cfg, nil
@@ -145,6 +149,7 @@ func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 		Insecure:        n.Insecure,
 		SubscribeURL:    n.Subscribe,
 		SubscribeFilter: n.SubscribeFilter,
+		SubscribeUpdate: n.SubscribeUpdate,
 	}
 	if node.SubscribeURL == "" {
 		node.SubscribeURL = n.SubscribeTypo

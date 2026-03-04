@@ -298,3 +298,54 @@ func (r *BalancerRoute) Nodes() []*Node {
 func RouteSummaryLoadBalanced(node *Node) string {
 	return labelNode(node)
 }
+
+// UpdateCandidates 热更新负载均衡候选节点
+func (r *BalancerRoute) UpdateCandidates(candidates []BalancerCandidate) {
+	if len(candidates) == 0 {
+		return
+	}
+
+	nodes := make([]*Node, 0, len(candidates))
+	routes := make(map[*Node]Route, len(candidates))
+	newLatencies := make(map[*Node]time.Duration)
+
+	// Build new structures
+	for _, c := range candidates {
+		if c.Node == nil {
+			continue
+		}
+		nodes = append(nodes, c.Node)
+		if c.Route != nil {
+			routes[c.Node] = c.Route
+		}
+		// Default latency
+		newLatencies[c.Node] = 500 * time.Millisecond
+	}
+
+	// Hot swap
+	r.mu.Lock()
+
+	// Preserve latencies for identical nodes (matching address)
+	addrLatencyMap := make(map[string]time.Duration)
+	for _, oldNode := range r.nodes {
+		if lat, ok := r.latencies[oldNode]; ok {
+			addrLatencyMap[oldNode.Addr] = lat
+		}
+	}
+
+	for _, newNode := range nodes {
+		if lat, ok := addrLatencyMap[newNode.Addr]; ok {
+			newLatencies[newNode] = lat
+		}
+	}
+
+	r.nodes = nodes
+	r.routes = routes
+	r.latencies = newLatencies
+	r.sortedNodes = make([]*Node, len(nodes))
+	copy(r.sortedNodes, nodes)
+	r.mu.Unlock()
+
+	// Trigger async test to sort the new nodes
+	go r.testAll()
+}
