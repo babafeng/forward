@@ -15,7 +15,6 @@ import (
 	xvmess "github.com/xtls/xray-core/proxy/vmess"
 	"github.com/xtls/xray-core/proxy/vmess/encoding"
 
-	"forward/base/logging"
 	pvmess "forward/base/protocol/vmess"
 	"forward/internal/chain"
 	"forward/internal/handler"
@@ -100,7 +99,7 @@ func (h *Handler) Validator() interface{} {
 func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.HandleOption) error {
 	defer conn.Close()
 
-	h.logf(logging.LevelDebug, "VMess Handler received connection from %s", conn.RemoteAddr())
+	h.options.Logger.Debug("VMess Handler received connection from %s", conn.RemoteAddr())
 
 	if h.validator == nil {
 		return fmt.Errorf("vmess validator not initialized")
@@ -109,12 +108,12 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 创建服务端会话
 	session := encoding.NewServerSession(h.validator, h.sessionHistory)
 
-	h.logf(logging.LevelDebug, "VMess decoding request header from %s", conn.RemoteAddr())
+	h.options.Logger.Debug("VMess decoding request header from %s", conn.RemoteAddr())
 
 	// 读取请求头 (isDrain=false 表示不丢弃无效数据)
 	request, err := session.DecodeRequestHeader(conn, false)
 	if err != nil {
-		h.logf(logging.LevelError, "VMess decode request failed from %s: %v", conn.RemoteAddr(), err)
+		h.options.Logger.Error("VMess decode request failed from %s: %v", conn.RemoteAddr(), err)
 		return err
 	}
 
@@ -127,12 +126,12 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	}
 	targetAddr := net.JoinHostPort(request.Address.String(), request.Port.String())
 
-	h.logf(logging.LevelInfo, "VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
 
 	// 获取路由
 	route, err := h.options.Router.Route(ctx, network, targetAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "VMess route error: %v", err)
+		h.options.Logger.Error("VMess route error: %v", err)
 		return err
 	}
 	if route == nil {
@@ -142,7 +141,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 建立上游连接
 	targetConn, err := route.Dial(ctx, network, targetAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "Dial target %s failed: %v", targetAddr, err)
+		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
 		return err
 	}
 	defer targetConn.Close()
@@ -150,7 +149,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 创建请求体读取器
 	bodyReader, err := session.DecodeRequestBody(request, conn)
 	if err != nil {
-		h.logf(logging.LevelDebug, "VMess decode request body failed: %v", err)
+		h.options.Logger.Debug("VMess decode request body failed: %v", err)
 		return err
 	}
 
@@ -165,35 +164,21 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 创建响应体写入器
 	bodyWriter, err := session.EncodeResponseBody(request, conn)
 	if err != nil {
-		h.logf(logging.LevelDebug, "VMess encode response body failed: %v", err)
+		h.options.Logger.Debug("VMess encode response body failed: %v", err)
 		return err
 	}
 
 	// 双向转发
 	if err := bidirectionalCopy(ctx, conn, targetConn, bodyReader, bodyWriter); err != nil && ctx.Err() == nil {
-		h.logf(logging.LevelDebug, "VMess transfer error: %v", err)
+		h.options.Logger.Debug("VMess transfer error: %v", err)
 		return err
 	}
 
-	h.logf(logging.LevelInfo, "VMess closed %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VMess closed %s -> %s", conn.RemoteAddr(), targetAddr)
 	return nil
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
-}
+
 
 // bidirectionalCopy 双向复制数据
 func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.Conn, clientReader buf.Reader, clientWriter buf.Writer) error {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,7 +56,7 @@ type Listener struct {
 
 type rateLimiter struct {
 	mu        sync.Mutex
-	counts    map[string]int
+	counts    map[netip.Addr]int
 	limit     int
 	stop      chan struct{}
 	closeOnce sync.Once
@@ -63,7 +64,7 @@ type rateLimiter struct {
 
 func newRateLimiter(limit int) *rateLimiter {
 	rl := &rateLimiter{
-		counts: make(map[string]int),
+		counts: make(map[netip.Addr]int),
 		limit:  limit,
 		stop:   make(chan struct{}),
 	}
@@ -71,7 +72,7 @@ func newRateLimiter(limit int) *rateLimiter {
 	return rl
 }
 
-func (rl *rateLimiter) allow(ip string) bool {
+func (rl *rateLimiter) allow(ip netip.Addr) bool {
 	if rl.limit <= 0 {
 		return true
 	}
@@ -93,7 +94,7 @@ func (rl *rateLimiter) run() {
 		case <-ticker.C:
 			rl.mu.Lock()
 			// Simple reset
-			rl.counts = make(map[string]int)
+			rl.counts = make(map[netip.Addr]int)
 			rl.mu.Unlock()
 		case <-rl.stop:
 			return
@@ -163,9 +164,6 @@ func (l *Listener) Init(md metadata.Metadata) error {
 func (l *Listener) Accept() (net.Conn, error) {
 	select {
 	case c := <-l.cqueue:
-		if l.logger != nil {
-			l.logger.Info("Listener accepted %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
-		}
 		return c, nil
 	case <-l.closed:
 		return nil, listener.ErrClosed
@@ -239,23 +237,28 @@ func (l *Listener) listenLoop() {
 			pool.Put(buf)
 			return
 		}
+		udpAddr, ok := raddr.(*net.UDPAddr)
+		if !ok || udpAddr == nil {
+			pool.Put(buf)
+			continue
+		}
 
 		// Access Control
-		if !l.checkPacket(raddr) {
+		if !l.checkPacket(udpAddr) {
 			pool.Put(buf)
 			continue
 		}
 
 		// Rate limit check
 		if l.limiter != nil {
-			host, _, _ := net.SplitHostPort(raddr.String())
-			if !l.limiter.allow(host) {
+			ip, ok := netipAddr(udpAddr)
+			if !ok || !l.limiter.allow(ip) {
 				pool.Put(buf)
 				continue
 			}
 		}
 
-		c := l.getConn(raddr)
+		c := l.getConn(udpAddr)
 		if c == nil {
 			pool.Put(buf)
 			continue
@@ -264,24 +267,29 @@ func (l *Listener) listenLoop() {
 		if err := c.WriteQueue(buf[:n]); err != nil {
 			pool.Put(buf)
 			if l.logger != nil {
-				l.logger.Warn("UDP listener discarded packet from %s: %v", raddr.String(), err)
+				l.logger.Warn("UDP listener discarded packet from %s: %v", udpAddr.String(), err)
 			}
 		}
 	}
 }
 
-func (l *Listener) getConn(raddr net.Addr) *udpConn {
+func (l *Listener) getConn(raddr *net.UDPAddr) *udpConn {
 	if raddr == nil {
 		return nil
 	}
-	if c, ok := l.pool.Get(raddr.String()); ok && !c.isClosed() {
+	remote, ok := netipAddrPort(raddr)
+	if !ok {
+		return nil
+	}
+	key := udpConnKey{remote: remote}
+	if c, ok := l.pool.Get(key); ok && !c.isClosed() {
 		return c
 	}
 
 	c := newUDPConn(l.conn, l.Addr(), raddr, l.md.readQueueSize, l.md.keepalive)
 	select {
 	case l.cqueue <- c:
-		l.pool.Set(raddr.String(), c)
+		l.pool.Set(key, c)
 		return c
 	default:
 		c.Close()
@@ -348,12 +356,11 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 	}
 }
 
-func (l *Listener) checkPacket(addr net.Addr) bool {
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		host = addr.String()
+func (l *Listener) checkPacket(addr *net.UDPAddr) bool {
+	if addr == nil {
+		return false
 	}
-	ip := net.ParseIP(host)
+	ip := addr.IP
 	if ip == nil {
 		return false
 	}
@@ -396,6 +403,25 @@ func isCGNAT(ip net.IP) bool {
 	return false
 }
 
+func netipAddr(addr *net.UDPAddr) (netip.Addr, bool) {
+	if addr == nil {
+		return netip.Addr{}, false
+	}
+	ip, ok := netip.AddrFromSlice(addr.IP)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return ip.Unmap(), true
+}
+
+func netipAddrPort(addr *net.UDPAddr) (netip.AddrPort, bool) {
+	ip, ok := netipAddr(addr)
+	if !ok || addr == nil || addr.Port < 0 || addr.Port > 65535 {
+		return netip.AddrPort{}, false
+	}
+	return netip.AddrPortFrom(ip, uint16(addr.Port)), true
+}
+
 func getString(v any) string {
 	switch t := v.(type) {
 	case string:
@@ -412,6 +438,10 @@ type connPool struct {
 	logger *logging.Logger
 }
 
+type udpConnKey struct {
+	remote netip.AddrPort
+}
+
 func newConnPool(ttl time.Duration, logger *logging.Logger) *connPool {
 	if ttl <= 0 {
 		ttl = config.DefaultUDPIdleTimeout
@@ -425,7 +455,7 @@ func newConnPool(ttl time.Duration, logger *logging.Logger) *connPool {
 	return p
 }
 
-func (p *connPool) Get(key string) (*udpConn, bool) {
+func (p *connPool) Get(key udpConnKey) (*udpConn, bool) {
 	if v, ok := p.m.Load(key); ok {
 		c, ok := v.(*udpConn)
 		return c, ok
@@ -433,11 +463,11 @@ func (p *connPool) Get(key string) (*udpConn, bool) {
 	return nil, false
 }
 
-func (p *connPool) Set(key string, c *udpConn) {
+func (p *connPool) Set(key udpConnKey, c *udpConn) {
 	p.m.Store(key, c)
 }
 
-func (p *connPool) Delete(key string) {
+func (p *connPool) Delete(key udpConnKey) {
 	p.m.Delete(key)
 }
 
@@ -468,13 +498,21 @@ func (p *connPool) idleCheck() {
 			p.m.Range(func(key, value any) bool {
 				c, ok := value.(*udpConn)
 				if !ok || c == nil {
-					p.Delete(key.(string))
+					if k, ok := key.(udpConnKey); ok {
+						p.Delete(k)
+					} else {
+						p.m.Delete(key)
+					}
 					return true
 				}
 				size++
 				if c.IsIdle() {
 					idles++
-					p.Delete(key.(string))
+					if k, ok := key.(udpConnKey); ok {
+						p.Delete(k)
+					} else {
+						p.m.Delete(key)
+					}
 					_ = c.Close()
 					return true
 				}

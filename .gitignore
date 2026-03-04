@@ -59,3 +59,5 @@ plan.md
 gost/
 Implementation.md
 design.md
+.DS_Store
+forward-test*

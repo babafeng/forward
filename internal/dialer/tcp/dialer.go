@@ -5,10 +5,10 @@ import (
 	"net"
 	"time"
 
+	"forward/internal/config"
 	"forward/internal/dialer"
 	"forward/internal/metadata"
 	"forward/internal/registry"
-	"forward/internal/config"
 )
 
 func init() {

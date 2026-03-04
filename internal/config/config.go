@@ -72,6 +72,10 @@ type NodeConfig struct {
 	Forward      *endpoint.Endpoint
 	ForwardChain []endpoint.Endpoint
 	Insecure     bool
+
+	SubscribeURL    string
+	SubscribeFilter string
+	SubscribeUpdate int
 }
 
 type Config struct {
@@ -79,6 +83,9 @@ type Config struct {
 	Listen    endpoint.Endpoint
 	Listeners []endpoint.Endpoint
 	LogLevel  logging.Level
+	// DebugVerbose enables high-volume per-hop/per-request debug traces.
+	// Keep this off by default to avoid noisy debug output.
+	DebugVerbose bool
 
 	Forward      *endpoint.Endpoint
 	ForwardChain []endpoint.Endpoint
@@ -107,7 +114,10 @@ type Config struct {
 
 	TProxy *TProxyConfig
 
-	WarmupURL string
+	WarmupURL       string
+	SubscribeURL    string
+	SubscribeFilter string
+	SubscribeUpdate int
 }
 
 type DNSConfig struct {

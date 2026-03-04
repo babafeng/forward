@@ -21,7 +21,6 @@ import (
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
 
-	"forward/base/logging"
 	"forward/internal/chain"
 	"forward/internal/handler"
 	"forward/internal/metadata"
@@ -73,7 +72,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 
 	reader, userSentID, request, requestAddons, err := h.readRequest(conn)
 	if err != nil {
-		h.logf(logging.LevelDebug, "Read VLESS request failed: %v", err)
+		h.options.Logger.Debug("Read VLESS request failed: %v", err)
 		return err
 	}
 
@@ -86,13 +85,13 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	}
 	targetAddr := net.JoinHostPort(request.Address.String(), request.Port.String())
 
-	h.logf(logging.LevelInfo, "VLESS connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VLESS connect %s -> %s", conn.RemoteAddr(), targetAddr)
 
 	// 检查 Vision 流
 	if requestAddons.Flow == xvless.XRV {
-		h.logf(logging.LevelInfo, "VLESS Vision flow detected from %s", conn.RemoteAddr())
+		h.options.Logger.Debug("VLESS Vision flow detected from %s", conn.RemoteAddr())
 		if request.Command == protocol.RequestCommandUDP {
-			h.logf(logging.LevelDebug, "VLESS Vision flow rejected for UDP from %s", conn.RemoteAddr())
+			h.options.Logger.Debug("VLESS Vision flow rejected for UDP from %s", conn.RemoteAddr())
 			return fmt.Errorf("vision flow does not support udp")
 		}
 	}
@@ -100,7 +99,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 获取路由
 	route, err := h.options.Router.Route(ctx, network, targetAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "VLESS route error: %v", err)
+		h.options.Logger.Error("VLESS route error: %v", err)
 		return err
 	}
 	if route == nil {
@@ -110,7 +109,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 建立上游连接
 	targetConn, err := route.Dial(ctx, network, targetAddr)
 	if err != nil {
-		h.logf(logging.LevelError, "Dial target %s failed: %v", targetAddr, err)
+		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
 		return err
 	}
 	defer targetConn.Close()
@@ -123,7 +122,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	if requestAddons.Flow == xvless.XRV {
 		input, rawInput, err := visionInputBuffers(conn)
 		if err != nil {
-			h.logf(logging.LevelError, "VLESS Vision setup failed: %v", err)
+			h.options.Logger.Error("VLESS Vision setup failed: %v", err)
 			return err
 		}
 		clientReader = proxy.NewVisionReader(clientReader, trafficState, true, ctx, conn, input, rawInput, nil)
@@ -132,11 +131,11 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 发送响应头
 	bufferWriter := buf.NewBufferedWriter(buf.NewWriter(conn))
 	if err := encoding.EncodeResponseHeader(bufferWriter, request, &encoding.Addons{}); err != nil {
-		h.logf(logging.LevelDebug, "Write VLESS response failed: %v", err)
+		h.options.Logger.Debug("Write VLESS response failed: %v", err)
 		return err
 	}
 	if err := bufferWriter.SetBuffered(false); err != nil {
-		h.logf(logging.LevelDebug, "Flush VLESS response failed: %v", err)
+		h.options.Logger.Debug("Flush VLESS response failed: %v", err)
 		return err
 	}
 
@@ -148,14 +147,14 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 双向转发
 	if err := bidirectionalCopy(ctx, conn, targetConn, clientReader, clientWriter, targetReader, targetWriter); err != nil && ctx.Err() == nil {
 		if requestAddons.Flow == xvless.XRV {
-			h.logf(logging.LevelError, "VLESS Vision error: %v", err)
+			h.options.Logger.Error("VLESS Vision error: %v", err)
 		} else {
-			h.logf(logging.LevelError, "VLESS transfer error: %v", err)
+			h.options.Logger.Error("VLESS transfer error: %v", err)
 		}
 		return err
 	}
 
-	h.logf(logging.LevelInfo, "VLESS closed %s -> %s", conn.RemoteAddr(), targetAddr)
+	h.options.Logger.Debug("VLESS closed %s -> %s", conn.RemoteAddr(), targetAddr)
 	return nil
 }
 
@@ -181,22 +180,6 @@ func (h *Handler) readRequest(conn net.Conn) (*buf.BufferedReader, []byte, *prot
 	}
 
 	return reader, userSentID, request, requestAddons, nil
-}
-
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
 }
 
 // bidirectionalCopy 双向复制数据

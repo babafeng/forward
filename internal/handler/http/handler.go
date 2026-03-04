@@ -131,7 +131,8 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "HTTP connection %s -> %s", remote, local)
+	h.options.Logger.Info("%sHTTP connection %s -> %s", h.tracePrefix(ctx), remote, local)
+	h.debugVerbose(ctx, "%sHTTP connection %s -> %s", h.tracePrefix(ctx), remote, local)
 
 	if md := ictx.MetadataFromContext(ctx); md != nil {
 		if w, ok := md.Get(metadata.MetaHTTPResponseWriter).(stdhttp.ResponseWriter); ok && w != nil {
@@ -246,7 +247,8 @@ func (l *oneShotListener) Addr() net.Addr {
 
 // ServeHTTP handles HTTP/1.1, HTTP/2, and HTTP/3 proxy requests when bridged via listener metadata.
 func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	h.logf(logging.LevelInfo, "HTTP request %s %s from %s host=%s", r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
+	prefix := h.tracePrefix(r.Context())
+	h.debugVerbose(r.Context(), "%sHTTP request %s %s from %s host=%s", prefix, r.Method, redactURL(r.URL), r.RemoteAddr, r.Host)
 
 	if isUDPRequest(r) {
 		if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
@@ -256,7 +258,7 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if hj, ok := w.(stdhttp.Hijacker); ok {
 			conn, bufrw, err := hj.Hijack()
 			if err != nil {
-				h.logf(logging.LevelError, "HTTP UDP hijack error: %v", err)
+				h.options.Logger.Error("HTTP UDP hijack error: %v", err)
 				writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "hijack failed")
 				return
 			}
@@ -267,7 +269,7 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if !r.URL.IsAbs() && !h.transparent {
-			h.logf(logging.LevelDebug, "HTTP reject non-absolute request from %s: %s", r.RemoteAddr, r.URL.String())
+			h.options.Logger.Debug("%sHTTP reject non-absolute request from %s: %s", prefix, r.RemoteAddr, r.URL.String())
 			writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 			return
 		}
@@ -286,12 +288,13 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (h *Handler) authorizeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) bool {
+	prefix := h.tracePrefix(r.Context())
 	user, pass, ok := parseProxyAuth(r.Header.Get("Proxy-Authorization"))
 	if ok && h.auth.Check(user, pass) {
-		h.logf(logging.LevelDebug, "HTTP auth success for user %s", user)
+		h.debugVerbose(r.Context(), "%sHTTP auth success for user %s", prefix, user)
 		return true
 	}
-	h.logf(logging.LevelDebug, "HTTP auth failed or missing credentials from %s", r.RemoteAddr)
+	h.options.Logger.Debug("%sHTTP auth failed or missing credentials from %s", prefix, r.RemoteAddr)
 	writeAuthRequiredHTTP(w)
 	return false
 }
@@ -307,21 +310,20 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	}
 
 	ctx := r.Context()
+	start := time.Now()
+	prefix := h.tracePrefix(ctx)
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "HTTP route error: %v", err)
+		h.options.Logger.Error("HTTP Route error: %v", err)
 		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 		return
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", chain.RouteSummary(route))
-
-	h.logf(logging.LevelInfo, "HTTP CONNECT %s -> %s", r.RemoteAddr, target)
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "HTTP connect dial error: %v", err)
+		h.options.Logger.Error("HTTP connect dial error: %v", err)
 		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 		return
 	}
@@ -330,7 +332,7 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	if hj, ok := w.(stdhttp.Hijacker); ok {
 		conn, bufrw, err := hj.Hijack()
 		if err != nil {
-			h.logf(logging.LevelError, "HTTP connect hijack error: %v", err)
+			h.options.Logger.Error("HTTP connect hijack error: %v", err)
 			writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "hijack failed")
 			return
 		}
@@ -339,37 +341,40 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 		_, _ = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 		_ = bufrw.Flush()
 
-		bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-		h.logf(logging.LevelInfo, "HTTP CONNECT closed %s -> %s bytes=%d dur=%s", r.RemoteAddr, target, bytes, dur)
-		if err != nil {
-			h.logf(logging.LevelDebug, "HTTP CONNECT stream error: %v", err)
+		bytes, dur, streamErr := inet.Bidirectional(ctx, conn, up)
+		if streamErr != nil && ctx.Err() == nil {
+			h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s err=%v", prefix, r.RemoteAddr, target, bytes, dur, streamErr)
+		} else {
+			h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s", prefix, r.RemoteAddr, target, bytes, dur)
 		}
 		return
 	}
 
 	fl, ok := w.(stdhttp.Flusher)
 	if !ok {
-		h.logf(logging.LevelError, "HTTP connect: response writer not flushable")
+		h.options.Logger.Error("HTTP connect: response writer not flushable")
 		writeSimpleHTTP(w, stdhttp.StatusInternalServerError, "stream not supported")
 		return
 	}
 
 	if err := stdhttp.NewResponseController(w).EnableFullDuplex(); err != nil {
-		h.logf(logging.LevelDebug, "HTTP connect: enable full-duplex failed: %v", err)
+		h.debugVerbose(ctx, "%sHTTP connect: enable full-duplex failed: %v", prefix, err)
 	}
 
 	w.WriteHeader(stdhttp.StatusOK)
 	fl.Flush()
 
 	h.streamWithBody(ctx, w, r.Body, up, fl)
-	h.logf(logging.LevelInfo, "HTTP CONNECT closed %s -> %s", r.RemoteAddr, target)
+	h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s dur=%s", prefix, r.RemoteAddr, target, time.Since(start))
 }
 
 func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	ctx := r.Context()
+	start := time.Now()
+	prefix := h.tracePrefix(ctx)
 	req, err := h.prepareUpstreamRequest(ctx, r)
 	if err != nil {
-		h.logf(logging.LevelDebug, "HTTP bad request from %s: %v", r.RemoteAddr, err)
+		h.options.Logger.Debug("%sHTTP bad request from %s: %v", prefix, r.RemoteAddr, err)
 		writeSimpleHTTP(w, stdhttp.StatusBadRequest, "bad request")
 		return
 	}
@@ -377,20 +382,18 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	target := req.URL.Host
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "HTTP route error: %v", err)
+		h.options.Logger.Error("HTTP Route error: %v", err)
 		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 		return
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "HTTP route via %s", chain.RouteSummary(route))
 	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
 
-	h.logf(logging.LevelInfo, "HTTP %s %s -> %s", r.Method, r.URL.String(), target)
 	resp, err := h.transportClient().RoundTrip(req)
 	if err != nil {
-		h.logf(logging.LevelDebug, "HTTP dial failed %s: %v", req.URL.String(), err)
+		h.options.Logger.Debug("%sHTTP %s %s -> %s failed: %v dur=%s", prefix, r.Method, redactURL(r.URL), target, err, time.Since(start))
 		writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 		return
 	}
@@ -399,10 +402,10 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil && ctx.Err() == nil {
-		h.logf(logging.LevelError, "HTTP error writing response: %v", err)
+		h.options.Logger.Error("HTTP error writing response: %v", err)
 		return
 	}
-	h.logf(logging.LevelInfo, "HTTP response %s -> %s %d", r.RemoteAddr, target, resp.StatusCode)
+	h.options.Logger.Debug("%sHTTP %s %s -> %s status=%d dur=%s", prefix, r.Method, redactURL(r.URL), target, resp.StatusCode, time.Since(start))
 }
 
 func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {
@@ -438,8 +441,9 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 		}
 	}()
 
-	respWriter := &flushWriter{w: w, f: fl}
+	respWriter := newFlushWriter(w, fl)
 	_, _ = io.Copy(respWriter, upstream)
+	respWriter.Flush()
 
 	select {
 	case <-clientDone:
@@ -448,118 +452,46 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 }
 
 type flushWriter struct {
-	w io.Writer
-	f stdhttp.Flusher
+	w             io.Writer
+	f             stdhttp.Flusher
+	pending       int
+	lastFlush     time.Time
+	maxBufferSize int
+	flushInterval time.Duration
+}
+
+func newFlushWriter(w io.Writer, f stdhttp.Flusher) *flushWriter {
+	return &flushWriter{
+		w:             w,
+		f:             f,
+		lastFlush:     time.Now(),
+		maxBufferSize: 128 * 1024,
+		flushInterval: 100 * time.Millisecond,
+	}
 }
 
 func (fw *flushWriter) Write(p []byte) (int, error) {
 	n, err := fw.w.Write(p)
+	if n > 0 {
+		fw.pending += n
+	}
 	if err == nil {
-		fw.f.Flush()
+		now := time.Now()
+		if fw.pending >= fw.maxBufferSize || now.Sub(fw.lastFlush) >= fw.flushInterval {
+			fw.f.Flush()
+			fw.pending = 0
+			fw.lastFlush = now
+		}
 	}
 	return n, err
 }
 
-func (h *Handler) authorize(conn net.Conn, req *stdhttp.Request) bool {
-	user, pass, ok := parseProxyAuth(req.Header.Get("Proxy-Authorization"))
-	if ok && h.auth.Check(user, pass) {
-		h.logf(logging.LevelDebug, "HTTP auth success for user %s", user)
-		return true
+func (fw *flushWriter) Flush() {
+	if fw.pending > 0 {
+		fw.f.Flush()
+		fw.pending = 0
+		fw.lastFlush = time.Now()
 	}
-	h.logf(logging.LevelDebug, "HTTP auth failed or missing credentials from %s", req.RemoteAddr)
-	writeAuthRequired(conn)
-	return false
-}
-
-func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, br *bufio.Reader, req *stdhttp.Request) error {
-	target := req.Host
-	if target == "" {
-		return writeSimple(conn, stdhttp.StatusBadRequest, "missing host", nil)
-	}
-	if !strings.Contains(target, ":") {
-		target += ":443"
-	}
-
-	route, err := h.options.Router.Route(ctx, "tcp", target)
-	if err != nil {
-		h.logf(logging.LevelError, "HTTP route error: %v", err)
-		return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-	h.logf(logging.LevelDebug, "HTTP CONNECT route via %s", chain.RouteSummary(route))
-
-	h.logf(logging.LevelInfo, "HTTP CONNECT %s -> %s", req.RemoteAddr, target)
-	up, err := route.Dial(ctx, "tcp", target)
-	if err != nil {
-		h.logf(logging.LevelError, "HTTP connect dial error: %v", err)
-		return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	defer up.Close()
-
-	if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return err
-	}
-
-	if br != nil && br.Buffered() > 0 {
-		buf, _ := br.Peek(br.Buffered())
-		if len(buf) > 0 {
-			_, _ = up.Write(buf)
-			_, _ = br.Discard(len(buf))
-		}
-	}
-
-	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-	h.logf(logging.LevelInfo, "HTTP CONNECT closed %s -> %s bytes=%d dur=%s", req.RemoteAddr, target, bytes, dur)
-	return err
-}
-
-func (h *Handler) handleForward(ctx context.Context, conn net.Conn, req *stdhttp.Request) (bool, error) {
-	if !strings.EqualFold(req.Method, stdhttp.MethodConnect) {
-		if !req.URL.IsAbs() && !h.transparent {
-			return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-		}
-	}
-
-	upReq, err := h.prepareUpstreamRequest(ctx, req)
-	if err != nil {
-		return false, writeSimple(conn, stdhttp.StatusBadRequest, "bad request", nil)
-	}
-
-	target := upReq.URL.Host
-	route, err := h.options.Router.Route(ctx, "tcp", target)
-	if err != nil {
-		h.logf(logging.LevelError, "HTTP route error: %v", err)
-		return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-	h.logf(logging.LevelDebug, "HTTP route via %s", chain.RouteSummary(route))
-	upReq = upReq.WithContext(context.WithValue(upReq.Context(), routeKey, route))
-
-	h.logf(logging.LevelInfo, "HTTP %s %s -> %s", req.Method, req.URL.String(), target)
-	resp, err := h.transportClient().RoundTrip(upReq)
-	if err != nil {
-		h.logf(logging.LevelDebug, "HTTP dial failed %s: %v", upReq.URL.String(), err)
-		return false, writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, nil)
-	}
-	defer resp.Body.Close()
-
-	cleanHopHeaders(resp.Header)
-	resp.Close = req.Close
-
-	bw := bufio.NewWriter(conn)
-	if err := resp.Write(bw); err != nil {
-		return false, err
-	}
-	if err := bw.Flush(); err != nil {
-		return false, err
-	}
-
-	h.logf(logging.LevelInfo, "HTTP response %s -> %s %d", req.RemoteAddr, target, resp.StatusCode)
-	return !req.Close && !resp.Close, nil
 }
 
 func (h *Handler) transportClient() *stdhttp.Transport {
@@ -734,13 +666,6 @@ func copyHeaders(dst, src stdhttp.Header) {
 	}
 }
 
-func writeAuthRequired(conn net.Conn) error {
-	headers := map[string]string{
-		"Proxy-Authenticate": `Basic realm="` + config.CamouflageRealm + `"`,
-	}
-	return writeSimple(conn, stdhttp.StatusForbidden, config.CamouflagePageTitle, headers)
-}
-
 func writeSimple(conn net.Conn, status int, title string, extraHeaders map[string]string) error {
 	statusText := stdhttp.StatusText(status)
 	if statusText == "" {
@@ -836,20 +761,23 @@ func parseBool(v any) bool {
 	}
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
+func (h *Handler) tracePrefix(ctx context.Context) string {
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil {
+		return ""
+	}
+	return tr.Prefix()
+}
+
+func (h *Handler) debugVerbose(ctx context.Context, format string, args ...any) {
 	if h.options.Logger == nil {
 		return
 	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil || !tr.Verbose {
+		return
 	}
+	h.options.Logger.Debug(format, args...)
 }
 
 func (h *Handler) log() *logging.Logger {
