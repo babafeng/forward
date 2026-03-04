@@ -965,7 +965,7 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 			}(defaultRoute.(*chain.BalancerRoute))
 		}
 	} else if len(hops) > 0 {
-		rt, err := builder.BuildRoute(cfg, hops)
+		rt, err := builder.BuildRoutePooled(cfg, hops)
 		if err != nil {
 			return nil, err
 		}
