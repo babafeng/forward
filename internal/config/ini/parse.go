@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 
 	"forward/base/endpoint"
@@ -97,6 +98,7 @@ func Parse(data []byte) (config.Config, error) {
 	if subURL == "" {
 		subURL = strings.TrimSpace(general["subscirbe"])
 	}
+	subUpdate, _ := strconv.Atoi(strings.TrimSpace(general["update"]))
 	cfg := config.Config{
 		Listeners:       listeners,
 		Listen:          listeners[0],
@@ -105,6 +107,7 @@ func Parse(data []byte) (config.Config, error) {
 		DebugVerbose:    debugVerbose,
 		SubscribeURL:    subURL,
 		SubscribeFilter: strings.TrimSpace(general["filter"]),
+		SubscribeUpdate: subUpdate,
 	}
 
 	if tpRaw := strings.TrimSpace(general["tproxy"]); tpRaw != "" {

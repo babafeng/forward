@@ -75,6 +75,7 @@ type NodeConfig struct {
 
 	SubscribeURL    string
 	SubscribeFilter string
+	SubscribeUpdate int
 }
 
 type Config struct {
@@ -116,6 +117,7 @@ type Config struct {
 	WarmupURL       string
 	SubscribeURL    string
 	SubscribeFilter string
+	SubscribeUpdate int
 }
 
 type DNSConfig struct {
