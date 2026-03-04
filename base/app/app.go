@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"forward/internal/builder"
 	"forward/internal/chain"
 	"forward/internal/config"
+	"forward/internal/subscribe"
 
 	"forward/base/endpoint"
 	"forward/base/logging"
@@ -86,16 +88,22 @@ import (
 
 const defaultWarmupURL = "http://www.gstatic.com/generate_204"
 
+var subscribeDownload = subscribe.Download
+
 func Main() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := parseArgs(os.Args[1:])
+	cfg, subscribeOpts, err := parseArgs(os.Args[1:])
 	logger := cfg.Logger
 	if logger == nil {
 		logger = logging.New(logging.Options{Level: logging.LevelError})
 	}
-	xlog.RegisterHandler(&xrayLogHandler{level: cfg.LogLevel.String(), logger: logger})
+	xlog.RegisterHandler(&xrayLogHandler{
+		level:   cfg.LogLevel.String(),
+		logger:  logger,
+		verbose: cfg.DebugVerbose,
+	})
 
 	if err != nil {
 		if err == flag.ErrHelp {
@@ -103,6 +111,11 @@ func Main() int {
 		}
 		logger.Error("Parse args error: %v", err)
 		return 2
+	}
+
+	// 订阅模式：下载 → 保存 → 解析 → 过滤 → 测试延迟 (仅在没有起服务端的时候作为独立测试工具)
+	if subscribeOpts.URL != "" && len(cfg.Nodes) == 0 && cfg.Listen.Scheme == "" {
+		return runSubscribe(ctx, subscribeOpts, cfg, logger)
 	}
 	if len(cfg.DNSParameters.Servers) > 0 {
 		chain.SetDefaultResolver(cfg.DNSParameters.Servers)
@@ -112,6 +125,10 @@ func Main() int {
 		if node.Insecure {
 			logger.Warn("Node %s: --insecure is enabled, TLS verification is disabled", node.Name)
 		}
+	}
+	if err := initRouteStoreAndHotReload(ctx, &cfg); err != nil {
+		logger.Error("Init route store error: %v", err)
+		return 2
 	}
 
 	var wg sync.WaitGroup
@@ -153,6 +170,13 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 	cfg.Forward = node.Forward
 	cfg.ForwardChain = node.ForwardChain
 	cfg.Insecure = node.Insecure
+
+	if node.SubscribeURL != "" {
+		cfg.SubscribeURL = node.SubscribeURL
+	}
+	if node.SubscribeFilter != "" {
+		cfg.SubscribeFilter = node.SubscribeFilter
+	}
 	return cfg
 }
 
@@ -371,13 +395,13 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		}
 	}
 
-	svc := service.NewService(ln, h, cfg.Logger)
+	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
+	cfg.Logger.Info("forward %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
 	return svc.Serve()
 }
 
@@ -478,13 +502,13 @@ func runReverseServer(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	svc := service.NewService(ln, h, cfg.Logger)
+	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
+	cfg.Logger.Info("forward reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
 	return svc.Serve()
 }
 
@@ -555,13 +579,13 @@ func runReverseRealityServer(ctx context.Context, cfg config.Config, revHandler 
 		}
 	}
 
-	svc := service.NewService(ln, vlessHandler, cfg.Logger)
+	svc := service.NewService(ln, vlessHandler, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
+	cfg.Logger.Info("forward reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
 	return svc.Serve()
 }
 
@@ -731,14 +755,140 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	svc := service.NewService(ln, h, cfg.Logger)
+	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
 	go func() {
 		<-ctx.Done()
 		_ = svc.Close()
 	}()
 
-	cfg.Logger.Info("Forward internal %s forward listening on %s -> %s", cfg.Listen.Scheme, cfg.Listen.Address(), target)
+	cfg.Logger.Info("forward %s forward listening on %s -> %s", cfg.Listen.Scheme, cfg.Listen.Address(), target)
 	return svc.Serve()
+}
+
+type routeFileState struct {
+	modTimeUnixNano int64
+	size            int64
+	checksum        uint64
+}
+
+func initRouteStoreAndHotReload(ctx context.Context, cfg *config.Config) error {
+	if cfg == nil || cfg.Route == nil {
+		return nil
+	}
+	if cfg.RouteStore == nil {
+		store, err := route.NewStore(cfg.Route, cfg.Logger)
+		if err != nil {
+			return err
+		}
+		cfg.RouteStore = store
+	}
+	if strings.TrimSpace(cfg.RoutePath) == "" {
+		return nil
+	}
+	go watchRouteConfig(ctx, cfg)
+	return nil
+}
+
+func watchRouteConfig(ctx context.Context, cfg *config.Config) {
+	if cfg == nil || cfg.RouteStore == nil {
+		return
+	}
+	path := strings.TrimSpace(cfg.RoutePath)
+	if path == "" {
+		return
+	}
+
+	readState := func() (routeFileState, error) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return routeFileState{}, err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return routeFileState{}, err
+		}
+		hasher := fnv.New64a()
+		_, _ = hasher.Write(content)
+		return routeFileState{
+			modTimeUnixNano: info.ModTime().UnixNano(),
+			size:            info.Size(),
+			checksum:        hasher.Sum64(),
+		}, nil
+	}
+
+	lastState := routeFileState{}
+	hasState := false
+	lastStatErr := ""
+	if state, err := readState(); err == nil {
+		lastState = state
+		hasState = true
+	} else if cfg.Logger != nil {
+		cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
+		lastStatErr = err.Error()
+	}
+
+	if cfg.Logger != nil {
+		cfg.Logger.Info("Route hot reload enabled: %s (poll: 1s)", path)
+	}
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			state, err := readState()
+			if err != nil {
+				if cfg.Logger != nil {
+					msg := err.Error()
+					if msg != lastStatErr {
+						cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
+						lastStatErr = msg
+					}
+				}
+				continue
+			}
+			lastStatErr = ""
+			if hasState && state == lastState {
+				continue
+			}
+
+			routeCfg, err := parseRouteConfig(path)
+			// Parse/update errors should not break serving. Keep current route and wait for next file change.
+			if err != nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Warn("Route hot reload parse %s failed: %v", path, err)
+				}
+				lastState = state
+				hasState = true
+				continue
+			}
+			if routeCfg.Route == nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Warn("Route hot reload skipped: no route config in %s", path)
+				}
+				lastState = state
+				hasState = true
+				continue
+			}
+			if err := cfg.RouteStore.Update(routeCfg.Route, cfg.Logger); err != nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Warn("Route hot reload update %s failed: %v", path, err)
+				}
+				lastState = state
+				hasState = true
+				continue
+			}
+
+			lastState = state
+			hasState = true
+			if cfg.Logger != nil {
+				cfg.Logger.Info("Route config reloaded from %s (version=%d)", path, cfg.RouteStore.Version())
+			}
+		}
+	}
 }
 
 func buildRouter(cfg config.Config) (router.Router, error) {
@@ -750,7 +900,71 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 	}
 
 	var defaultRoute chain.Route
-	if len(hops) > 0 {
+	if cfg.SubscribeURL != "" {
+		subNodes, subCandidates, err := fetchAndBuildSubCandidates(cfg, hops)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(hops) > 0 {
+			defaultRoute = chain.NewBalancerRouteWithCandidates(subCandidates, 2*time.Minute, cfg.DialTimeout)
+		} else {
+			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
+		}
+
+		// Start background update loop if enabled
+		if cfg.SubscribeUpdate > 0 {
+			go func(br *chain.BalancerRoute) {
+				ticker := time.NewTicker(time.Duration(cfg.SubscribeUpdate) * time.Minute)
+				defer ticker.Stop()
+
+				for range ticker.C {
+					if cfg.Logger != nil {
+						cfg.Logger.Info("Auto-updating subscription from %s", cfg.SubscribeURL)
+					}
+					var newNodes []*chain.Node
+					var newCandidates []chain.BalancerCandidate
+					var updateErr error
+
+					// Retry logic up to 3 times
+					for retry := 1; retry <= 3; retry++ {
+						newNodes, newCandidates, updateErr = fetchAndBuildSubCandidates(cfg, hops)
+						if updateErr == nil {
+							break
+						}
+						if cfg.Logger != nil {
+							cfg.Logger.Warn("Failed to update subscription (attempt %d/3): %v", retry, updateErr)
+						}
+						if retry < 3 {
+							time.Sleep(5 * time.Second)
+						}
+					}
+
+					if updateErr != nil {
+						if cfg.Logger != nil {
+							cfg.Logger.Error("Subscription update failed after 3 retries, keeping existing nodes.")
+						}
+						continue
+					}
+
+					if cfg.Logger != nil {
+						cfg.Logger.Info("Successfully updated subscription, loaded %d nodes.", len(newCandidates))
+					}
+
+					if len(hops) > 0 {
+						br.UpdateCandidates(newCandidates)
+					} else {
+						// Convert *Node to BalancerCandidate
+						cands := make([]chain.BalancerCandidate, 0, len(newNodes))
+						for _, n := range newNodes {
+							cands = append(cands, chain.BalancerCandidate{Node: n})
+						}
+						br.UpdateCandidates(cands)
+					}
+				}
+			}(defaultRoute.(*chain.BalancerRoute))
+		}
+	} else if len(hops) > 0 {
 		rt, err := builder.BuildRoute(cfg, hops)
 		if err != nil {
 			return nil, err
@@ -773,8 +987,11 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		store = rstore
 	}
 
-	proxies := map[string]chain.Route{}
-	for name, ep := range cfg.Route.Proxies {
+	buildProxyRoute := func(name string) (chain.Route, error) {
+		ep, ok := store.GetProxy(name)
+		if !ok {
+			return nil, fmt.Errorf("unknown proxy %s", name)
+		}
 		rt, err := builder.BuildRoute(cfg, []endpoint.Endpoint{ep})
 		if err != nil {
 			return nil, err
@@ -784,13 +1001,141 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 				node.Display = name
 			}
 		}
+		return rt, nil
+	}
+
+	proxies := map[string]chain.Route{}
+	for name := range cfg.Route.Proxies {
+		rt, err := buildProxyRoute(name)
+		if err != nil {
+			return nil, err
+		}
 		proxies[route.NormalizeProxyName(name)] = rt
 	}
 
-	return router.NewStore(store, defaultRoute, proxies), nil
+	sr := router.NewStore(store, defaultRoute, proxies)
+	sr.SetProxyBuilder(buildProxyRoute)
+	return sr, nil
 }
 
-func parseArgs(args []string) (config.Config, error) {
+func fetchAndBuildSubCandidates(cfg config.Config, hops []endpoint.Endpoint) ([]*chain.Node, []chain.BalancerCandidate, error) {
+	if cfg.Logger != nil {
+		cfg.Logger.Info("Downloading subscription from %s", cfg.SubscribeURL)
+	}
+	data, err := subscribeDownload(cfg.SubscribeURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("download subscribe nodes: %w", err)
+	}
+	proxies, err := subscribe.Parse(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse subscribe nodes: %w", err)
+	}
+	if cfg.SubscribeFilter != "" {
+		proxies = subscribe.FilterProxies(proxies, cfg.SubscribeFilter)
+	}
+	if len(proxies) == 0 {
+		return nil, nil, fmt.Errorf("no matching nodes in subscription")
+	}
+
+	var subNodes []*chain.Node
+	var subCandidates []chain.BalancerCandidate
+	for _, proxy := range proxies {
+		ep, err := subscribe.ProxyToEndpoint(proxy)
+		if err != nil {
+			continue
+		}
+
+		routeHops := make([]endpoint.Endpoint, 0, 1+len(hops))
+		routeHops = append(routeHops, ep)
+		routeHops = append(routeHops, hops...)
+
+		rt, err := builder.BuildRoute(cfg, routeHops)
+		if err != nil {
+			continue
+		}
+		nodes := rt.Nodes()
+		if len(nodes) > 0 {
+			nodes[0].Display = proxy.Name
+			subNodes = append(subNodes, nodes[0])
+			subCandidates = append(subCandidates, chain.BalancerCandidate{
+				Node:  nodes[0],
+				Route: rt,
+			})
+		}
+	}
+
+	if len(subCandidates) == 0 {
+		return nil, nil, fmt.Errorf("no valid matching nodes in subscription")
+	}
+
+	if cfg.Logger != nil {
+		if len(hops) > 0 {
+			cfg.Logger.Info("Built balancer route with %d nodes from subscription and %d fixed forward hop(s)", len(subCandidates), len(hops))
+		} else {
+			cfg.Logger.Info("Built balancer route with %d nodes from subscription", len(subCandidates))
+		}
+	}
+
+	return subNodes, subCandidates, nil
+}
+
+// subscribeOptions 保存订阅模式相关的选项。
+type subscribeOptions struct {
+	URL        string
+	Filter     string
+	Update     int
+	ConnectURL string
+}
+
+func runSubscribe(ctx context.Context, opts subscribeOptions, cfg config.Config, logger *logging.Logger) int {
+	logger.Info("开始下载订阅链接: %s", opts.URL)
+
+	data, err := subscribeDownload(opts.URL)
+	if err != nil {
+		logger.Error("下载订阅链接失败: %v", err)
+		return 1
+	}
+	logger.Info("订阅内容下载完成，大小: %d 字节", len(data))
+
+	// 保存文件
+	savedPath, err := subscribe.SaveToFile(data, opts.URL)
+	if err != nil {
+		logger.Error("保存订阅文件失败: %v", err)
+		return 1
+	}
+	logger.Info("订阅文件已保存到: %s", savedPath)
+
+	// 解析代理节点
+	proxies, err := subscribe.Parse(data)
+	if err != nil {
+		logger.Error("解析订阅内容失败: %v", err)
+		return 1
+	}
+	logger.Info("解析到 %d 个代理节点", len(proxies))
+
+	// 过滤节点
+	if opts.Filter != "" {
+		proxies = subscribe.FilterProxies(proxies, opts.Filter)
+		logger.Info("过滤后剩余 %d 个代理节点", len(proxies))
+	}
+
+	if len(proxies) == 0 {
+		logger.Warn("没有匹配的代理节点")
+		return 0
+	}
+
+	// 测试节点延迟
+	connectURL := opts.ConnectURL
+	if connectURL == "" {
+		connectURL = defaultWarmupURL
+	}
+	logger.Info("开始测试 %d 个节点延迟，测试目标: %s", len(proxies), connectURL)
+	subscribe.TestNodes(ctx, proxies, connectURL, cfg, logger)
+
+	return 0
+}
+
+func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	fs := flag.NewFlagSet("forward-internal", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
@@ -804,66 +1149,78 @@ func parseArgs(args []string) (config.Config, error) {
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
 	warmup := fs.Bool("warmup", false, "Warm up forward chain once at startup")
 	warmupURL := fs.String("warmup-url", defaultWarmupURL, "Warmup request URL (used with --warmup)")
+	subscribeURL := fs.String("S", "", "Subscribe URL to download and test nodes (Clash YAML format)")
+	fs.StringVar(subscribeURL, "subscribe", "", "Subscribe URL to download and test nodes (Clash YAML format)")
+	filterExpr := fs.String("filter", "", "Filter expression for node names (e.g. \"美国|US\", \"?!日本&?!JP\")")
+	subUpdate := fs.Int("sub-update", 60, "Subscription auto-update interval in minutes (0 to disable)")
+	connectURL := fs.String("connect-url", defaultWarmupURL, "URL to test node latency (used with -S)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
+	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
 	isVersion := fs.Bool("version", false, "Show version information")
 
-	fmt.Printf("Forward internal %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	fmt.Printf("forward %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
-		return config.Config{}, nil
+		return config.Config{}, subscribeOptions{}, nil
 	}
 
 	fs.Usage = func() { Usage(fs) }
 
 	if err := fs.Parse(args); err != nil {
-		return config.Config{}, err
+		return config.Config{}, subscribeOptions{}, err
+	}
+
+	subOpts := subscribeOptions{
+		URL:        strings.TrimSpace(*subscribeURL),
+		Filter:     strings.TrimSpace(*filterExpr),
+		ConnectURL: strings.TrimSpace(*connectURL),
+		Update:     *subUpdate,
 	}
 
 	if tproxyPort != nil && *tproxyPort > 0 {
 		if *configFile != "" || *routeFile != "" || len(listenFlags) > 0 {
-			return config.Config{}, fmt.Errorf("-T cannot be used with -C/-R/-L")
+			return config.Config{}, subOpts, fmt.Errorf("-T cannot be used with -C/-R/-L")
 		}
 		if len(forwardFlags) == 0 {
-			return config.Config{}, fmt.Errorf("-T requires -F (one or more forward endpoints)")
+			return config.Config{}, subOpts, fmt.Errorf("-T requires -F (one or more forward endpoints)")
 		}
 	}
 
 	if *routeFile != "" {
 		if *configFile != "" || len(listenFlags) > 0 || len(forwardFlags) > 0 {
-			return config.Config{}, fmt.Errorf("-R cannot be used with -C/-L/-F")
+			return config.Config{}, subOpts, fmt.Errorf("-R cannot be used with -C/-L/-F")
 		}
 		cfg, err := parseRouteConfig(*routeFile)
 		if err != nil {
-			return config.Config{}, err
+			return config.Config{}, subOpts, err
 		}
-		if isDebug != nil && *isDebug {
-			cfg.Logger = logging.New(logging.Options{Level: logging.LevelDebug})
-			cfg.LogLevel = logging.LevelDebug
-		}
+		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
 		if warmup != nil && *warmup {
 			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 			if cfg.WarmupURL == "" {
-				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+				return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
 			}
 		}
-		return cfg, nil
+		cfg.RoutePath = *routeFile
+		return cfg, subOpts, nil
 	}
 
 	if *configFile != "" {
 		cfg, err := parseConfigFile(*configFile)
 		if err != nil {
-			return config.Config{}, err
+			return config.Config{}, subOpts, err
 		}
+		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
 		if warmup != nil && *warmup {
 			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 			if cfg.WarmupURL == "" {
-				return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+				return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
 			}
 		}
-		return cfg, nil
+		return cfg, subOpts, nil
 	}
 
 	logLevel := "info"
-	if isDebug != nil && *isDebug {
+	if (isDebug != nil && *isDebug) || (isDebugVerbose != nil && *isDebugVerbose) {
 		logLevel = "debug"
 	}
 
@@ -871,26 +1228,33 @@ func parseArgs(args []string) (config.Config, error) {
 
 	llevel, err := logging.ParseLevel(logLevel)
 	if err != nil {
-		return config.Config{}, err
+		return config.Config{}, subOpts, err
 	}
 	logger := logging.New(logging.Options{Level: llevel})
 	cfg.Logger = logger
 	cfg.LogLevel = llevel
+	cfg.DebugVerbose = isDebugVerbose != nil && *isDebugVerbose
 
-	if (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
+	// 订阅模式不需要 listen 参数
+	if subOpts.URL == "" && (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
 		defaultPath, err := cjson.FindDefaultConfig()
 		if err != nil {
 			fs.Usage()
-			return cfg, err
+			return cfg, subOpts, err
 		}
-		return parseConfigFile(defaultPath)
+		dcfg, err := parseConfigFile(defaultPath)
+		if err != nil {
+			return config.Config{}, subOpts, err
+		}
+		applyDebugFlags(&dcfg, *isDebug, *isDebugVerbose)
+		return dcfg, subOpts, nil
 	}
 
 	if tproxyPort != nil && *tproxyPort > 0 {
 		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(*tproxyPort))
 		ep, err := endpoint.Parse("tproxy://" + addr)
 		if err != nil {
-			return cfg, fmt.Errorf("parse -T %d: %w", *tproxyPort, err)
+			return cfg, subOpts, fmt.Errorf("parse -T %d: %w", *tproxyPort, err)
 		}
 		cfg.Listeners = append(cfg.Listeners, ep)
 		cfg.Listen = ep
@@ -900,11 +1264,11 @@ func parseArgs(args []string) (config.Config, error) {
 			Sniffing:     true,
 			DestOverride: []string{"http", "tls", "quic"},
 		}
-	} else {
+	} else if len(listenFlags) > 0 {
 		for _, l := range listenFlags {
 			ep, err := endpoint.Parse(l)
 			if err != nil {
-				return cfg, fmt.Errorf("parse -L %s: %w", l, err)
+				return cfg, subOpts, fmt.Errorf("parse -L %s: %w", l, err)
 			}
 			cfg.Listeners = append(cfg.Listeners, ep)
 		}
@@ -915,7 +1279,7 @@ func parseArgs(args []string) (config.Config, error) {
 		for _, raw := range forwardFlags {
 			ef, err := endpoint.Parse(raw)
 			if err != nil {
-				return cfg, fmt.Errorf("parse -F %s: %w", raw, err)
+				return cfg, subOpts, fmt.Errorf("parse -F %s: %w", raw, err)
 			}
 			cfg.ForwardChain = append(cfg.ForwardChain, ef)
 		}
@@ -929,20 +1293,25 @@ func parseArgs(args []string) (config.Config, error) {
 	if warmup != nil && *warmup {
 		cfg.WarmupURL = strings.TrimSpace(*warmupURL)
 		if cfg.WarmupURL == "" {
-			return config.Config{}, fmt.Errorf("--warmup-url cannot be empty")
+			return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
 		}
 	}
 
-	cfg.Nodes = []config.NodeConfig{{
-		Name:         "default",
-		Listeners:    cfg.Listeners,
-		Forward:      cfg.Forward,
-		ForwardChain: cfg.ForwardChain,
-		Insecure:     cfg.Insecure,
-	}}
+	if len(cfg.Listeners) > 0 {
+		cfg.Nodes = []config.NodeConfig{{
+			Name:         "default",
+			Listeners:    cfg.Listeners,
+			Forward:      cfg.Forward,
+			ForwardChain: cfg.ForwardChain,
+			Insecure:     cfg.Insecure,
+		}}
+	}
 
 	config.ApplyDefaults(&cfg)
-	return cfg, nil
+	cfg.SubscribeURL = subOpts.URL
+	cfg.SubscribeFilter = subOpts.Filter
+	cfg.SubscribeUpdate = subOpts.Update
+	return cfg, subOpts, nil
 }
 
 func parseConfigFile(path string) (config.Config, error) {
@@ -959,23 +1328,37 @@ func parseRouteConfig(path string) (config.Config, error) {
 	}
 }
 
+func applyDebugFlags(cfg *config.Config, debug, debugVerbose bool) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = logging.New(logging.Options{Level: logging.LevelInfo})
+		cfg.LogLevel = logging.LevelInfo
+	}
+	if debug || debugVerbose {
+		cfg.Logger.SetLevel(logging.LevelDebug)
+		cfg.LogLevel = logging.LevelDebug
+	}
+	if debugVerbose {
+		cfg.DebugVerbose = true
+	}
+}
+
 func isProxyServer(scheme string) bool {
 	base, transport := splitSchemeTransport(scheme)
 	if base == "http2" || base == "http3" {
 		return transport == transportNone
 	}
-	// VLESS+Reality 是代理服务器
 	if base == "vless" {
 		return true
 	}
-	// VMess 是代理服务器
 	if base == "vmess" {
 		return true
 	}
 	if base == "hysteria2" || base == "hy2" {
 		return true
 	}
-	// Shadowsocks 是代理服务器
 	if base == "ss" || base == "shadowsocks" {
 		return true
 	}
@@ -1165,8 +1548,9 @@ func (s *stringSlice) Set(value string) error {
 }
 
 type xrayLogHandler struct {
-	level  string
-	logger *logging.Logger
+	level   string
+	logger  *logging.Logger
+	verbose bool
 }
 
 func (h *xrayLogHandler) Handle(msg xlog.Message) {
@@ -1185,16 +1569,21 @@ func (h *xrayLogHandler) Handle(msg xlog.Message) {
 
 	switch severity {
 	case xlog.Severity_Debug:
-		if h.level == "debug" {
+		if h.level == "debug" && h.verbose {
 			h.logger.Debug("%s", txt)
 		}
 	case xlog.Severity_Info:
-		h.logger.Info("%s", txt)
+		// Keep xray component chatter opt-in to avoid overwhelming debug logs.
+		if h.level == "debug" && h.verbose {
+			h.logger.Debug("%s", txt)
+		}
 	case xlog.Severity_Warning:
 		h.logger.Warn("%s", txt)
 	case xlog.Severity_Error:
 		h.logger.Error("%s", txt)
 	default:
-		h.logger.Info("%s", txt)
+		if h.level == "debug" && h.verbose {
+			h.logger.Debug("%s", txt)
+		}
 	}
 }

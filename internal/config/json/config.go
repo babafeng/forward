@@ -44,17 +44,26 @@ type NodeFileConfig struct {
 	Listen    string   `json:"listen,omitempty"`
 	Forward   string   `json:"forward,omitempty"`
 	Forwards  []string `json:"forwards,omitempty"`
-	Insecure  bool     `json:"insecure,omitempty"`
+	Insecure        bool     `json:"insecure,omitempty"`
+	Subscribe       string   `json:"subscribe,omitempty"`
+	SubscribeTypo   string   `json:"subscirbe,omitempty"`
+	SubscribeFilter string   `json:"filter,omitempty"`
+	SubscribeUpdate int      `json:"update,omitempty"`
 }
 
 type FileConfig struct {
-	Nodes     []NodeFileConfig `json:"nodes,omitempty"`
-	Listeners []string         `json:"listeners,omitempty"`
-	Listen    string           `json:"listen,omitempty"`
-	Forward   string           `json:"forward,omitempty"`
-	Forwards  []string         `json:"forwards,omitempty"`
-	Insecure  bool             `json:"insecure,omitempty"`
-	Debug     bool             `json:"debug,omitempty"`
+	Nodes        []NodeFileConfig `json:"nodes,omitempty"`
+	Listeners    []string         `json:"listeners,omitempty"`
+	Listen       string           `json:"listen,omitempty"`
+	Forward      string           `json:"forward,omitempty"`
+	Forwards     []string         `json:"forwards,omitempty"`
+	Insecure     bool             `json:"insecure,omitempty"`
+	Debug        bool             `json:"debug,omitempty"`
+	DebugVerbose    bool             `json:"debug_verbose,omitempty"`
+	Subscribe       string           `json:"subscribe,omitempty"`
+	SubscribeTypo   string           `json:"subscirbe,omitempty"`
+	SubscribeFilter string           `json:"filter,omitempty"`
+	SubscribeUpdate int              `json:"update,omitempty"`
 }
 
 func ParseFile(path string) (config.Config, error) {
@@ -77,7 +86,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	cfg := config.Config{}
 
 	logLevel := "info"
-	if fc.Debug {
+	if fc.Debug || fc.DebugVerbose {
 		logLevel = "debug"
 	}
 	llevel, err := logging.ParseLevel(logLevel)
@@ -86,6 +95,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	}
 	cfg.Logger = logging.New(logging.Options{Level: llevel})
 	cfg.LogLevel = llevel
+	cfg.DebugVerbose = fc.DebugVerbose
 
 	if len(fc.Nodes) > 0 {
 		for i, n := range fc.Nodes {
@@ -108,8 +118,12 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 		Listeners: fc.Listeners,
 		Listen:    fc.Listen,
 		Forward:   fc.Forward,
-		Forwards:  fc.Forwards,
-		Insecure:  fc.Insecure,
+		Forwards:        fc.Forwards,
+		Insecure:        fc.Insecure,
+		Subscribe:       fc.Subscribe,
+		SubscribeTypo:   fc.SubscribeTypo,
+		SubscribeFilter: fc.SubscribeFilter,
+		SubscribeUpdate: fc.SubscribeUpdate,
 	}, 0)
 	if err != nil {
 		return cfg, err
@@ -121,6 +135,9 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	cfg.Forward = node.Forward
 	cfg.ForwardChain = node.ForwardChain
 	cfg.Insecure = node.Insecure
+	cfg.SubscribeURL = node.SubscribeURL
+	cfg.SubscribeFilter = node.SubscribeFilter
+	cfg.SubscribeUpdate = node.SubscribeUpdate
 
 	config.ApplyDefaults(&cfg)
 	return cfg, nil
@@ -128,8 +145,14 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 
 func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 	node := config.NodeConfig{
-		Name:     n.Name,
-		Insecure: n.Insecure,
+		Name:            n.Name,
+		Insecure:        n.Insecure,
+		SubscribeURL:    n.Subscribe,
+		SubscribeFilter: n.SubscribeFilter,
+		SubscribeUpdate: n.SubscribeUpdate,
+	}
+	if node.SubscribeURL == "" {
+		node.SubscribeURL = n.SubscribeTypo
 	}
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("node_%d", index)

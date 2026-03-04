@@ -98,10 +98,6 @@ func (l *Listener) Accept() (net.Conn, error) {
 		}
 	}()
 
-	if l.logger != nil {
-		l.logger.Info("Listener accepted %s -> %s", qconn.RemoteAddr().String(), qconn.LocalAddr().String())
-	}
-
 	return &structs.QuicStreamConn{
 		Stream:    stream,
 		Local:     qconn.LocalAddr(),

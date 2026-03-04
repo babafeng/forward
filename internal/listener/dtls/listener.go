@@ -108,9 +108,6 @@ func (l *Listener) Accept() (net.Conn, error) {
 		return nil, listener.NewAcceptError(err)
 	}
 	conn = dtlsutil.Conn(conn, l.md.bufferSize)
-	if l.logger != nil {
-		l.logger.Info("Listener accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
-	}
 	return conn, nil
 }
 

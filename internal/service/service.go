@@ -5,14 +5,18 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"forward/base/logging"
 	"forward/internal/config"
+	ictx "forward/internal/ctx"
 	"forward/internal/handler"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 )
+
+var connSeq atomic.Uint64
 
 type Service interface {
 	Serve() error
@@ -24,14 +28,16 @@ type defaultService struct {
 	listener listener.Listener
 	handler  handler.Handler
 	logger   *logging.Logger
+	verbose  bool
 	conns    sync.Map
 }
 
-func NewService(ln listener.Listener, h handler.Handler, logger *logging.Logger) Service {
+func NewService(ln listener.Listener, h handler.Handler, logger *logging.Logger, verbose bool) Service {
 	return &defaultService{
 		listener: ln,
 		handler:  h,
 		logger:   logger,
+		verbose:  verbose,
 	}
 }
 
@@ -84,22 +90,29 @@ func (s *defaultService) Serve() error {
 		}
 		tempDelay = 0
 
-		if s.logger != nil {
-			s.logger.Debug("Service accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
+		src := conn.RemoteAddr().String()
+		local := conn.LocalAddr().String()
+		id := connSeq.Add(1)
+		trace := &ictx.Trace{ID: id, Src: src, Local: local, Logger: s.logger, Verbose: s.verbose}
+
+		if s.logger != nil && s.verbose {
+			s.logger.Debug("%saccept %s -> %s", trace.Prefix(), src, local)
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
+		baseCtx := context.Background()
 		if cc, ok := conn.(interface{ Context() context.Context }); ok {
 			if cctx := cc.Context(); cctx != nil {
-				ctx, cancel = context.WithCancel(cctx)
+				baseCtx = cctx
 			}
 		}
+		ctx, cancel := context.WithCancel(baseCtx)
+		ctx = ictx.ContextWithTrace(ctx, trace)
 
 		select {
 		case sem <- struct{}{}:
 		default:
 			if s.logger != nil {
-				s.logger.Warn("Service max connection limit reached, rejected %s", conn.RemoteAddr())
+				s.logger.Warn("%sreject %s -> %s: max connection limit reached", trace.Prefix(), src, local)
 			}
 			conn.Close()
 			cancel()
@@ -108,14 +121,14 @@ func (s *defaultService) Serve() error {
 
 		s.conns.Store(conn, cancel)
 		wg.Add(1)
-		go func(c net.Conn) {
+		go func(c net.Conn, cctx context.Context, cancel context.CancelFunc, tr *ictx.Trace) {
 			defer func() { <-sem }()
 			defer wg.Done()
 			defer s.conns.Delete(c)
 			defer cancel()
 
-			if s.logger != nil {
-				s.logger.Debug("Service handling %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
+			if s.logger != nil && s.verbose {
+				s.logger.Debug("%shandle %s -> %s", tr.Prefix(), tr.Src, tr.Local)
 			}
 			var hopts []handler.HandleOption
 			if mc, ok := c.(interface{ Metadata() metadata.Metadata }); ok {
@@ -123,14 +136,14 @@ func (s *defaultService) Serve() error {
 					hopts = append(hopts, handler.MetadataHandleOption(md))
 				}
 			}
-			if err := s.handler.Handle(ctx, c, hopts...); err != nil && s.logger != nil {
-				s.logger.Debug("Service handler error %s -> %s: %v", c.RemoteAddr().String(), c.LocalAddr().String(), err)
+			if err := s.handler.Handle(cctx, c, hopts...); err != nil && s.logger != nil && cctx.Err() == nil {
+				s.logger.Debug("%shandler error %s -> %s: %v", tr.Prefix(), tr.Src, tr.Local, err)
 			}
 			// ensure connection is closed
 			c.Close()
-			if s.logger != nil {
-				s.logger.Debug("Service closed %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
+			if s.logger != nil && s.verbose {
+				s.logger.Debug("%sclose %s -> %s", tr.Prefix(), tr.Src, tr.Local)
 			}
-		}(conn)
+		}(conn, ctx, cancel, trace)
 	}
 }

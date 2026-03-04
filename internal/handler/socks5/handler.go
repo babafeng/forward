@@ -22,6 +22,7 @@ import (
 	socks5util "forward/base/utils/socks5"
 	"forward/internal/chain"
 	"forward/internal/config"
+	ictx "forward/internal/ctx"
 	corehandler "forward/internal/handler"
 	"forward/internal/metadata"
 	"forward/internal/registry"
@@ -107,24 +108,25 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "SOCKS5 connection %s -> %s", remote, local)
+	h.options.Logger.Info("%sSOCKS5 connection %s -> %s", h.tracePrefix(ctx), remote, local)
+	h.debugVerbose(ctx, "%sSOCKS5 connection %s -> %s", h.tracePrefix(ctx), remote, local)
 
 	_ = conn.SetReadDeadline(time.Now().Add(h.handshakeTimout))
 
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
 
-	if err := h.negotiateAuth(br, bw); err != nil {
+	if err := h.negotiateAuth(ctx, br, bw); err != nil {
 		if ctx.Err() == nil {
-			h.logf(logging.LevelError, "SOCKS5 negotiate error: %v", err)
+			h.options.Logger.Error("SOCKS5 negotiate error: %v", err)
 		}
 		return err
 	}
 
-	cmd, dest, err := h.readRequest(br, bw)
+	cmd, dest, err := h.readRequest(ctx, br, bw)
 	if err != nil {
 		if ctx.Err() == nil {
-			h.logf(logging.LevelError, "SOCKS5 request error: %v", err)
+			h.options.Logger.Error("SOCKS5 request error: %v", err)
 		}
 		return err
 	}
@@ -140,7 +142,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	}
 }
 
-func (h *Handler) negotiateAuth(br *bufio.Reader, bw *bufio.Writer) error {
+func (h *Handler) negotiateAuth(ctx context.Context, br *bufio.Reader, bw *bufio.Writer) error {
 	ver, err := br.ReadByte()
 	if err != nil {
 		return err
@@ -161,7 +163,7 @@ func (h *Handler) negotiateAuth(br *bufio.Reader, bw *bufio.Writer) error {
 	if h.requireAuth {
 		required = methodUserPass
 	}
-	h.logf(logging.LevelDebug, "SOCKS5 auth method selected=%d", required)
+	h.debugVerbose(ctx, "%sSOCKS5 auth method selected=%d", h.tracePrefix(ctx), required)
 	if !socks5util.Contains(methods, required) {
 		if _, err := bw.Write([]byte{version5, 0xff}); err != nil {
 			return fmt.Errorf("write reject: %w", err)
@@ -229,7 +231,7 @@ func (h *Handler) handleUserPass(br *bufio.Reader, bw *bufio.Writer) error {
 	return fmt.Errorf("auth failed for user %q", string(uname))
 }
 
-func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string, error) {
+func (h *Handler) readRequest(ctx context.Context, br *bufio.Reader, bw *bufio.Writer) (byte, string, error) {
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(br, head); err != nil {
 		return 0, "", err
@@ -245,7 +247,7 @@ func (h *Handler) readRequest(br *bufio.Reader, bw *bufio.Writer) (byte, string,
 		return 0, "", err
 	}
 	dest := net.JoinHostPort(addr, strconv.Itoa(port))
-	h.logf(logging.LevelDebug, "SOCKS5 request cmd=%d dst=%s", cmd, dest)
+	h.debugVerbose(ctx, "%sSOCKS5 request cmd=%d dst=%s", h.tracePrefix(ctx), cmd, dest)
 	return cmd, dest, nil
 }
 
@@ -254,19 +256,17 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 
 	route, err := h.options.Router.Route(ctx, "tcp", dest)
 	if err != nil {
-		h.logf(logging.LevelError, "SOCKS5 route error: %v", err)
+		h.options.Logger.Error("SOCKS5 route error: %v", err)
 		_ = h.writeReply(bw, 0x05, "")
 		return err
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "SOCKS5 CONNECT route via %s", chain.RouteSummary(route))
 
-	h.logf(logging.LevelInfo, "SOCKS5 CONNECT %s -> %s", conn.RemoteAddr().String(), dest)
 	up, err := route.Dial(ctx, "tcp", dest)
 	if err != nil {
-		h.logf(logging.LevelError, "SOCKS5 connect dial error: %v", err)
+		h.options.Logger.Error("SOCKS5 connect dial error: %v", err)
 		_ = h.writeReply(bw, 0x05, "")
 		return err
 	}
@@ -276,7 +276,7 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 	_ = h.writeReply(bw, 0x00, bind)
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-	h.logf(logging.LevelInfo, "SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
+	h.options.Logger.Debug("SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
 	return err
 }
 
@@ -293,7 +293,7 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 	}
 	udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: 0})
 	if err != nil {
-		h.logf(logging.LevelError, "SOCKS5 udp listen error: %v", err)
+		h.options.Logger.Error("SOCKS5 udp listen error: %v", err)
 		_ = h.writeReply(bw, 0x01, "")
 		return err
 	}
@@ -305,7 +305,7 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 		return err
 	}
 
-	h.logf(logging.LevelInfo, "SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
+	h.options.Logger.Debug("SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -394,7 +394,7 @@ func (s *udpSession) run(ctx context.Context) {
 				s.cleanupIdle()
 				continue
 			}
-			s.logf(logging.LevelError, "SOCKS5 UDP read error: %v", err)
+			s.logger.Error("SOCKS5 UDP read error: %v", err)
 			continue
 		}
 		if n == 0 {
@@ -407,7 +407,7 @@ func (s *udpSession) run(ctx context.Context) {
 
 		dest, payload, err := parseUDPRequest(buf[:n])
 		if err != nil {
-			s.logf(logging.LevelDebug, "SOCKS5 UDP parse error: %v", err)
+			s.logger.Debug("SOCKS5 UDP parse error: %v", err)
 			continue
 		}
 
@@ -418,7 +418,7 @@ func (s *udpSession) run(ctx context.Context) {
 		peer.lastSeen.Store(time.Now().UnixNano())
 
 		if _, err := peer.conn.Write(payload); err != nil {
-			s.logf(logging.LevelError, "SOCKS5 UDP write upstream error: %v", err)
+			s.logger.Error("SOCKS5 UDP write upstream error: %v", err)
 			continue
 		}
 	}
@@ -433,7 +433,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 	}
 	if len(s.sessions) >= s.maxSess {
 		s.mu.Unlock()
-		s.logf(logging.LevelWarn, "SOCKS5 UDP session limit reached")
+		s.logger.Warn("SOCKS5 UDP session limit reached")
 		return nil
 	}
 	s.mu.Unlock()
@@ -452,7 +452,7 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 
 		route, err := s.router.Route(ctx, "udp", dest)
 		if err != nil {
-			s.logf(logging.LevelError, "SOCKS5 UDP route error: %v", err)
+			s.logger.Error("SOCKS5 UDP route error: %v", err)
 			return nil, err
 		}
 		if route == nil {
@@ -461,11 +461,11 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 
 		c, err := route.Dial(ctx, "udp", dest)
 		if err != nil {
-			s.logf(logging.LevelError, "SOCKS5 UDP dial %s error: %v", dest, err)
+			s.logger.Error("SOCKS5 UDP dial %s error: %v", dest, err)
 			return nil, err
 		}
 
-		s.logf(logging.LevelInfo, "SOCKS5 UDP %s -> %s", src.String(), dest)
+		s.logger.Debug("SOCKS5 UDP %s -> %s", src.String(), dest)
 
 		p := &udpPeer{
 			conn: c,
@@ -542,21 +542,7 @@ func (s *udpSession) cleanupIdle() {
 	s.mu.Unlock()
 }
 
-func (s *udpSession) logf(level logging.Level, format string, args ...any) {
-	if s.logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		s.logger.Debug(format, args...)
-	case logging.LevelInfo:
-		s.logger.Info(format, args...)
-	case logging.LevelWarn:
-		s.logger.Warn(format, args...)
-	case logging.LevelError:
-		s.logger.Error(format, args...)
-	}
-}
+
 
 func parseUDPRequest(b []byte) (dest string, payload []byte, err error) {
 	if len(b) < 4 {
@@ -645,20 +631,25 @@ func (h *Handler) getSafeBindAddr(clientConn net.Conn, udpLn *net.UDPConn) strin
 	return hostPortFromAddr(udpLn.LocalAddr())
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
+
+
+func (h *Handler) tracePrefix(ctx context.Context) string {
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil {
+		return ""
+	}
+	return tr.Prefix()
+}
+
+func (h *Handler) debugVerbose(ctx context.Context, format string, args ...any) {
 	if h.options.Logger == nil {
 		return
 	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
+	tr := ictx.TraceFromContext(ctx)
+	if tr == nil || !tr.Verbose {
+		return
 	}
+	h.options.Logger.Debug(format, args...)
 }
 
 func (h *Handler) log() *logging.Logger {

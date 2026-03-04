@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, config.DefaultCopyBuffer)
+	},
+}
+
 func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time.Duration, err error) {
 	start := time.Now()
 
@@ -33,7 +39,8 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 
 	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		buf := make([]byte, config.DefaultCopyBuffer)
+		buf := getCopyBuffer()
+		defer putCopyBuffer(buf)
 		n, e := io.CopyBuffer(dst, src, buf)
 		if n > 0 {
 			total.Add(n)
@@ -72,4 +79,19 @@ func closeWrite(c net.Conn) {
 		_ = cw.CloseWrite()
 		return
 	}
+}
+
+func getCopyBuffer() []byte {
+	b := copyBufferPool.Get().([]byte)
+	if cap(b) < config.DefaultCopyBuffer {
+		return make([]byte, config.DefaultCopyBuffer)
+	}
+	return b[:config.DefaultCopyBuffer]
+}
+
+func putCopyBuffer(b []byte) {
+	if cap(b) < config.DefaultCopyBuffer {
+		return
+	}
+	copyBufferPool.Put(b[:config.DefaultCopyBuffer])
 }

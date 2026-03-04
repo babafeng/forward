@@ -115,9 +115,6 @@ func (l *Listener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, listener.NewAcceptError(err)
 	}
-	if l.logger != nil {
-		l.logger.Info("Listener accepted %s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
-	}
 	return conn, nil
 }
 

@@ -520,7 +520,7 @@ func startPortForwardServer(t *testing.T, scheme, target string) (endpoint.Endpo
 
 func startService(t *testing.T, ln listener.Listener, h handler.Handler, cancel context.CancelFunc) func() {
 	t.Helper()
-	svc := service.NewService(ln, h, testLogger())
+	svc := service.NewService(ln, h, testLogger(), false)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- svc.Serve()

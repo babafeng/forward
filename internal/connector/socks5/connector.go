@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	socks5util "forward/base/utils/socks5"
 	"forward/internal/connector"
 	"forward/internal/metadata"
 	"forward/internal/registry"
-	socks5util "forward/base/utils/socks5"
 )
 
 const (

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	inet "forward/base/io/net"
-	"forward/base/logging"
 	"forward/internal/chain"
 	corehandler "forward/internal/handler"
 	"forward/internal/metadata"
@@ -63,47 +62,33 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.logf(logging.LevelInfo, "UDP forward %s -> %s -> %s", remote, local, target)
 
 	route, err := h.options.Router.Route(ctx, "udp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "UDP route error: %v", err)
+		h.options.Logger.Error("UDP route error: %v", err)
 		return err
 	}
 	if route == nil {
 		route = chain.NewRoute()
 	}
-	h.logf(logging.LevelDebug, "UDP route via %s", chain.RouteSummary(route))
 
 	up, err := route.Dial(ctx, "udp", target)
 	if err != nil {
-		h.logf(logging.LevelError, "UDP dial %s error: %v", target, err)
+		h.options.Logger.Error("UDP dial %s error: %v", target, err)
 		return err
 	}
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
 	if err != nil && ctx.Err() == nil {
-		h.logf(logging.LevelError, "UDP transfer error: %v", err)
+		h.options.Logger.Error("UDP transfer error: %v", err)
+		h.options.Logger.Debug("UDP closed %s -> %s -> %s transferred %d bytes in %s err=%v", remote, local, target, bytes, dur, err)
+		return err
 	}
-	h.logf(logging.LevelDebug, "UDP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
+	h.options.Logger.Debug("UDP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
 	return err
 }
 
-func (h *Handler) logf(level logging.Level, format string, args ...any) {
-	if h.options.Logger == nil {
-		return
-	}
-	switch level {
-	case logging.LevelDebug:
-		h.options.Logger.Debug(format, args...)
-	case logging.LevelInfo:
-		h.options.Logger.Info(format, args...)
-	case logging.LevelWarn:
-		h.options.Logger.Warn(format, args...)
-	case logging.LevelError:
-		h.options.Logger.Error(format, args...)
-	}
-}
+
 
 func getString(v any) string {
 	switch t := v.(type) {

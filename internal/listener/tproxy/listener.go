@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,9 +126,6 @@ func (l *Listener) Init(md metadata.Metadata) error {
 func (l *Listener) Accept() (net.Conn, error) {
 	select {
 	case c := <-l.cqueue:
-		if l.logger != nil {
-			l.logger.Info("Listener accepted %s -> %s", c.RemoteAddr().String(), c.LocalAddr().String())
-		}
 		return c, nil
 	case <-l.closed:
 		return nil, listener.ErrClosed
@@ -250,7 +248,15 @@ func (l *Listener) getConn(raddr, dstAddr *net.UDPAddr) *udpMetaConn {
 	if raddr == nil || dstAddr == nil {
 		return nil
 	}
-	key := fmt.Sprintf("%s->%s", raddr.String(), dstAddr.String())
+	src, ok := netipAddrPort(raddr)
+	if !ok {
+		return nil
+	}
+	dst, ok := netipAddrPort(dstAddr)
+	if !ok {
+		return nil
+	}
+	key := udpConnKey{src: src, dst: dst}
 	if c, ok := l.pool.Get(key); ok && !c.isClosed() {
 		return c
 	}
@@ -371,6 +377,11 @@ type connPool struct {
 	logger *logging.Logger
 }
 
+type udpConnKey struct {
+	src netip.AddrPort
+	dst netip.AddrPort
+}
+
 func newConnPool(ttl time.Duration, logger *logging.Logger) *connPool {
 	if ttl <= 0 {
 		ttl = config.DefaultUDPIdleTimeout
@@ -384,7 +395,7 @@ func newConnPool(ttl time.Duration, logger *logging.Logger) *connPool {
 	return p
 }
 
-func (p *connPool) Get(key string) (*udpMetaConn, bool) {
+func (p *connPool) Get(key udpConnKey) (*udpMetaConn, bool) {
 	if v, ok := p.m.Load(key); ok {
 		c, ok := v.(*udpMetaConn)
 		return c, ok
@@ -392,11 +403,11 @@ func (p *connPool) Get(key string) (*udpMetaConn, bool) {
 	return nil, false
 }
 
-func (p *connPool) Set(key string, c *udpMetaConn) {
+func (p *connPool) Set(key udpConnKey, c *udpMetaConn) {
 	p.m.Store(key, c)
 }
 
-func (p *connPool) Delete(key string) {
+func (p *connPool) Delete(key udpConnKey) {
 	p.m.Delete(key)
 }
 
@@ -427,13 +438,21 @@ func (p *connPool) idleCheck() {
 			p.m.Range(func(key, value any) bool {
 				c, ok := value.(*udpMetaConn)
 				if !ok || c == nil {
-					p.Delete(key.(string))
+					if k, ok := key.(udpConnKey); ok {
+						p.Delete(k)
+					} else {
+						p.m.Delete(key)
+					}
 					return true
 				}
 				size++
 				if uc := c.udpConn; uc != nil && uc.IsIdle() {
 					idles++
-					p.Delete(key.(string))
+					if k, ok := key.(udpConnKey); ok {
+						p.Delete(k)
+					} else {
+						p.m.Delete(key)
+					}
 					_ = c.Close()
 					return true
 				}
@@ -553,6 +572,17 @@ func (c *udpConn) WriteQueue(b []byte) error {
 	default:
 		return errors.New("recv queue is full")
 	}
+}
+
+func netipAddrPort(addr *net.UDPAddr) (netip.AddrPort, bool) {
+	if addr == nil || addr.Port < 0 || addr.Port > 65535 {
+		return netip.AddrPort{}, false
+	}
+	ip, ok := netip.AddrFromSlice(addr.IP)
+	if !ok {
+		return netip.AddrPort{}, false
+	}
+	return netip.AddrPortFrom(ip.Unmap(), uint16(addr.Port)), true
 }
 
 func getString(v any) string {
