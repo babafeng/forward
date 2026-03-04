@@ -186,6 +186,13 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 
 	tr := ictx.TraceFromContext(ctx)
 	hasTraceLog := tr != nil && tr.Logger != nil
+
+	// Print connection routing info
+	if hasTraceLog {
+		// Just print load balanced name for the balancer itself for now, or "Balancer"
+		tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, "Balancer")
+	}
+
 	verbose := hasTraceLog && tr.Verbose
 
 	start := time.Now()
@@ -226,7 +233,14 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 		}
 
 		if hasTraceLog {
-			tr.Logger.Debug("%sdial ok balancer %s %s via %s dur=%s", tr.Prefix(), strings.ToUpper(network), address, labelNode(node), time.Since(start))
+			rt := r.routeForNode(node)
+			var summary string
+			if rt != nil {
+				summary = RouteSummary(rt)
+			} else {
+				summary = labelNode(node)
+			}
+			tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, summary)
 		}
 		return cc, nil
 	}

@@ -46,6 +46,7 @@ type NodeFileConfig struct {
 	Forwards  []string `json:"forwards,omitempty"`
 	Insecure        bool     `json:"insecure,omitempty"`
 	Subscribe       string   `json:"subscribe,omitempty"`
+	SubscribeTypo   string   `json:"subscirbe,omitempty"`
 	SubscribeFilter string   `json:"filter,omitempty"`
 }
 
@@ -59,6 +60,7 @@ type FileConfig struct {
 	Debug        bool             `json:"debug,omitempty"`
 	DebugVerbose    bool             `json:"debug_verbose,omitempty"`
 	Subscribe       string           `json:"subscribe,omitempty"`
+	SubscribeTypo   string           `json:"subscirbe,omitempty"`
 	SubscribeFilter string           `json:"filter,omitempty"`
 }
 
@@ -117,6 +119,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 		Forwards:        fc.Forwards,
 		Insecure:        fc.Insecure,
 		Subscribe:       fc.Subscribe,
+		SubscribeTypo:   fc.SubscribeTypo,
 		SubscribeFilter: fc.SubscribeFilter,
 	}, 0)
 	if err != nil {
@@ -142,6 +145,9 @@ func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 		Insecure:        n.Insecure,
 		SubscribeURL:    n.Subscribe,
 		SubscribeFilter: n.SubscribeFilter,
+	}
+	if node.SubscribeURL == "" {
+		node.SubscribeURL = n.SubscribeTypo
 	}
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("node_%d", index)
