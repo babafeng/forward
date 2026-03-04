@@ -18,6 +18,17 @@ import (
 )
 
 func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error) {
+	return buildRouteInternal(cfg, hops, false)
+}
+
+// BuildRoutePooled is like BuildRoute but enables pre-warming dial pools on
+// non-multiplexing hops.  The caller must eventually close the returned
+// route (via chainRoute.Close) to release pool resources.
+func BuildRoutePooled(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error) {
+	return buildRouteInternal(cfg, hops, true)
+}
+
+func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool bool) (chain.Route, error) {
 	if len(hops) == 0 {
 		return chain.NewRoute(), nil
 	}
@@ -134,7 +145,18 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 			}
 		}
 
-		node := chain.NewNode(fmt.Sprintf("%s_%d", scheme, i+1), hop.Address(), chain.NewTransport(d, c))
+		// Use a pre-warming dial pool for non-multiplexing dialers to avoid
+		// repeated TCP+TLS handshake costs per request.
+		var tr *chain.Transport
+		if enablePool {
+			if _, ok := d.(dialer.Multiplexer); !ok {
+				tr = chain.NewTransportWithPool(d, c, hop.Address())
+			}
+		}
+		if tr == nil {
+			tr = chain.NewTransport(d, c)
+		}
+		node := chain.NewNode(fmt.Sprintf("%s_%d", scheme, i+1), hop.Address(), tr)
 		nodes = append(nodes, node)
 	}
 
