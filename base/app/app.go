@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -333,6 +334,24 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		"read_header_timeout": cfg.ReadHeaderTimeout,
 		"max_header_bytes":    cfg.MaxHeaderBytes,
 		"idle_timeout":        cfg.IdleTimeout,
+		"max_idle_conns": readPositiveQueryInt(
+			cfg.Listen.Query,
+			config.DefaultHTTPMaxIdleConns,
+			"max_idle_conns",
+			"max-idle-conns",
+		),
+		"max_idle_conns_per_host": readPositiveQueryInt(
+			cfg.Listen.Query,
+			config.DefaultHTTPMaxIdleConnsPerHost,
+			"max_idle_conns_per_host",
+			"max-idle-conns-per-host",
+		),
+		"max_conns_per_host": readPositiveQueryInt(
+			cfg.Listen.Query,
+			config.DefaultHTTPMaxConnsPerHost,
+			"max_conns_per_host",
+			"max-conns-per-host",
+		),
 	}
 	if handlerScheme == "tproxy" && cfg.TProxy != nil {
 		mdMap["sniffing"] = cfg.TProxy.Sniffing
@@ -992,7 +1011,7 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown proxy %s", name)
 		}
-		rt, err := builder.BuildRoute(cfg, []endpoint.Endpoint{ep})
+		rt, err := builder.BuildRoutePooled(cfg, []endpoint.Endpoint{ep})
 		if err != nil {
 			return nil, err
 		}
@@ -1036,6 +1055,10 @@ func fetchAndBuildSubCandidates(cfg config.Config, hops []endpoint.Endpoint) ([]
 	if len(proxies) == 0 {
 		return nil, nil, fmt.Errorf("no matching nodes in subscription")
 	}
+	// Keep subscription startup bounded: pre-warming hundreds of candidates
+	// creates significant background dials. Use pooled routes only for a
+	// moderate candidate set.
+	usePooled := len(proxies) <= 32
 
 	var subNodes []*chain.Node
 	var subCandidates []chain.BalancerCandidate
@@ -1049,7 +1072,12 @@ func fetchAndBuildSubCandidates(cfg config.Config, hops []endpoint.Endpoint) ([]
 		routeHops = append(routeHops, ep)
 		routeHops = append(routeHops, hops...)
 
-		rt, err := builder.BuildRoute(cfg, routeHops)
+		var rt chain.Route
+		if usePooled {
+			rt, err = builder.BuildRoutePooled(cfg, routeHops)
+		} else {
+			rt, err = builder.BuildRoute(cfg, routeHops)
+		}
 		if err != nil {
 			continue
 		}
@@ -1529,6 +1557,21 @@ func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string,
 		listenerScheme = "h3"
 	}
 	return
+}
+
+func readPositiveQueryInt(q url.Values, fallback int, keys ...string) int {
+	for _, key := range keys {
+		raw := strings.TrimSpace(q.Get(key))
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			continue
+		}
+		return n
+	}
+	return fallback
 }
 
 func Usage(fs *flag.FlagSet) {

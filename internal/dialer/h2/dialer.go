@@ -58,8 +58,6 @@ func (d *Dialer) Init(md metadata.Metadata) error {
 
 func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) (net.Conn, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	client := d.clients[addr]
 	if client == nil {
 		host := d.md.host
@@ -110,7 +108,9 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 		}
 		d.clients[addr] = client
 	}
+	d.mu.Unlock()
 
+	// Dial may involve network RTT and should not be serialized under lock.
 	return client.Dial(ctx, addr)
 }
 

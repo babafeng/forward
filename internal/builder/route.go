@@ -145,10 +145,11 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			}
 		}
 
-		// Use a pre-warming dial pool for non-multiplexing dialers to avoid
-		// repeated TCP+TLS handshake costs per request.
+		// chainRoute only invokes Transport.Dial on the first hop.
+		// Pooling non-first hops adds background overhead without improving
+		// the request fast path.
 		var tr *chain.Transport
-		if enablePool {
+		if enablePool && i == 0 {
 			if _, ok := d.(dialer.Multiplexer); !ok {
 				tr = chain.NewTransportWithPool(d, c, hop.Address())
 			}
