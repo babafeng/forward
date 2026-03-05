@@ -59,6 +59,8 @@ type routeContextKey int
 
 const routeKey routeContextKey = iota
 
+var streamNoHalfCloseGrace = 3 * time.Second
+
 func NewHandler(opts ...corehandler.Option) corehandler.Handler {
 	options := corehandler.Options{}
 	for _, opt := range opts {
@@ -481,32 +483,59 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 	defer closer()
 
 	doneCh := make(chan struct{})
+	ctxDone := ctx.Done()
+	if ctxDone != nil {
+		go func() {
+			select {
+			case <-ctxDone:
+				closer()
+			case <-doneCh:
+			}
+		}()
+	}
 	defer close(doneCh)
 
+	clientDone := make(chan bool, 1)
 	go func() {
-		select {
-		case <-ctx.Done():
-			closer()
-		case <-doneCh:
-		}
-	}()
-
-	clientDone := make(chan struct{})
-	go func() {
-		defer close(clientDone)
 		_, _ = io.Copy(upstream, body)
+		halfClosed := false
 		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
+			halfClosed = true
 		}
+		clientDone <- halfClosed
 	}()
 
+	serverDone := make(chan struct{})
 	respWriter := newFlushWriter(w, fl)
-	_, _ = io.Copy(respWriter, upstream)
-	respWriter.Flush()
+	go func() {
+		defer close(serverDone)
+		_, _ = io.Copy(respWriter, upstream)
+		respWriter.Flush()
+	}()
 
-	select {
-	case <-clientDone:
-	case <-ctx.Done():
+	var forceClose <-chan time.Time
+	var timer *time.Timer
+	for {
+		select {
+		case halfClosed := <-clientDone:
+			clientDone = nil
+			if !halfClosed {
+				timer = time.NewTimer(streamNoHalfCloseGrace)
+				forceClose = timer.C
+			}
+		case <-serverDone:
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		case <-forceClose:
+			forceClose = nil
+			closer()
+		case <-ctxDone:
+			ctxDone = nil
+			closer()
+		}
 	}
 }
 
@@ -576,51 +605,6 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 	return h.transport
 }
 
-// Warmup primes the handler's own upstream transport pool.
-func (h *Handler) Warmup(ctx context.Context, rawURL string) (int, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return 0, fmt.Errorf("warmup url is empty")
-	}
-
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, rawURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("build warmup request failed: %w", err)
-	}
-
-	scheme := strings.ToLower(strings.TrimSpace(req.URL.Scheme))
-	if scheme != "http" && scheme != "https" {
-		return 0, fmt.Errorf("warmup url scheme must be http/https")
-	}
-
-	target := req.URL.Host
-	if target == "" {
-		return 0, fmt.Errorf("warmup url missing host")
-	}
-
-	route, err := h.options.Router.Route(ctx, "tcp", target)
-	if err != nil {
-		return 0, fmt.Errorf("warmup route error: %w", err)
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
-	req.Header.Set("User-Agent", "forward-warmup/1.0")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := h.transportClient().RoundTrip(req)
-	if err != nil {
-		return 0, fmt.Errorf("warmup dial failed: %w", err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode >= 500 {
-		return resp.StatusCode, fmt.Errorf("warmup response status: %d", resp.StatusCode)
-	}
-	return resp.StatusCode, nil
-}
 
 func (h *Handler) routeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	route, _ := ctx.Value(routeKey).(chain.Route)

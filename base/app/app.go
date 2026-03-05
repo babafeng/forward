@@ -87,7 +87,7 @@ import (
 	_ "forward/internal/handler/ss"
 )
 
-const defaultWarmupURL = "http://www.gstatic.com/generate_204"
+const defaultConnectURL = "http://www.gstatic.com/generate_204"
 
 var subscribeDownload = subscribe.Download
 
@@ -395,9 +395,6 @@ func runProxyServer(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	if shouldWarmup(cfg) {
-		startWarmup(ctx, cfg, h)
-	}
 
 	// 如果是 VLESS+Reality，传递 validator 给 Handler
 	if handlerScheme == "vless" && listenerScheme == "reality" {
@@ -428,41 +425,7 @@ func runHysteria2ProxyServer(ctx context.Context, cfg config.Config, rt router.R
 	return hy2server.Serve(ctx, cfg, rt)
 }
 
-func shouldWarmup(cfg config.Config) bool {
-	if strings.TrimSpace(cfg.WarmupURL) == "" {
-		return false
-	}
-	return len(cfg.ForwardChain) > 0 || cfg.Forward != nil
-}
 
-type warmupCapable interface {
-	Warmup(context.Context, string) (int, error)
-}
-
-func startWarmup(ctx context.Context, cfg config.Config, h handler.Handler) {
-	warmupURL := strings.TrimSpace(cfg.WarmupURL)
-	if warmupURL == "" || h == nil {
-		return
-	}
-
-	wu, ok := h.(warmupCapable)
-	if !ok {
-		cfg.Logger.Warn("Warmup skipped: handler does not support warmup")
-		return
-	}
-
-	go func() {
-		start := time.Now()
-		wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		defer cancel()
-		code, err := wu.Warmup(wctx, warmupURL)
-		if err != nil {
-			cfg.Logger.Warn("Warmup failed: %v", err)
-			return
-		}
-		cfg.Logger.Info("Warmup success: %s (%d) in %s", warmupURL, code, time.Since(start))
-	}()
-}
 
 func runReverseServer(ctx context.Context, cfg config.Config) error {
 	cfg.Mode = config.ModeReverseServer
@@ -801,14 +764,19 @@ func initRouteStoreAndHotReload(ctx context.Context, cfg *config.Config) error {
 		}
 		cfg.RouteStore = store
 	}
-	if strings.TrimSpace(cfg.RoutePath) == "" {
+	path := strings.TrimSpace(cfg.RoutePath)
+	if path == "" {
 		return nil
 	}
-	go watchRouteConfig(ctx, cfg)
+	var initialState *routeFileState
+	if state, err := readRouteFileState(path); err == nil {
+		initialState = &state
+	}
+	go watchRouteConfig(ctx, cfg, initialState)
 	return nil
 }
 
-func watchRouteConfig(ctx context.Context, cfg *config.Config) {
+func watchRouteConfig(ctx context.Context, cfg *config.Config, initialState *routeFileState) {
 	if cfg == nil || cfg.RouteStore == nil {
 		return
 	}
@@ -817,33 +785,20 @@ func watchRouteConfig(ctx context.Context, cfg *config.Config) {
 		return
 	}
 
-	readState := func() (routeFileState, error) {
-		info, err := os.Stat(path)
-		if err != nil {
-			return routeFileState{}, err
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return routeFileState{}, err
-		}
-		hasher := fnv.New64a()
-		_, _ = hasher.Write(content)
-		return routeFileState{
-			modTimeUnixNano: info.ModTime().UnixNano(),
-			size:            info.Size(),
-			checksum:        hasher.Sum64(),
-		}, nil
-	}
-
 	lastState := routeFileState{}
 	hasState := false
 	lastStatErr := ""
-	if state, err := readState(); err == nil {
+	if initialState != nil {
+		lastState = *initialState
+		hasState = true
+	} else if state, err := readRouteFileState(path); err == nil {
 		lastState = state
 		hasState = true
-	} else if cfg.Logger != nil {
-		cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
+	} else {
 		lastStatErr = err.Error()
+		if cfg.Logger != nil {
+			cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
+		}
 	}
 
 	if cfg.Logger != nil {
@@ -858,7 +813,7 @@ func watchRouteConfig(ctx context.Context, cfg *config.Config) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			state, err := readState()
+			state, err := readRouteFileState(path)
 			if err != nil {
 				if cfg.Logger != nil {
 					msg := err.Error()
@@ -908,6 +863,24 @@ func watchRouteConfig(ctx context.Context, cfg *config.Config) {
 			}
 		}
 	}
+}
+
+func readRouteFileState(path string) (routeFileState, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return routeFileState{}, err
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return routeFileState{}, err
+	}
+	hasher := fnv.New64a()
+	_, _ = hasher.Write(content)
+	return routeFileState{
+		modTimeUnixNano: info.ModTime().UnixNano(),
+		size:            info.Size(),
+		checksum:        hasher.Sum64(),
+	}, nil
 }
 
 func buildRouter(cfg config.Config) (router.Router, error) {
@@ -1155,7 +1128,7 @@ func runSubscribe(ctx context.Context, opts subscribeOptions, cfg config.Config,
 	// 测试节点延迟
 	connectURL := opts.ConnectURL
 	if connectURL == "" {
-		connectURL = defaultWarmupURL
+		connectURL = defaultConnectURL
 	}
 	logger.Info("开始测试 %d 个节点延迟，测试目标: %s", len(proxies), connectURL)
 	subscribe.TestNodes(ctx, proxies, connectURL, cfg, logger)
@@ -1175,13 +1148,11 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	configFile := fs.String("C", "", "Path to JSON config file")
 	routeFile := fs.String("R", "", "Path to proxy route config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
-	warmup := fs.Bool("warmup", false, "Warm up forward chain once at startup")
-	warmupURL := fs.String("warmup-url", defaultWarmupURL, "Warmup request URL (used with --warmup)")
 	subscribeURL := fs.String("S", "", "Subscribe URL to download and test nodes (Clash YAML format)")
 	fs.StringVar(subscribeURL, "subscribe", "", "Subscribe URL to download and test nodes (Clash YAML format)")
 	filterExpr := fs.String("filter", "", "Filter expression for node names (e.g. \"美国|US\", \"?!日本&?!JP\")")
 	subUpdate := fs.Int("sub-update", 60, "Subscription auto-update interval in minutes (0 to disable)")
-	connectURL := fs.String("connect-url", defaultWarmupURL, "URL to test node latency (used with -S)")
+	connectURL := fs.String("connect-url", defaultConnectURL, "URL to test node latency (used with -S)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
 	isVersion := fs.Bool("version", false, "Show version information")
@@ -1222,12 +1193,6 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 			return config.Config{}, subOpts, err
 		}
 		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
-		if warmup != nil && *warmup {
-			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
-			if cfg.WarmupURL == "" {
-				return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
-			}
-		}
 		cfg.RoutePath = *routeFile
 		return cfg, subOpts, nil
 	}
@@ -1238,12 +1203,6 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 			return config.Config{}, subOpts, err
 		}
 		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
-		if warmup != nil && *warmup {
-			cfg.WarmupURL = strings.TrimSpace(*warmupURL)
-			if cfg.WarmupURL == "" {
-				return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
-			}
-		}
 		return cfg, subOpts, nil
 	}
 
@@ -1318,12 +1277,6 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	}
 
 	cfg.Insecure = *insecure
-	if warmup != nil && *warmup {
-		cfg.WarmupURL = strings.TrimSpace(*warmupURL)
-		if cfg.WarmupURL == "" {
-			return config.Config{}, subOpts, fmt.Errorf("--warmup-url cannot be empty")
-		}
-	}
 
 	if len(cfg.Listeners) > 0 {
 		cfg.Nodes = []config.NodeConfig{{

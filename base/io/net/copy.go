@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+var noHalfCloseFallbackTimeout = 3 * time.Second
+
 var copyBufferPool = sync.Pool{
 	New: func() any {
 		return make([]byte, config.DefaultCopyBuffer)
@@ -21,19 +23,21 @@ var copyBufferPool = sync.Pool{
 func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time.Duration, err error) {
 	start := time.Now()
 
-	// Make sure we stop promptly if the parent context is cancelled.
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = in.Close()
-			_ = out.Close()
-		case <-stop:
-		}
-	}()
+	var stop chan struct{}
+	if done := ctx.Done(); done != nil {
+		stop = make(chan struct{})
+		go func() {
+			select {
+			case <-done:
+				_ = in.Close()
+				_ = out.Close()
+			case <-stop:
+			}
+		}()
+	}
 
 	var total atomic.Int64
-	errCh := make(chan error, 2)
+	resCh := make(chan copyResult, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -45,40 +49,82 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 		if n > 0 {
 			total.Add(n)
 		}
-		closeWrite(dst)
+		halfClosed := closeWrite(dst)
 		if errors.Is(e, io.EOF) {
 			e = nil
 		}
-		errCh <- e
+		resCh <- copyResult{
+			err:        e,
+			halfClosed: halfClosed,
+		}
 	}
 
 	go pipe(in, out)
 	go pipe(out, in)
 
+	first := <-resCh
+	second := copyResult{}
+	if first.halfClosed {
+		second = <-resCh
+	} else {
+		second = waitSecondResult(ctx, in, out, resCh)
+	}
 	wg.Wait()
-	close(stop)
+	if stop != nil {
+		close(stop)
+	}
 
 	_ = in.Close()
 	_ = out.Close()
 
-	var first error
-	for i := 0; i < 2; i++ {
-		if e := <-errCh; e != nil && first == nil {
-			first = e
-		}
+	firstErr := normalizeCopyError(first.err)
+	secondErr := normalizeCopyError(second.err)
+	if firstErr != nil {
+		return total.Load(), time.Since(start), firstErr
 	}
-
-	if first != nil && (errors.Is(first, net.ErrClosed) || errors.Is(first, io.ErrClosedPipe) || strings.Contains(first.Error(), "use of closed network connection")) {
-		first = nil
-	}
-	return total.Load(), time.Since(start), first
+	return total.Load(), time.Since(start), secondErr
 }
 
-func closeWrite(c net.Conn) {
+type copyResult struct {
+	err        error
+	halfClosed bool
+}
+
+func closeWrite(c net.Conn) bool {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
-		return
+		return true
 	}
+	return false
+}
+
+func waitSecondResult(ctx context.Context, in, out net.Conn, resCh <-chan copyResult) copyResult {
+	timer := time.NewTimer(noHalfCloseFallbackTimeout)
+	defer timer.Stop()
+
+	ctxDone := ctx.Done()
+	select {
+	case res := <-resCh:
+		return res
+	case <-timer.C:
+		_ = in.Close()
+		_ = out.Close()
+		return <-resCh
+	case <-ctxDone:
+		_ = in.Close()
+		_ = out.Close()
+		return <-resCh
+	}
+}
+
+func normalizeCopyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || strings.Contains(err.Error(), "use of closed network connection") {
+		return nil
+	}
+	return err
 }
 
 func getCopyBuffer() []byte {

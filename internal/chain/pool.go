@@ -9,6 +9,11 @@ import (
 	"forward/internal/dialer"
 )
 
+const (
+	DefaultDialPoolSize = 16
+	DefaultDialPoolTTL  = 120 * time.Second
+)
+
 // DialPool maintains a pool of pre-warmed, handshaked connections to a proxy
 // node.  When chainRoute.Dial needs a connection to the first hop, it can
 // retrieve one from the pool and skip the TCP + TLS handshake latency
@@ -44,10 +49,10 @@ type pooledConn struct {
 // ttl controls the maximum age of an idle connection before it is discarded.
 func NewDialPool(d dialer.Dialer, addr string, maxIdle int, ttl time.Duration) *DialPool {
 	if maxIdle <= 0 {
-		maxIdle = 2
+		maxIdle = DefaultDialPoolSize
 	}
 	if ttl <= 0 {
-		ttl = 90 * time.Second
+		ttl = DefaultDialPoolTTL
 	}
 	p := &DialPool{
 		dialer:  d,

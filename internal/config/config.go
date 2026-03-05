@@ -119,7 +119,6 @@ type Config struct {
 
 	TProxy *TProxyConfig
 
-	WarmupURL       string
 	SubscribeURL    string
 	SubscribeFilter string
 	SubscribeUpdate int
