@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"forward/base/endpoint"
 	"forward/internal/chain"
@@ -151,7 +152,8 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 		var tr *chain.Transport
 		if enablePool && i == 0 {
 			if _, ok := d.(dialer.Multiplexer); !ok {
-				tr = chain.NewTransportWithPool(d, c, hop.Address())
+				poolSize, poolTTL := parseDialPoolConfig(hop)
+				tr = chain.NewTransportWithPoolConfig(d, c, hop.Address(), poolSize, poolTTL)
 			}
 		}
 		if tr == nil {
@@ -289,6 +291,29 @@ func buildHysteria2DialerMetadata(hop endpoint.Endpoint, cfgInsecure bool) metad
 		"ca":             strings.TrimSpace(q.Get("ca")),
 		metadata.KeyALPN: strings.TrimSpace(q.Get("alpn")),
 	})
+}
+
+func parseDialPoolConfig(hop endpoint.Endpoint) (poolSize int, poolTTL time.Duration) {
+	q := hop.Query
+	rawSize := strings.TrimSpace(q.Get("pool_size"))
+	if rawSize != "" {
+		if n, err := strconv.Atoi(rawSize); err == nil && n > 0 {
+			poolSize = n
+		}
+	}
+
+	rawTTL := strings.TrimSpace(q.Get("pool_ttl"))
+	if rawTTL == "" {
+		return poolSize, 0
+	}
+
+	if d, err := time.ParseDuration(rawTTL); err == nil && d > 0 {
+		return poolSize, d
+	}
+	if sec, err := strconv.Atoi(rawTTL); err == nil && sec > 0 {
+		return poolSize, time.Duration(sec) * time.Second
+	}
+	return poolSize, 0
 }
 
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {

@@ -10,9 +10,9 @@ import (
 )
 
 type Store struct {
-	mu      sync.RWMutex
-	router  *Router
-	cfg     *Config
+	mu      sync.Mutex
+	router  atomic.Pointer[Router]
+	cfg     atomic.Pointer[Config]
 	version atomic.Uint64
 }
 
@@ -21,10 +21,9 @@ func NewStore(cfg *Config, log *logging.Logger) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{
-		router: router,
-		cfg:    cfg,
-	}
+	s := &Store{}
+	s.router.Store(router)
+	s.cfg.Store(cfg)
 	return s, nil
 }
 
@@ -32,9 +31,7 @@ func (s *Store) Decide(ctx context.Context, address string) (Decision, error) {
 	if s == nil {
 		return Decision{Via: "DIRECT"}, nil
 	}
-	s.mu.RLock()
-	router := s.router
-	s.mu.RUnlock()
+	router := s.router.Load()
 	if router == nil {
 		return Decision{Via: "DIRECT"}, nil
 	}
@@ -46,9 +43,7 @@ func (s *Store) GetProxy(name string) (endpoint.Endpoint, bool) {
 		return endpoint.Endpoint{}, false
 	}
 	key := NormalizeProxyName(name)
-	s.mu.RLock()
-	cfg := s.cfg
-	s.mu.RUnlock()
+	cfg := s.cfg.Load()
 	if cfg == nil || cfg.Proxies == nil {
 		return endpoint.Endpoint{}, false
 	}
@@ -68,11 +63,9 @@ func (s *Store) Update(cfg *Config, log *logging.Logger) error {
 	if err != nil {
 		return err
 	}
-	var old *Router
 	s.mu.Lock()
-	old = s.router
-	s.router = router
-	s.cfg = cfg
+	old := s.router.Swap(router)
+	s.cfg.Store(cfg)
 	s.mu.Unlock()
 	s.version.Add(1)
 	if old != nil {

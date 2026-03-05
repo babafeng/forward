@@ -26,10 +26,14 @@ func NewTransport(d dialer.Dialer, c connector.Connector) *Transport {
 // The pool eagerly maintains handshaked connections to addr so that subsequent
 // Dial calls can skip TCP+TLS establishment (~3 RTT saving).
 func NewTransportWithPool(d dialer.Dialer, c connector.Connector, addr string) *Transport {
+	return NewTransportWithPoolConfig(d, c, addr, 0, 0)
+}
+
+func NewTransportWithPoolConfig(d dialer.Dialer, c connector.Connector, addr string, maxIdle int, ttl time.Duration) *Transport {
 	return &Transport{
 		dialer:    d,
 		connector: c,
-		pool:      NewDialPool(d, addr, 2, 90*time.Second),
+		pool:      NewDialPool(d, addr, maxIdle, ttl),
 	}
 }
 
