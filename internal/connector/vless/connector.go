@@ -10,18 +10,26 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unsafe"
 
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
+	xmux "github.com/xtls/xray-core/common/mux"
 	xnet "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/session"
 	xuuid "github.com/xtls/xray-core/common/uuid"
 	"github.com/xtls/xray-core/proxy"
 	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vless/encoding"
+	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
+	"github.com/xtls/xray-core/transport/pipe"
 
 	pvless "forward/base/protocol/vless"
 	"forward/internal/connector"
@@ -33,11 +41,30 @@ func init() {
 	registry.ConnectorRegistry().Register("vless", NewConnector)
 }
 
+const (
+	defaultMuxMaxStreams = 16
+	defaultMuxIdle       = 120 * time.Second
+	muxCoolDomain        = "v1.mux.cool"
+	muxCoolPort          = 9527
+)
+
 type Connector struct {
 	userID     *protocol.ID
 	flow       string
 	encryption string
+	mux        bool
+	muxMax     int
+	muxIdle    time.Duration
 	options    connector.Options
+
+	muxMu       sync.Mutex
+	muxWorkers  []*vlessMuxWorker
+	muxDisabled atomic.Bool
+}
+
+type vlessMuxWorker struct {
+	worker   *xmux.ClientWorker
+	lastUsed atomic.Int64
 }
 
 // NewConnector 创建新的 VLESS Connector
@@ -76,11 +103,43 @@ func (c *Connector) Init(md metadata.Metadata) error {
 	c.userID = protocol.NewID(parsedUUID)
 	c.flow = strings.TrimSpace(md.GetString(metadata.KeyFlow))
 	c.encryption = strings.TrimSpace(md.GetString(metadata.KeyEncryption))
+	c.mux = md.GetBool(metadata.KeyMux)
+	c.muxMax = md.GetInt(metadata.KeyMuxMax)
+	if v := md.Get(metadata.KeyMuxIdle); v != nil {
+		if d, ok := v.(time.Duration); ok && d > 0 {
+			c.muxIdle = d
+		}
+	}
+	if c.mux {
+		if c.muxMax <= 0 {
+			c.muxMax = defaultMuxMaxStreams
+		}
+		if c.muxIdle <= 0 {
+			c.muxIdle = defaultMuxIdle
+		}
+	}
+	if c.mux && c.options.Logger != nil {
+		c.options.Logger.Info("VLESS mux enabled: max_streams=%d idle=%s", c.muxMax, c.muxIdle)
+	}
 
 	return nil
 }
 
 func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address string, opts ...connector.ConnectOption) (net.Conn, error) {
+	if c.mux && !c.muxDisabled.Load() {
+		muxConn, consumed, err := c.connectMux(ctx, conn, network, address)
+		if err == nil {
+			return muxConn, nil
+		}
+		c.disableMux(err)
+		if consumed {
+			return nil, err
+		}
+	}
+	return c.connectDirect(ctx, conn, network, address)
+}
+
+func (c *Connector) connectDirect(ctx context.Context, conn net.Conn, network, address string) (net.Conn, error) {
 	request, requestAddons, err := c.buildRequest(network, address)
 	if err != nil {
 		return nil, err
@@ -115,6 +174,279 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 		addons: requestAddons,
 		state:  trafficState,
 	}, nil
+}
+
+func (c *Connector) connectMux(ctx context.Context, conn net.Conn, network, address string) (net.Conn, bool, error) {
+	for _, w := range c.snapshotMuxWorkers() {
+		streamConn, err := c.dispatchMuxStream(ctx, w.worker, network, address)
+		if err == nil {
+			w.touch()
+			_ = conn.Close()
+			return streamConn, false, nil
+		}
+	}
+
+	w, err := c.createMuxWorker(ctx, conn)
+	if err != nil {
+		return nil, true, fmt.Errorf("vless mux bootstrap failed: %w", err)
+	}
+	c.addMuxWorker(w)
+
+	streamConn, err := c.dispatchMuxStream(ctx, w.worker, network, address)
+	if err != nil {
+		_ = w.worker.Close()
+		c.removeMuxWorker(w.worker)
+		return nil, true, fmt.Errorf("vless mux dispatch failed: %w", err)
+	}
+	w.touch()
+	return streamConn, true, nil
+}
+
+func (c *Connector) disableMux(reason error) {
+	if !c.muxDisabled.CompareAndSwap(false, true) {
+		return
+	}
+	if c.options.Logger != nil {
+		c.options.Logger.Warn("VLESS mux disabled, fallback to direct forwarding: %v", reason)
+	}
+	c.muxMu.Lock()
+	workers := c.muxWorkers
+	c.muxWorkers = nil
+	c.muxMu.Unlock()
+	for _, w := range workers {
+		if w != nil && w.worker != nil {
+			_ = w.worker.Close()
+		}
+	}
+}
+
+func (c *Connector) snapshotMuxWorkers() []*vlessMuxWorker {
+	c.muxMu.Lock()
+	defer c.muxMu.Unlock()
+
+	if len(c.muxWorkers) == 0 {
+		return nil
+	}
+	alive := c.muxWorkers[:0]
+	for _, w := range c.muxWorkers {
+		if w == nil || w.worker == nil || w.worker.Closed() {
+			continue
+		}
+		alive = append(alive, w)
+	}
+	c.muxWorkers = alive
+	out := make([]*vlessMuxWorker, len(c.muxWorkers))
+	copy(out, c.muxWorkers)
+	return out
+}
+
+func (c *Connector) addMuxWorker(w *vlessMuxWorker) {
+	if w == nil || w.worker == nil {
+		return
+	}
+	c.muxMu.Lock()
+	c.muxWorkers = append(c.muxWorkers, w)
+	c.muxMu.Unlock()
+}
+
+func (c *Connector) removeMuxWorker(worker *xmux.ClientWorker) {
+	if worker == nil {
+		return
+	}
+	c.muxMu.Lock()
+	defer c.muxMu.Unlock()
+	if len(c.muxWorkers) == 0 {
+		return
+	}
+	alive := c.muxWorkers[:0]
+	for _, w := range c.muxWorkers {
+		if w == nil || w.worker == nil || w.worker == worker || w.worker.Closed() {
+			continue
+		}
+		alive = append(alive, w)
+	}
+	c.muxWorkers = alive
+}
+
+func (c *Connector) createMuxWorker(ctx context.Context, conn net.Conn) (*vlessMuxWorker, error) {
+	request, requestAddons := c.buildMuxRequest()
+	trafficState := proxy.NewTrafficState(c.userID.Bytes())
+
+	bufferWriter := buf.NewBufferedWriter(buf.NewWriter(conn))
+	if err := encoding.EncodeRequestHeader(bufferWriter, request, requestAddons); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("encode mux request header: %w", err)
+	}
+
+	clientWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, true, ctx, conn, nil)
+	if requestAddons.Flow == xvless.XRV {
+		if err := clientWriter.WriteMultiBuffer(make(buf.MultiBuffer, 1)); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("write mux vision padding: %w", err)
+		}
+	}
+
+	if err := bufferWriter.SetBuffered(false); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("flush mux request: %w", err)
+	}
+
+	responseAddons, err := encoding.DecodeResponseHeader(conn, request)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("decode mux response header: %w", err)
+	}
+
+	reader := encoding.DecodeBodyAddons(conn, request, responseAddons)
+	if requestAddons.Flow == xvless.XRV {
+		input, rawInput, err := visionInputBuffers(conn)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		reader = proxy.NewVisionReader(reader, trafficState, false, ctx, conn, input, rawInput, nil)
+	}
+
+	worker, err := xmux.NewClientWorker(transport.Link{
+		Reader: reader,
+		Writer: clientWriter,
+	}, xmux.ClientStrategy{
+		MaxConcurrency: uint32(c.muxMax),
+	})
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	w := &vlessMuxWorker{worker: worker}
+	w.touch()
+	go c.watchMuxWorker(w, conn)
+	return w, nil
+}
+
+func (c *Connector) watchMuxWorker(w *vlessMuxWorker, conn net.Conn) {
+	if c.muxIdle <= 0 {
+		<-w.worker.WaitClosed()
+		_ = conn.Close()
+		c.removeMuxWorker(w.worker)
+		return
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.worker.WaitClosed():
+			_ = conn.Close()
+			c.removeMuxWorker(w.worker)
+			return
+		case <-ticker.C:
+			last := time.Unix(0, w.lastUsed.Load())
+			if w.worker.ActiveConnections() == 0 && !last.IsZero() && time.Since(last) > c.muxIdle {
+				_ = w.worker.Close()
+			}
+		}
+	}
+}
+
+func (c *Connector) dispatchMuxStream(ctx context.Context, worker *xmux.ClientWorker, network, address string) (net.Conn, error) {
+	target, err := parseDestination(network, address)
+	if err != nil {
+		return nil, err
+	}
+
+	uplinkReader, uplinkWriter := pipe.New(pipe.WithSizeLimit(64 * 1024))
+	downlinkReader, downlinkWriter := pipe.New(pipe.WithSizeLimit(64 * 1024))
+
+	link := &transport.Link{
+		Reader: downlinkReader,
+		Writer: uplinkWriter,
+	}
+	dispatchCtx := session.ContextWithOutbounds(ctx, []*session.Outbound{
+		{Target: target},
+	})
+
+	if !worker.Dispatch(dispatchCtx, link) {
+		common.Interrupt(downlinkReader)
+		common.Close(downlinkWriter)
+		common.Interrupt(uplinkReader)
+		common.Close(uplinkWriter)
+		return nil, fmt.Errorf("mux worker is full or closed")
+	}
+
+	return cnc.NewConnection(
+		cnc.ConnectionInputMulti(downlinkWriter),
+		cnc.ConnectionOutputMulti(uplinkReader),
+		cnc.ConnectionOnClose(&muxStreamCloseHook{
+			input:  downlinkWriter,
+			output: uplinkReader,
+		}),
+	), nil
+}
+
+func (c *Connector) buildMuxRequest() (*protocol.RequestHeader, *encoding.Addons) {
+	flow := c.flow
+	if flow == xvless.XRV+"-udp443" {
+		flow = xvless.XRV
+	}
+
+	encryption := c.encryption
+	if encryption == "" {
+		encryption = "none"
+	}
+
+	user := &protocol.MemoryUser{
+		Account: &xvless.MemoryAccount{
+			ID:         c.userID,
+			Flow:       flow,
+			Encryption: encryption,
+		},
+	}
+
+	return &protocol.RequestHeader{
+			Version: encoding.Version,
+			User:    user,
+			Command: protocol.RequestCommandMux,
+			Address: xnet.DomainAddress(muxCoolDomain),
+			Port:    xnet.Port(muxCoolPort),
+		}, &encoding.Addons{
+			Flow: flow,
+		}
+}
+
+func parseDestination(network, address string) (xnet.Destination, error) {
+	host, portStr, err := net.SplitHostPort(address)
+	if err != nil {
+		return xnet.Destination{}, fmt.Errorf("invalid target address %q: %w", address, err)
+	}
+	port, err := xnet.PortFromString(portStr)
+	if err != nil {
+		return xnet.Destination{}, fmt.Errorf("invalid target port %q: %w", portStr, err)
+	}
+	if strings.HasPrefix(strings.ToLower(network), "udp") {
+		return xnet.UDPDestination(xnet.ParseAddress(host), port), nil
+	}
+	return xnet.TCPDestination(xnet.ParseAddress(host), port), nil
+}
+
+func (w *vlessMuxWorker) touch() {
+	w.lastUsed.Store(time.Now().UnixNano())
+}
+
+type muxStreamCloseHook struct {
+	input  *pipe.Writer
+	output *pipe.Reader
+}
+
+func (h *muxStreamCloseHook) Close() error {
+	if h.output != nil {
+		common.Interrupt(h.output)
+	}
+	if h.input != nil {
+		return h.input.Close()
+	}
+	return nil
 }
 
 func (c *Connector) buildRequest(network, address string) (*protocol.RequestHeader, *encoding.Addons, error) {

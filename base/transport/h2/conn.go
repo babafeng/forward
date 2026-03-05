@@ -18,7 +18,8 @@ import (
 
 const (
 	writeBatchMaxBytes = 256 * 1024
-	writeBatchWait     = 2 * time.Millisecond
+	// Keep at zero to avoid injecting extra first-byte latency.
+	writeBatchWait = 0 * time.Millisecond
 )
 
 func NewClientConn(client *http.Client, pushURL, pullURL, secret string, remoteAddr net.Addr, logger *logging.Logger) net.Conn {
@@ -119,35 +120,53 @@ func (c *clientConn) writeLoop() {
 		total := len(first)
 		batch = append(batch, first)
 
-		timer := time.NewTimer(writeBatchWait)
-	drain:
-		for total < writeBatchMaxBytes {
-			select {
-			case pkt := <-c.txc:
-				if len(pkt) == 0 {
-					continue
-				}
-				total += len(pkt)
-				batch = append(batch, pkt)
-				if total >= writeBatchMaxBytes {
-					break drain
-				}
-			case <-timer.C:
-				break drain
-			case <-c.closed:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
+		if writeBatchWait > 0 {
+			timer := time.NewTimer(writeBatchWait)
+		drainTimed:
+			for total < writeBatchMaxBytes {
+				select {
+				case pkt := <-c.txc:
+					if len(pkt) == 0 {
+						continue
 					}
+					total += len(pkt)
+					batch = append(batch, pkt)
+					if total >= writeBatchMaxBytes {
+						break drainTimed
+					}
+				case <-timer.C:
+					break drainTimed
+				case <-c.closed:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return
 				}
-				return
 			}
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		} else {
+		drainImmediate:
+			for total < writeBatchMaxBytes {
+				select {
+				case pkt := <-c.txc:
+					if len(pkt) == 0 {
+						continue
+					}
+					total += len(pkt)
+					batch = append(batch, pkt)
+				case <-c.closed:
+					return
+				default:
+					break drainImmediate
+				}
 			}
 		}
 
