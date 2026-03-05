@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -44,14 +45,21 @@ type Handler struct {
 	readHeaderTimeout time.Duration
 	maxHeaderBytes    int
 	idleTimeout       time.Duration
+	maxIdleConns      int
+	maxIdlePerHost    int
+	maxConnsPerHost   int
 
-	transportOnce sync.Once
-	transport     *stdhttp.Transport
+	transportOnce   sync.Once
+	transport       *stdhttp.Transport
+	http1ServerOnce sync.Once
+	http1Server     *stdhttp.Server
 }
 
 type routeContextKey int
 
 const routeKey routeContextKey = iota
+
+var streamNoHalfCloseGrace = 3 * time.Second
 
 func NewHandler(opts ...corehandler.Option) corehandler.Handler {
 	options := corehandler.Options{}
@@ -68,12 +76,18 @@ func NewHandler(opts ...corehandler.Option) corehandler.Handler {
 	requireAuth := user != "" || pass != ""
 
 	h := &Handler{
-		options:        options,
-		auth:           auth.FromUserPass(user, pass),
-		requireAuth:    requireAuth,
-		enableUDP:      true,
-		udpIdle:        config.DefaultUDPIdleTimeout,
-		maxUDPSessions: config.DefaultMaxUDPSessions,
+		options:           options,
+		auth:              auth.FromUserPass(user, pass),
+		requireAuth:       requireAuth,
+		enableUDP:         true,
+		udpIdle:           config.DefaultUDPIdleTimeout,
+		maxUDPSessions:    config.DefaultMaxUDPSessions,
+		readHeaderTimeout: config.DefaultReadHeaderTimeout,
+		maxHeaderBytes:    config.DefaultMaxHeaderBytes,
+		idleTimeout:       config.DefaultIdleTimeout,
+		maxIdleConns:      config.DefaultHTTPMaxIdleConns,
+		maxIdlePerHost:    config.DefaultHTTPMaxIdleConnsPerHost,
+		maxConnsPerHost:   config.DefaultHTTPMaxConnsPerHost,
 	}
 	if h.options.Router == nil {
 		h.options.Router = router.NewStatic(chain.NewRoute())
@@ -105,22 +119,34 @@ func (h *Handler) Init(md metadata.Metadata) error {
 		}
 	}
 
-	h.readHeaderTimeout = 30 * time.Second
 	if v := md.Get("read_header_timeout"); v != nil {
 		if t, ok := v.(time.Duration); ok && t > 0 {
 			h.readHeaderTimeout = t
 		}
 	}
-	h.maxHeaderBytes = 1 << 20 // 1MB
 	if v := md.Get("max_header_bytes"); v != nil {
 		if n, ok := v.(int); ok && n > 0 {
 			h.maxHeaderBytes = n
 		}
 	}
-	h.idleTimeout = 60 * time.Second
 	if v := md.Get("idle_timeout"); v != nil {
 		if t, ok := v.(time.Duration); ok && t > 0 {
 			h.idleTimeout = t
+		}
+	}
+	if v := md.Get("max_idle_conns"); v != nil {
+		if n, ok := v.(int); ok && n > 0 {
+			h.maxIdleConns = n
+		}
+	}
+	if v := md.Get("max_idle_conns_per_host"); v != nil {
+		if n, ok := v.(int); ok && n > 0 {
+			h.maxIdlePerHost = n
+		}
+	}
+	if v := md.Get("max_conns_per_host"); v != nil {
+		if n, ok := v.(int); ok && n > 0 {
+			h.maxConnsPerHost = n
 		}
 	}
 	return nil
@@ -157,53 +183,56 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 		}
 	}
 
-	// Use http.Server for HTTP/1.x to handle timeouts and limits correctly
-	server := &stdhttp.Server{
-		Handler:           stdhttp.HandlerFunc(h.ServeHTTP),
-		ReadHeaderTimeout: h.readHeaderTimeout,
-		MaxHeaderBytes:    h.maxHeaderBytes,
-		IdleTimeout:       h.idleTimeout,
-		BaseContext: func(l net.Listener) context.Context {
-			return ctx
-		},
-	}
-
-	// Track connection close to avoid premature return
+	// HTTP/1.x path: reuse a shared server instance to avoid per-connection
+	// server object creation on the hot path.
+	cctx := &contextConn{Conn: conn, ctx: ctx}
 	done := make(chan struct{})
+	var doneOnce sync.Once
+	closeDone := func() {
+		doneOnce.Do(func() {
+			close(done)
+		})
+	}
 	wrappedConn := &closeNotifyConn{
-		Conn: conn,
-		onClose: func() {
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		},
+		Conn:    cctx,
+		onClose: closeDone,
+	}
+	ln := &oneShotListener{
+		conn:      wrappedConn,
+		addr:      conn.LocalAddr(),
+		done:      done,
+		closeDone: closeDone,
 	}
 
-	ln := &oneShotListener{conn: wrappedConn, addr: conn.LocalAddr()}
-
-	// 使用 WaitGroup 确保 goroutine 正确退出
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	// serve in background (it will return quickly due to one-shot listener)
 	go func() {
-		defer wg.Done()
-		_ = server.Serve(ln)
+		select {
+		case <-ctx.Done():
+			_ = wrappedConn.Close()
+		case <-done:
+		}
 	}()
 
-	// Wait for connection to be closed by http.Server (IdleTimeout) or Hijacker
-	select {
-	case <-done:
-	case <-ctx.Done():
-		server.Close()
+	err := h.http1ServerForHandle().Serve(ln)
+	closeDone()
+	if err == nil {
+		return nil
 	}
+	if errors.Is(err, stdhttp.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	if strings.Contains(err.Error(), "use of closed network connection") {
+		return nil
+	}
+	return err
+}
 
-	// 等待 server goroutine 完全退出，防止泄露
-	wg.Wait()
+type contextConn struct {
+	net.Conn
+	ctx context.Context
+}
 
-	return nil
+func (c *contextConn) Context() context.Context {
+	return c.ctx
 }
 
 type closeNotifyConn struct {
@@ -213,31 +242,63 @@ type closeNotifyConn struct {
 }
 
 func (c *closeNotifyConn) Close() error {
-	c.once.Do(c.onClose)
+	if c.onClose != nil {
+		c.once.Do(c.onClose)
+	}
 	return c.Conn.Close()
 }
 
+func (h *Handler) http1ServerForHandle() *stdhttp.Server {
+	h.http1ServerOnce.Do(func() {
+		h.http1Server = &stdhttp.Server{
+			Handler:           stdhttp.HandlerFunc(h.ServeHTTP),
+			ReadHeaderTimeout: h.readHeaderTimeout,
+			MaxHeaderBytes:    h.maxHeaderBytes,
+			IdleTimeout:       h.idleTimeout,
+			ConnContext: func(base context.Context, c net.Conn) context.Context {
+				if cc, ok := c.(interface{ Context() context.Context }); ok {
+					if ctx := cc.Context(); ctx != nil {
+						return ctx
+					}
+				}
+				return base
+			},
+		}
+	})
+	return h.http1Server
+}
+
 type oneShotListener struct {
-	conn net.Conn
-	addr net.Addr
-	mu   sync.Mutex
-	done bool
+	conn      net.Conn
+	addr      net.Addr
+	done      <-chan struct{}
+	closeDone func()
+
+	mu       sync.Mutex
+	accepted bool
 }
 
 func (l *oneShotListener) Accept() (net.Conn, error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.done {
-		return nil, net.ErrClosed
+	if !l.accepted {
+		l.accepted = true
+		conn := l.conn
+		l.mu.Unlock()
+		return conn, nil
 	}
-	l.done = true
-	return l.conn, nil
+	done := l.done
+	l.mu.Unlock()
+
+	if done != nil {
+		<-done
+	}
+	return nil, net.ErrClosed
 }
 
 func (l *oneShotListener) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.done = true
+	if l.closeDone != nil {
+		l.closeDone()
+	}
 	return nil
 }
 
@@ -422,32 +483,59 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 	defer closer()
 
 	doneCh := make(chan struct{})
+	ctxDone := ctx.Done()
+	if ctxDone != nil {
+		go func() {
+			select {
+			case <-ctxDone:
+				closer()
+			case <-doneCh:
+			}
+		}()
+	}
 	defer close(doneCh)
 
+	clientDone := make(chan bool, 1)
 	go func() {
-		select {
-		case <-ctx.Done():
-			closer()
-		case <-doneCh:
-		}
-	}()
-
-	clientDone := make(chan struct{})
-	go func() {
-		defer close(clientDone)
 		_, _ = io.Copy(upstream, body)
+		halfClosed := false
 		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
+			halfClosed = true
 		}
+		clientDone <- halfClosed
 	}()
 
+	serverDone := make(chan struct{})
 	respWriter := newFlushWriter(w, fl)
-	_, _ = io.Copy(respWriter, upstream)
-	respWriter.Flush()
+	go func() {
+		defer close(serverDone)
+		_, _ = io.Copy(respWriter, upstream)
+		respWriter.Flush()
+	}()
 
-	select {
-	case <-clientDone:
-	case <-ctx.Done():
+	var forceClose <-chan time.Time
+	var timer *time.Timer
+	for {
+		select {
+		case halfClosed := <-clientDone:
+			clientDone = nil
+			if !halfClosed {
+				timer = time.NewTimer(streamNoHalfCloseGrace)
+				forceClose = timer.C
+			}
+		case <-serverDone:
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		case <-forceClose:
+			forceClose = nil
+			closer()
+		case <-ctxDone:
+			ctxDone = nil
+			closer()
+		}
 	}
 }
 
@@ -508,58 +596,15 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 			ResponseHeaderTimeout: 30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			DisableCompression:    true,
-			MaxIdleConnsPerHost:   10,
+			MaxIdleConns:          h.maxIdleConns,
+			MaxIdleConnsPerHost:   h.maxIdlePerHost,
+			MaxConnsPerHost:       h.maxConnsPerHost,
 		}
 		_ = http2.ConfigureTransport(h.transport)
 	})
 	return h.transport
 }
 
-// Warmup primes the handler's own upstream transport pool.
-func (h *Handler) Warmup(ctx context.Context, rawURL string) (int, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return 0, fmt.Errorf("warmup url is empty")
-	}
-
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, rawURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("build warmup request failed: %w", err)
-	}
-
-	scheme := strings.ToLower(strings.TrimSpace(req.URL.Scheme))
-	if scheme != "http" && scheme != "https" {
-		return 0, fmt.Errorf("warmup url scheme must be http/https")
-	}
-
-	target := req.URL.Host
-	if target == "" {
-		return 0, fmt.Errorf("warmup url missing host")
-	}
-
-	route, err := h.options.Router.Route(ctx, "tcp", target)
-	if err != nil {
-		return 0, fmt.Errorf("warmup route error: %w", err)
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
-	req.Header.Set("User-Agent", "forward-warmup/1.0")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := h.transportClient().RoundTrip(req)
-	if err != nil {
-		return 0, fmt.Errorf("warmup dial failed: %w", err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode >= 500 {
-		return resp.StatusCode, fmt.Errorf("warmup response status: %d", resp.StatusCode)
-	}
-	return resp.StatusCode, nil
-}
 
 func (h *Handler) routeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	route, _ := ctx.Value(routeKey).(chain.Route)

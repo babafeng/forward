@@ -256,3 +256,17 @@ func (r *chainRoute) Nodes() []*Node {
 	}
 	return r.nodes
 }
+
+// Close releases resources held by node transports (e.g. dial pools).
+func (r *chainRoute) Close() {
+	if r == nil {
+		return
+	}
+	for _, n := range r.nodes {
+		if tr := n.Transport(); tr != nil {
+			if c, ok := tr.(interface{ Close() error }); ok {
+				_ = c.Close()
+			}
+		}
+	}
+}

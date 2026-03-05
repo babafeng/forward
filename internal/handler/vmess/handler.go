@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
+	xmux "github.com/xtls/xray-core/common/mux"
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	xvmess "github.com/xtls/xray-core/proxy/vmess"
 	"github.com/xtls/xray-core/proxy/vmess/encoding"
+	"github.com/xtls/xray-core/transport"
 
 	pvmess "forward/base/protocol/vmess"
 	"forward/internal/chain"
@@ -21,6 +23,7 @@ import (
 	"forward/internal/metadata"
 	"forward/internal/registry"
 	"forward/internal/router"
+	"forward/internal/xraymux"
 )
 
 func init() {
@@ -128,24 +131,6 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 
 	h.options.Logger.Debug("VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
 
-	// 获取路由
-	route, err := h.options.Router.Route(ctx, network, targetAddr)
-	if err != nil {
-		h.options.Logger.Error("VMess route error: %v", err)
-		return err
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-
-	// 建立上游连接
-	targetConn, err := route.Dial(ctx, network, targetAddr)
-	if err != nil {
-		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
-		return err
-	}
-	defer targetConn.Close()
-
 	// 创建请求体读取器
 	bodyReader, err := session.DecodeRequestBody(request, conn)
 	if err != nil {
@@ -168,6 +153,32 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 		return err
 	}
 
+	if request.Command == protocol.RequestCommandMux {
+		if err := h.handleMuxSession(ctx, bodyReader, bodyWriter); err != nil {
+			h.options.Logger.Debug("VMess mux session error: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	// 获取路由
+	route, err := h.options.Router.Route(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("VMess route error: %v", err)
+		return err
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+
+	// 建立上游连接
+	targetConn, err := route.Dial(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
+		return err
+	}
+	defer targetConn.Close()
+
 	// 双向转发
 	if err := bidirectionalCopy(ctx, conn, targetConn, bodyReader, bodyWriter); err != nil && ctx.Err() == nil {
 		h.options.Logger.Debug("VMess transfer error: %v", err)
@@ -178,7 +189,24 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	return nil
 }
 
+func (h *Handler) handleMuxSession(ctx context.Context, bodyReader buf.Reader, bodyWriter buf.Writer) error {
+	dispatcher := xraymux.NewRouteDispatcher(h.options.Router, h.options.Logger)
+	worker, err := xmux.NewServerWorker(ctx, dispatcher, &transport.Link{
+		Reader: bodyReader,
+		Writer: bodyWriter,
+	})
+	if err != nil {
+		return fmt.Errorf("create mux worker: %w", err)
+	}
+	defer worker.Close()
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-worker.WaitClosed():
+		return nil
+	}
+}
 
 // bidirectionalCopy 双向复制数据
 func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.Conn, clientReader buf.Reader, clientWriter buf.Writer) error {

@@ -29,6 +29,11 @@ const (
 	DefaultMaxConnections   = 4096
 	DefaultMaxUDPSessions   = 1024
 
+	// HTTP upstream transport pooling defaults.
+	DefaultHTTPMaxIdleConns        = 2048
+	DefaultHTTPMaxIdleConnsPerHost = 512
+	DefaultHTTPMaxConnsPerHost     = 1024
+
 	CamouflageRealm     = `Authorization Required`
 	CamouflagePageTitle = "403 Forbidden"
 	CamouflagePageBody  = `<html>
@@ -114,7 +119,6 @@ type Config struct {
 
 	TProxy *TProxyConfig
 
-	WarmupURL       string
 	SubscribeURL    string
 	SubscribeFilter string
 	SubscribeUpdate int

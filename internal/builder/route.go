@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"forward/base/endpoint"
 	"forward/internal/chain"
@@ -18,6 +19,17 @@ import (
 )
 
 func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error) {
+	return buildRouteInternal(cfg, hops, false)
+}
+
+// BuildRoutePooled is like BuildRoute but enables pre-warming dial pools on
+// non-multiplexing hops.  The caller must eventually close the returned
+// route (via chainRoute.Close) to release pool resources.
+func BuildRoutePooled(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error) {
+	return buildRouteInternal(cfg, hops, true)
+}
+
+func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool bool) (chain.Route, error) {
 	if len(hops) == 0 {
 		return chain.NewRoute(), nil
 	}
@@ -134,7 +146,27 @@ func BuildRoute(cfg config.Config, hops []endpoint.Endpoint) (chain.Route, error
 			}
 		}
 
-		node := chain.NewNode(fmt.Sprintf("%s_%d", scheme, i+1), hop.Address(), chain.NewTransport(d, c))
+		// chainRoute only invokes Transport.Dial on the first hop.
+		// Pooling non-first hops adds background overhead without improving
+		// the request fast path.
+		var tr *chain.Transport
+		if enablePool && i == 0 {
+			if _, ok := d.(dialer.Multiplexer); !ok {
+				muxEnabled, _, _ := parseMuxConfig(hop.Query)
+				// Mux-enabled hops already keep long-lived transport sessions and
+				// don't benefit from an extra pre-warm dial pool.
+				if !(muxEnabled && (connectorName == "vless" || connectorName == "vmess")) {
+					poolEnabled, poolSize, poolTTL := parseDialPoolConfig(hop)
+					if poolEnabled {
+						tr = chain.NewTransportWithPoolConfig(d, c, hop.Address(), poolSize, poolTTL)
+					}
+				}
+			}
+		}
+		if tr == nil {
+			tr = chain.NewTransport(d, c)
+		}
+		node := chain.NewNode(fmt.Sprintf("%s_%d", scheme, i+1), hop.Address(), tr)
 		nodes = append(nodes, node)
 	}
 
@@ -172,11 +204,20 @@ func buildVlessConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	if hop.User != nil {
 		uuid = hop.User.Username()
 	}
-	return metadata.New(map[string]any{
+	mdMap := map[string]any{
 		metadata.KeyUUID:       uuid,
 		metadata.KeyFlow:       q.Get("flow"),
 		metadata.KeyEncryption: q.Get("encryption"),
-	})
+	}
+	mux, muxMaxStreams, muxIdle := parseMuxConfig(q)
+	mdMap[metadata.KeyMux] = mux
+	if muxMaxStreams > 0 {
+		mdMap[metadata.KeyMuxMax] = muxMaxStreams
+	}
+	if muxIdle > 0 {
+		mdMap[metadata.KeyMuxIdle] = muxIdle
+	}
+	return metadata.New(mdMap)
 }
 
 // buildVmessConnectorMetadata 为 VMess Connector 构建 metadata
@@ -191,11 +232,20 @@ func buildVmessConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
 			uuid = p // UUID 在密码
 		}
 	}
-	return metadata.New(map[string]any{
+	mdMap := map[string]any{
 		metadata.KeyUUID:     uuid,
 		metadata.KeySecurity: security,
 		metadata.KeyAlterID:  q.Get("alterId"),
-	})
+	}
+	mux, muxMaxStreams, muxIdle := parseMuxConfig(q)
+	mdMap[metadata.KeyMux] = mux
+	if muxMaxStreams > 0 {
+		mdMap[metadata.KeyMuxMax] = muxMaxStreams
+	}
+	if muxIdle > 0 {
+		mdMap[metadata.KeyMuxIdle] = muxIdle
+	}
+	return metadata.New(mdMap)
 }
 
 func buildWSDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
@@ -266,6 +316,73 @@ func buildHysteria2DialerMetadata(hop endpoint.Endpoint, cfgInsecure bool) metad
 		"ca":             strings.TrimSpace(q.Get("ca")),
 		metadata.KeyALPN: strings.TrimSpace(q.Get("alpn")),
 	})
+}
+
+func parseDialPoolConfig(hop endpoint.Endpoint) (enabled bool, poolSize int, poolTTL time.Duration) {
+	q := hop.Query
+
+	if rawEnabled := strings.TrimSpace(q.Get("pool")); rawEnabled != "" {
+		if v, err := strconv.ParseBool(rawEnabled); err == nil {
+			enabled = v
+			if !enabled {
+				return false, 0, 0
+			}
+		}
+	}
+
+	rawSize := strings.TrimSpace(q.Get("pool_size"))
+	if rawSize != "" {
+		enabled = true
+		if n, err := strconv.Atoi(rawSize); err == nil && n > 0 {
+			poolSize = n
+		}
+	}
+
+	rawTTL := strings.TrimSpace(q.Get("pool_ttl"))
+	if rawTTL == "" {
+		return enabled, poolSize, 0
+	}
+	enabled = true
+
+	if d, err := time.ParseDuration(rawTTL); err == nil && d > 0 {
+		return enabled, poolSize, d
+	}
+	if sec, err := strconv.Atoi(rawTTL); err == nil && sec > 0 {
+		return enabled, poolSize, time.Duration(sec) * time.Second
+	}
+	return enabled, poolSize, 0
+}
+
+func parseMuxConfig(q url.Values) (enabled bool, maxStreams int, idle time.Duration) {
+	rawMux := strings.TrimSpace(q.Get("mux"))
+	if rawMux != "" {
+		if v, err := strconv.ParseBool(rawMux); err == nil {
+			enabled = v
+		}
+	}
+
+	rawMax := strings.TrimSpace(q.Get("mux_max_streams"))
+	if rawMax == "" {
+		rawMax = strings.TrimSpace(q.Get("mux_concurrency"))
+	}
+	if rawMax != "" {
+		if n, err := strconv.Atoi(rawMax); err == nil && n > 0 {
+			maxStreams = n
+		}
+	}
+
+	rawIdle := strings.TrimSpace(q.Get("mux_idle"))
+	if rawIdle == "" {
+		rawIdle = strings.TrimSpace(q.Get("mux_idle_timeout"))
+	}
+	if rawIdle != "" {
+		if d, err := time.ParseDuration(rawIdle); err == nil && d > 0 {
+			idle = d
+		} else if sec, err := strconv.Atoi(rawIdle); err == nil && sec > 0 {
+			idle = time.Duration(sec) * time.Second
+		}
+	}
+	return enabled, maxStreams, idle
 }
 
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {

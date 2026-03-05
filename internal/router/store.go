@@ -16,6 +16,7 @@ type StoreRouter struct {
 
 	mu           sync.RWMutex
 	proxies      map[string]proxyRoute
+	chainCache   map[string]cachedChainRoute
 	proxyBuilder func(name string) (chain.Route, error)
 }
 
@@ -24,20 +25,26 @@ type proxyRoute struct {
 	version uint64
 }
 
+type cachedChainRoute struct {
+	route   chain.Route
+	version uint64
+}
+
 func NewStore(store *route.Store, defaultRoute chain.Route, proxies map[string]chain.Route) *StoreRouter {
-	cache := map[string]proxyRoute{}
+	r := &StoreRouter{
+		store:        store,
+		defaultRoute: defaultRoute,
+		proxies:      make(map[string]proxyRoute),
+		chainCache:   make(map[string]cachedChainRoute),
+	}
 	for name, rt := range proxies {
 		normalized := route.NormalizeProxyName(name)
 		if normalized == "" {
 			continue
 		}
-		cache[normalized] = proxyRoute{route: rt}
+		r.proxies[normalized] = proxyRoute{route: rt}
 	}
-	return &StoreRouter{
-		store:        store,
-		defaultRoute: defaultRoute,
-		proxies:      cache,
-	}
+	return r
 }
 
 func (r *StoreRouter) SetProxyBuilder(builder func(name string) (chain.Route, error)) {
@@ -47,6 +54,8 @@ func (r *StoreRouter) SetProxyBuilder(builder func(name string) (chain.Route, er
 	r.mu.Lock()
 	r.proxyBuilder = builder
 	r.mu.Unlock()
+	// Builder change may alter per-hop routes; drop composed cache.
+	r.clearChainCache()
 }
 
 func (r *StoreRouter) Route(ctx context.Context, network, address string) (chain.Route, error) {
@@ -73,6 +82,18 @@ func (r *StoreRouter) Route(ctx context.Context, network, address string) (chain
 		return r.fallback(), err
 	}
 
+	version := uint64(0)
+	if r.store != nil {
+		version = r.store.Version()
+	}
+	cacheKey := strings.Join(names, "->")
+	r.mu.RLock()
+	if entry, ok := r.chainCache[cacheKey]; ok && entry.route != nil && entry.version == version {
+		r.mu.RUnlock()
+		return entry.route, nil
+	}
+	r.mu.RUnlock()
+
 	nodes := make([]*chain.Node, 0, len(names))
 	for _, name := range names {
 		rt, err := r.resolveProxy(name)
@@ -84,7 +105,11 @@ func (r *StoreRouter) Route(ctx context.Context, network, address string) (chain
 	if len(nodes) == 0 {
 		return r.fallback(), nil
 	}
-	return chain.NewRoute(nodes...), nil
+	composed := chain.NewRoute(nodes...)
+	r.mu.Lock()
+	r.chainCache[cacheKey] = cachedChainRoute{route: composed, version: version}
+	r.mu.Unlock()
+	return composed, nil
 }
 
 func (r *StoreRouter) fallback() chain.Route {
@@ -133,12 +158,20 @@ func (r *StoreRouter) resolveProxy(name string) (chain.Route, error) {
 	}
 
 	r.mu.Lock()
-	if r.proxies == nil {
-		r.proxies = map[string]proxyRoute{}
-	}
 	r.proxies[normalized] = proxyRoute{route: rt, version: version}
 	r.mu.Unlock()
+	// Proxy route refresh can change multi-hop composition.
+	r.clearChainCache()
 	return rt, nil
+}
+
+func (r *StoreRouter) clearChainCache() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.chainCache = make(map[string]cachedChainRoute)
+	r.mu.Unlock()
 }
 
 func normalizeDecisionChain(decision route.Decision) []string {

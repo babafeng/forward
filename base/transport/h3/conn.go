@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,12 @@ import (
 	"time"
 
 	"forward/base/logging"
+)
+
+const (
+	writeBatchMaxBytes = 256 * 1024
+	// Keep at zero to avoid injecting extra first-byte latency.
+	writeBatchWait = 0 * time.Millisecond
 )
 
 func NewClientConn(client *http.Client, pushURL, pullURL, secret string, remoteAddr net.Addr, logger *logging.Logger) net.Conn {
@@ -24,6 +31,7 @@ func NewClientConn(client *http.Client, pushURL, pullURL, secret string, remoteA
 		pushURL:    pushURL,
 		pullURL:    pullURL,
 		secret:     secret,
+		txc:        make(chan []byte, 256),
 		rxc:        make(chan []byte, 128),
 		closed:     make(chan struct{}),
 		localAddr:  &net.TCPAddr{},
@@ -31,6 +39,7 @@ func NewClientConn(client *http.Client, pushURL, pullURL, secret string, remoteA
 		logger:     logger,
 	}
 	go c.readLoop()
+	go c.writeLoop()
 	return c
 }
 
@@ -54,6 +63,7 @@ type clientConn struct {
 	pullURL    string
 	secret     string
 	buf        []byte
+	txc        chan []byte
 	rxc        chan []byte
 	closed     chan struct{}
 	mu         sync.Mutex
@@ -80,28 +90,120 @@ func (c *clientConn) Write(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
-	return c.write(b)
-}
-
-func (c *clientConn) write(b []byte) (n int, err error) {
 	if c.isClosed() {
 		return 0, io.ErrClosedPipe
 	}
 
-	var r io.Reader
-	if len(b) > 0 {
-		buf := bytes.NewBufferString(base64.StdEncoding.EncodeToString(b))
-		buf.WriteByte('\n')
-		r = buf
+	// Copy caller buffer; writes are batched asynchronously into POST bodies.
+	pkt := append([]byte(nil), b...)
+	select {
+	case c.txc <- pkt:
+		return len(b), nil
+	case <-c.closed:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (c *clientConn) writeLoop() {
+	batch := make([][]byte, 0, 32)
+	for {
+		var first []byte
+		select {
+		case first = <-c.txc:
+		case <-c.closed:
+			return
+		}
+		if len(first) == 0 {
+			continue
+		}
+
+		total := len(first)
+		batch = append(batch, first)
+
+		if writeBatchWait > 0 {
+			timer := time.NewTimer(writeBatchWait)
+		drainTimed:
+			for total < writeBatchMaxBytes {
+				select {
+				case pkt := <-c.txc:
+					if len(pkt) == 0 {
+						continue
+					}
+					total += len(pkt)
+					batch = append(batch, pkt)
+					if total >= writeBatchMaxBytes {
+						break drainTimed
+					}
+				case <-timer.C:
+					break drainTimed
+				case <-c.closed:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return
+				}
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		} else {
+		drainImmediate:
+			for total < writeBatchMaxBytes {
+				select {
+				case pkt := <-c.txc:
+					if len(pkt) == 0 {
+						continue
+					}
+					total += len(pkt)
+					batch = append(batch, pkt)
+				case <-c.closed:
+					return
+				default:
+					break drainImmediate
+				}
+			}
+		}
+
+		if err := c.postBatch(batch); err != nil {
+			if c.logger != nil {
+				c.logger.Debug("pht: client write loop error: %v", err)
+			}
+			_ = c.Close()
+			return
+		}
+		batch = batch[:0]
+	}
+}
+
+func (c *clientConn) postBatch(batch [][]byte) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	var payload bytes.Buffer
+	for _, pkt := range batch {
+		if len(pkt) == 0 {
+			continue
+		}
+		payload.WriteString(base64.StdEncoding.EncodeToString(pkt))
+		payload.WriteByte('\n')
+	}
+	if payload.Len() == 0 {
+		return nil
 	}
 
-	// 使用带超时的 context 避免请求卡死
+	// Bound request time to avoid blocking the write loop indefinitely.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.pushURL, r)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.pushURL, &payload)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if c.secret != "" {
 		req.Header.Set("X-PHT-Secret", c.secret)
@@ -109,15 +211,15 @@ func (c *clientConn) write(b []byte) (n int, err error) {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, errors.New(resp.Status)
+		return fmt.Errorf("push batch failed: %s", resp.Status)
 	}
 
-	return len(b), nil
+	return nil
 }
 
 func (c *clientConn) readLoop() {
@@ -197,9 +299,7 @@ func (c *clientConn) Close() error {
 		close(c.closed)
 	}
 	c.mu.Unlock()
-
-	_, err := c.write(nil)
-	return err
+	return nil
 }
 
 func (c *clientConn) isClosed() bool {
