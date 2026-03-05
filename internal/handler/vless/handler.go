@@ -13,10 +13,12 @@ import (
 	"unsafe"
 
 	"github.com/xtls/xray-core/common/buf"
+	xmux "github.com/xtls/xray-core/common/mux"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/proxy"
 	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vless/encoding"
+	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"github.com/xtls/xray-core/transport/internet/tls"
@@ -26,6 +28,7 @@ import (
 	"forward/internal/metadata"
 	"forward/internal/registry"
 	"forward/internal/router"
+	"forward/internal/xraymux"
 )
 
 func init() {
@@ -96,24 +99,6 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 		}
 	}
 
-	// 获取路由
-	route, err := h.options.Router.Route(ctx, network, targetAddr)
-	if err != nil {
-		h.options.Logger.Error("VLESS route error: %v", err)
-		return err
-	}
-	if route == nil {
-		route = chain.NewRoute()
-	}
-
-	// 建立上游连接
-	targetConn, err := route.Dial(ctx, network, targetAddr)
-	if err != nil {
-		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
-		return err
-	}
-	defer targetConn.Close()
-
 	// 设置流量状态
 	trafficState := proxy.NewTrafficState(userSentID)
 	clientReader := encoding.DecodeBodyAddons(reader, request, requestAddons)
@@ -141,6 +126,32 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 
 	clientWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, false, ctx, conn, nil)
 
+	if request.Command == protocol.RequestCommandMux {
+		if err := h.handleMuxSession(ctx, conn, clientReader, clientWriter); err != nil {
+			h.options.Logger.Error("VLESS mux session error: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	// 获取路由
+	route, err := h.options.Router.Route(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("VLESS route error: %v", err)
+		return err
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+
+	// 建立上游连接
+	targetConn, err := route.Dial(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
+		return err
+	}
+	defer targetConn.Close()
+
 	targetReader := buf.NewReader(targetConn)
 	targetWriter := buf.NewWriter(targetConn)
 
@@ -156,6 +167,25 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 
 	h.options.Logger.Debug("VLESS closed %s -> %s", conn.RemoteAddr(), targetAddr)
 	return nil
+}
+
+func (h *Handler) handleMuxSession(ctx context.Context, conn net.Conn, clientReader buf.Reader, clientWriter buf.Writer) error {
+	dispatcher := xraymux.NewRouteDispatcher(h.options.Router, h.options.Logger)
+	worker, err := xmux.NewServerWorker(ctx, dispatcher, &transport.Link{
+		Reader: clientReader,
+		Writer: clientWriter,
+	})
+	if err != nil {
+		return fmt.Errorf("create mux worker: %w", err)
+	}
+	defer worker.Close()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-worker.WaitClosed():
+		return nil
+	}
 }
 
 func (h *Handler) readRequest(conn net.Conn) (*buf.BufferedReader, []byte, *protocol.RequestHeader, *encoding.Addons, error) {

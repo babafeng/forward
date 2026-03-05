@@ -23,6 +23,9 @@ const (
 	KeyPath        = "path"
 	KeyMethod      = "method"
 	KeyPassword    = "password"
+	KeyMux         = "mux"
+	KeyMuxMax      = "mux_max_streams"
+	KeyMuxIdle     = "mux_idle"
 )
 
 type Metadata interface {

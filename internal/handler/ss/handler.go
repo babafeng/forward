@@ -4,15 +4,14 @@ package ss
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"sync"
 	"time"
 
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 
+	inet "forward/base/io/net"
 	pss "forward/base/protocol/shadowsocks"
 	"forward/internal/chain"
 	"forward/internal/handler"
@@ -96,8 +95,6 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	return h.service.NewConnection(ctx, conn, md)
 }
 
-
-
 // ssHandler 实现 shadowsocks.Handler 接口，处理解密后的连接
 type ssHandler struct {
 	h *Handler
@@ -152,55 +149,8 @@ func (s *ssHandler) NewError(ctx context.Context, err error) {
 
 // bidirectionalCopy 双向复制数据
 func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.Conn) error {
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = clientConn.Close()
-			_ = targetConn.Close()
-		case <-stop:
-		}
-	}()
-
-	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// client -> target
-	go func() {
-		defer wg.Done()
-		_, err := io.Copy(targetConn, clientConn)
-		errCh <- err
-		// 半关闭
-		if c, ok := targetConn.(interface{ CloseWrite() error }); ok {
-			_ = c.CloseWrite()
-		}
-	}()
-
-	// target -> client
-	go func() {
-		defer wg.Done()
-		_, err := io.Copy(clientConn, targetConn)
-		errCh <- err
-		// 半关闭
-		if c, ok := clientConn.(interface{ CloseWrite() error }); ok {
-			_ = c.CloseWrite()
-		}
-	}()
-
-	wg.Wait()
-	close(stop)
-
-	_ = clientConn.Close()
-	_ = targetConn.Close()
-
-	var first error
-	for i := 0; i < 2; i++ {
-		if err := <-errCh; err != nil && first == nil && err != io.EOF {
-			first = err
-		}
-	}
-	return first
+	_, _, err := inet.Bidirectional(ctx, clientConn, targetConn)
+	return err
 }
 
 // SetReadDeadline 设置读取超时的辅助函数

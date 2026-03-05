@@ -152,23 +152,56 @@ forward -L socks5://127.0.0.1:1080 -F quic://S2:1080 -F quic://S1:443
 * QUIC/HTTP3 协议需要底层支持 UDP，因此不能直接建在纯 TCP 转发（如 http）上
 * VLESS 协议在多跳场景下仅支持 TCP 传输模式
 
-**链路预热（减少首请求延迟）：**
+### VLESS/VMess 数据面 Mux 复用（转发链）
+
+`mux` 参数用于 `-F` 上游 URL（转发端），不是 `-L` 监听 URL。
 
 ```bash
-# 启动后自动发送一次预热请求（默认: http://www.gstatic.com/generate_204）
-forward -L http://:1000 -F vmess://... -F vmess://... --warmup
+# 单跳示例（VLESS）
+forward -L http://:1080 \
+  -F "vless://uuid@node:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=swscan.apple.com&sid=xxxx&fp=chrome&type=tcp&mux=true&mux_max_streams=64&mux_idle=120s"
 
-# 指定预热地址
-forward -L http://:1000 -F vmess://... --warmup --warmup-url http://www.gstatic.com/generate_204
+# 双跳示例（两个 -F 都可开启 mux）
+forward -L http://:1000 \
+  -F "vless://uuid@127.0.0.1:1443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=swscan.apple.com&sid=xxxx&fp=chrome&type=tcp&mux=true&mux_max_streams=64&mux_idle=120s" \
+  -F "vless://uuid@127.0.0.1:2443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=swscan.apple.com&sid=xxxx&fp=chrome&type=tcp&mux=true&mux_max_streams=64&mux_idle=120s"
+```
+
+参数说明：
+* `mux=true`：开启数据面 mux 复用。
+* `mux_max_streams=64`：单 mux 连接最大并发子流数。
+* `mux_idle=120s`：mux 空闲超时（可写秒数，如 `120`）。
+* 兼容别名：`mux_concurrency` 等价 `mux_max_streams`，`mux_idle_timeout` 等价 `mux_idle`。
+
+兼容性说明：
+* 服务端需支持 VLESS/VMess `RequestCommandMux`（`v1.mux.cool` 数据面）。
+* 若 mux 建链失败，会自动 fallback 到普通转发（直连模式）。
+
+### DialPool 预热池（默认关闭）
+
+为避免空闲预热连接带来的额外开销，DialPool 现已默认关闭。仅在显式配置时启用。
+
+```bash
+# 显式开启预热池
+forward -L http://:1080 -F "socks5://node:1080?pool=true&pool_size=16&pool_ttl=120s"
+
+# 显式关闭（即使带了 pool_size/pool_ttl 也会强制关闭）
+forward -L http://:1080 -F "socks5://node:1080?pool=false&pool_size=16&pool_ttl=120s"
 ```
 
 说明：
-* 预热现在会通过 HTTP 处理器的连接池执行，请尽量将 `--warmup-url` 设为你首个真实访问的目标域名（同域名复用效果最佳）。
+* `pool=true`：开启预热池。
+* `pool_size` / `pool_ttl`：分别表示池大小和空闲连接 TTL。
+* 在 `vless/vmess + mux=true` 场景下，会自动跳过 DialPool，避免重复连接复用层。
+
+### H2/H3 PHT 首字节延迟优化
+
+PHT 客户端写入批处理默认不再额外等待 `2ms` 时间窗（改为立即 drain 队列发送），用于降低交互型流量首字节延迟。
 
 **订阅节点支持：**
 
 你可以使用 `-S` 或 `--subscribe` 提供订阅链接，并通过 `--filter` 指定过滤表达式。
-订阅响应支持：Clash YAML、base64 编码 YAML、base64 编码 URI 列表、纯文本 URI 列表。  
+订阅响应支持：Clash YAML、base64 编码 YAML、base64 编码 URI 列表、纯文本 URI 列表。
 目前支持节点协议：vmess, vless, hysteria2, trojan, ss 等；不支持的协议会被自动忽略。
 
 过滤表达式语法（单个 `--filter` 参数）：

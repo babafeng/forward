@@ -390,43 +390,54 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	conn := sess.conn
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxPushBytes)
-	br := bufio.NewReader(r.Body)
-	data, err := br.ReadString('\n')
-	if err != nil {
-		if err != io.EOF && s.options.logger != nil {
-			s.options.logger.Error("pht: push read error: %v", err)
-		}
-		conn.Close()
-		s.conns.Delete(cid)
-		return
-	}
-
-	data = strings.TrimSuffix(data, "\n")
-	if len(data) == 0 {
-		return
-	}
-
-	b, err := base64.StdEncoding.DecodeString(data)
-	if err != nil {
-		if s.options.logger != nil {
-			s.options.logger.Error("pht: push decode error: %v", err)
-		}
-		s.conns.Delete(cid)
-		conn.Close()
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
+	scanner := bufio.NewScanner(r.Body)
+	scanner.Buffer(make([]byte, 64*1024), maxPushBytes+1)
 	_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	defer conn.SetWriteDeadline(time.Time{})
 
-	if _, err := conn.Write(b); err != nil {
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		b, err := base64.StdEncoding.DecodeString(line)
+		if err != nil {
+			if s.options.logger != nil {
+				s.options.logger.Error("pht: push decode error: %v", err)
+			}
+			s.conns.Delete(cid)
+			conn.Close()
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(b) == 0 {
+			continue
+		}
+
+		if _, err := conn.Write(b); err != nil {
+			if s.options.logger != nil {
+				s.options.logger.Error("pht: push write error: %v", err)
+			}
+			s.conns.Delete(cid)
+			conn.Close()
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
 		if s.options.logger != nil {
-			s.options.logger.Error("pht: push write error: %v", err)
+			s.options.logger.Error("pht: push read error: %v", err)
 		}
 		s.conns.Delete(cid)
 		conn.Close()
-		w.WriteHeader(http.StatusGone)
+		if errors.Is(err, bufio.ErrTooLong) {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+		}
+		return
 	}
 }
 
