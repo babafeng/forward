@@ -17,20 +17,27 @@ func RouteSummary(rt Route) string {
 		if node == nil {
 			continue
 		}
-		if node.Display != "" {
-			parts = append(parts, node.Display)
-			continue
-		}
-		name := node.Name
-		if name == "" {
-			name = node.Addr
-		} else if node.Addr != "" && name != node.Addr {
-			name = name + "(" + node.Addr + ")"
-		}
-		parts = append(parts, name)
+		parts = append(parts, summarizeNode(node))
 	}
 	if len(parts) == 0 {
 		return "DIRECT"
 	}
 	return strings.Join(parts, " -> ")
+}
+
+func summarizeNode(node *Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Display != "" {
+		return "[" + node.Display + "]"
+	}
+	name := node.Name
+	if name == "" {
+		return node.Addr
+	}
+	if node.Addr != "" && name != node.Addr {
+		return name + "(" + node.Addr + ")"
+	}
+	return name
 }

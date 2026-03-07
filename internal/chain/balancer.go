@@ -199,10 +199,7 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 	var lastErr error
 
 	// 按顺序尝试最佳节点，最多尝试前3个，防止无限重试耗时太长
-	maxTries := 3
-	if len(nodes) < maxTries {
-		maxTries = len(nodes)
-	}
+	maxTries := len(nodes)
 
 	for i := 0; i < maxTries; i++ {
 		node := nodes[i]

@@ -201,6 +201,7 @@ PHT 客户端写入批处理默认不再额外等待 `2ms` 时间窗（改为立
 **订阅节点支持：**
 
 你可以使用 `-S` 或 `--subscribe` 提供订阅链接，并通过 `--filter` 指定过滤表达式。
+`-S/--subscribe` 支持重复传入，也支持在单个参数里用逗号分隔多个订阅链接。
 订阅响应支持：Clash YAML、base64 编码 YAML、base64 编码 URI 列表、纯文本 URI 列表。
 目前支持节点协议：vmess, vless, hysteria2, trojan, ss 等；不支持的协议会被自动忽略。
 
@@ -212,10 +213,20 @@ PHT 客户端写入批处理默认不再额外等待 `2ms` 时间窗（改为立
 
 说明：
 * `--filter` 不是可重复叠加参数；重复传入时以后一个值为准。
+* 多个订阅源会先聚合，再统一过滤和去重；只要至少一个订阅源成功，就会继续构建可用节点。
 
 ```bash
 # 获取订阅中的所有可用节点进行智能建连
 forward -L http://:1080 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx"
+
+# 多订阅：推荐重复使用 -S
+forward -L http://:1080 \
+  -S "https://sub-a.website.com/api/v1/client/subscribe?token=xxxx" \
+  -S "https://sub-b.website.com/api/v1/client/subscribe?token=xxxx"
+
+# 多订阅：也支持单个 -S 里使用逗号分隔
+forward -L http://:1080 \
+  -S "https://sub-a.website.com/api/v1/client/subscribe?token=xxxx, https://sub-b.website.com/api/v1/client/subscribe?token=xxxx"
 
 # 结合过滤规则，仅使用节点名包含 "Hong Kong" 且不含 "01" 的节点
 forward -L http://:1080 --subscribe "https://sub.website.com/api/v1/client/subscribe?token=xxxx" --filter "Hong Kong&?!01"
@@ -229,6 +240,23 @@ forward -L http://local:8080 -S "https://sub.website.com/api/v1/client/subscribe
 # 同样支持作为单双跳转发链节点结合使用
 forward -L tcp://:2222/127.0.0.1:22 -S "https://sub.website.com/api/v1/client/subscribe?token=xxxx"
 ```
+
+JSON 配置文件同样支持多订阅：
+
+```json
+{
+  "listen": "http://:1080",
+  "subscribes": [
+    "https://sub-a.website.com/api/v1/client/subscribe?token=xxxx",
+    "https://sub-b.website.com/api/v1/client/subscribe?token=xxxx"
+  ],
+  "filter": "日本"
+}
+```
+
+兼容说明：
+* 旧的 `subscribe` 字段保持不变，继续接受单个字符串。
+* 新增的 `subscribes` 字段接受字符串数组。
 
 ### 内网反向转发（Intranet Reverse Proxy）
 
@@ -295,6 +323,27 @@ forward -C config.json
   "debug_verbose": false
 }
 ```
+
+**订阅配置格式：**
+
+```json
+{
+  "listen": "http://:1080",
+  "subscribe": "https://sub-a.website.com/api/v1/client/subscribe?token=xxxx",
+  "subscribes": [
+    "https://sub-b.website.com/api/v1/client/subscribe?token=yyyy",
+    "https://sub-c.website.com/api/v1/client/subscribe?token=zzzz"
+  ],
+  "filter": "日本|JP",
+  "update": 60
+}
+```
+
+说明：
+
+* `subscribe` 继续接受单个字符串，保持兼容旧配置。
+* `subscribes` 接受字符串数组，用于声明多个订阅源。
+* 当 `subscribe` 与 `subscribes` 同时存在时，会合并后一起拉取。
 
 **链式转发示例：**
 

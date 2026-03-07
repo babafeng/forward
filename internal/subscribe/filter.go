@@ -26,7 +26,7 @@ func FilterProxies(proxies []ClashProxy, expr string) []ClashProxy {
 
 	var result []ClashProxy
 	for _, p := range proxies {
-		if matcher(p.Name) {
+		if matcher(NormalizeProxyName(p.Name)) {
 			result = append(result, p)
 		}
 	}

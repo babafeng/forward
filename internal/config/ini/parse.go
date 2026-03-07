@@ -98,6 +98,16 @@ func Parse(data []byte) (config.Config, error) {
 	if subURL == "" {
 		subURL = strings.TrimSpace(general["subscirbe"])
 	}
+	legacySubURLs := parseCommaList(subURL)
+	if len(legacySubURLs) == 0 && subURL != "" {
+		legacySubURLs = []string{subURL}
+	}
+	subURLs := config.NormalizeSubscribeURLs("", append(legacySubURLs, parseCommaList(general["subscribes"])...))
+	if len(legacySubURLs) > 0 {
+		subURL = legacySubURLs[0]
+	} else if len(subURLs) > 0 {
+		subURL = subURLs[0]
+	}
 	subUpdate, _ := strconv.Atoi(strings.TrimSpace(general["update"]))
 	cfg := config.Config{
 		Listeners:       listeners,
@@ -106,6 +116,7 @@ func Parse(data []byte) (config.Config, error) {
 		LogLevel:        llevel,
 		DebugVerbose:    debugVerbose,
 		SubscribeURL:    subURL,
+		SubscribeURLs:   subURLs,
 		SubscribeFilter: strings.TrimSpace(general["filter"]),
 		SubscribeUpdate: subUpdate,
 	}
@@ -152,8 +163,10 @@ func Parse(data []byte) (config.Config, error) {
 
 	cfg.Route = rcfg
 	cfg.Nodes = []config.NodeConfig{{
-		Name:      "default",
-		Listeners: listeners,
+		Name:          "default",
+		Listeners:     listeners,
+		SubscribeURL:  subURL,
+		SubscribeURLs: subURLs,
 	}}
 
 	config.ApplyDefaults(&cfg)
