@@ -79,7 +79,7 @@ func Parse(data []byte) ([]ClashProxy, error) {
 
 	// 1. 先尝试 Clash YAML
 	if proxies, err := parseClashYAML([]byte(text)); err == nil && len(proxies) > 0 {
-		return proxies, nil
+		return normalizeProxyNames(proxies), nil
 	}
 
 	// 2. 尝试 base64 解码
@@ -88,18 +88,18 @@ func Parse(data []byte) ([]ClashProxy, error) {
 
 		// 2a. 解码后尝试 Clash YAML
 		if proxies, err := parseClashYAML([]byte(decodedStr)); err == nil && len(proxies) > 0 {
-			return proxies, nil
+			return normalizeProxyNames(proxies), nil
 		}
 
 		// 2b. 解码后尝试 URI 列表
 		if proxies, err := parseURIList(decodedStr); err == nil && len(proxies) > 0 {
-			return proxies, nil
+			return normalizeProxyNames(proxies), nil
 		}
 	}
 
 	// 3. 尝试纯文本 URI 列表
 	if proxies, err := parseURIList(text); err == nil && len(proxies) > 0 {
-		return proxies, nil
+		return normalizeProxyNames(proxies), nil
 	}
 
 	return nil, fmt.Errorf("订阅内容格式无法识别（不是 Clash YAML 也不是 base64 编码的代理 URI 列表）")

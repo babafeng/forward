@@ -242,7 +242,7 @@ func labelNode(n *Node) string {
 		return ""
 	}
 	if n.Display != "" {
-		return n.Display
+		return "[" + n.Display + "]"
 	}
 	if n.Name != "" {
 		return n.Name

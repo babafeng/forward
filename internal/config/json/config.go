@@ -39,28 +39,30 @@ func FindDefaultConfig() (string, error) {
 }
 
 type NodeFileConfig struct {
-	Name      string   `json:"name"`
-	Listeners []string `json:"listeners"`
-	Listen    string   `json:"listen,omitempty"`
-	Forward   string   `json:"forward,omitempty"`
-	Forwards  []string `json:"forwards,omitempty"`
+	Name            string   `json:"name"`
+	Listeners       []string `json:"listeners"`
+	Listen          string   `json:"listen,omitempty"`
+	Forward         string   `json:"forward,omitempty"`
+	Forwards        []string `json:"forwards,omitempty"`
 	Insecure        bool     `json:"insecure,omitempty"`
 	Subscribe       string   `json:"subscribe,omitempty"`
+	Subscribes      []string `json:"subscribes,omitempty"`
 	SubscribeTypo   string   `json:"subscirbe,omitempty"`
 	SubscribeFilter string   `json:"filter,omitempty"`
 	SubscribeUpdate int      `json:"update,omitempty"`
 }
 
 type FileConfig struct {
-	Nodes        []NodeFileConfig `json:"nodes,omitempty"`
-	Listeners    []string         `json:"listeners,omitempty"`
-	Listen       string           `json:"listen,omitempty"`
-	Forward      string           `json:"forward,omitempty"`
-	Forwards     []string         `json:"forwards,omitempty"`
-	Insecure     bool             `json:"insecure,omitempty"`
-	Debug        bool             `json:"debug,omitempty"`
+	Nodes           []NodeFileConfig `json:"nodes,omitempty"`
+	Listeners       []string         `json:"listeners,omitempty"`
+	Listen          string           `json:"listen,omitempty"`
+	Forward         string           `json:"forward,omitempty"`
+	Forwards        []string         `json:"forwards,omitempty"`
+	Insecure        bool             `json:"insecure,omitempty"`
+	Debug           bool             `json:"debug,omitempty"`
 	DebugVerbose    bool             `json:"debug_verbose,omitempty"`
 	Subscribe       string           `json:"subscribe,omitempty"`
+	Subscribes      []string         `json:"subscribes,omitempty"`
 	SubscribeTypo   string           `json:"subscirbe,omitempty"`
 	SubscribeFilter string           `json:"filter,omitempty"`
 	SubscribeUpdate int              `json:"update,omitempty"`
@@ -114,13 +116,14 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	}
 
 	node, err := parseNode(NodeFileConfig{
-		Name:      "default",
-		Listeners: fc.Listeners,
-		Listen:    fc.Listen,
-		Forward:   fc.Forward,
+		Name:            "default",
+		Listeners:       fc.Listeners,
+		Listen:          fc.Listen,
+		Forward:         fc.Forward,
 		Forwards:        fc.Forwards,
 		Insecure:        fc.Insecure,
 		Subscribe:       fc.Subscribe,
+		Subscribes:      fc.Subscribes,
 		SubscribeTypo:   fc.SubscribeTypo,
 		SubscribeFilter: fc.SubscribeFilter,
 		SubscribeUpdate: fc.SubscribeUpdate,
@@ -136,6 +139,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	cfg.ForwardChain = node.ForwardChain
 	cfg.Insecure = node.Insecure
 	cfg.SubscribeURL = node.SubscribeURL
+	cfg.SubscribeURLs = append([]string(nil), node.SubscribeURLs...)
 	cfg.SubscribeFilter = node.SubscribeFilter
 	cfg.SubscribeUpdate = node.SubscribeUpdate
 
@@ -148,11 +152,16 @@ func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 		Name:            n.Name,
 		Insecure:        n.Insecure,
 		SubscribeURL:    n.Subscribe,
+		SubscribeURLs:   config.NormalizeSubscribeURLs("", n.Subscribes),
 		SubscribeFilter: n.SubscribeFilter,
 		SubscribeUpdate: n.SubscribeUpdate,
 	}
 	if node.SubscribeURL == "" {
 		node.SubscribeURL = n.SubscribeTypo
+	}
+	node.SubscribeURLs = config.NormalizeSubscribeURLs(node.SubscribeURL, node.SubscribeURLs)
+	if node.SubscribeURL == "" && len(node.SubscribeURLs) > 0 {
+		node.SubscribeURL = node.SubscribeURLs[0]
 	}
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("node_%d", index)
