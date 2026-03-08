@@ -39,8 +39,9 @@ func TestBalancerRouteWithCandidatesDialUsesCandidateRoute(t *testing.T) {
 }
 
 type fakeRoute struct {
-	nodes []*Node
-	calls atomic.Int32
+	nodes  []*Node
+	calls  atomic.Int32
+	closed atomic.Int32
 }
 
 func (r *fakeRoute) Dial(_ context.Context, _ string, _ string) (net.Conn, error) {
@@ -52,6 +53,57 @@ func (r *fakeRoute) Dial(_ context.Context, _ string, _ string) (net.Conn, error
 
 func (r *fakeRoute) Nodes() []*Node {
 	return r.nodes
+}
+
+func (r *fakeRoute) Close() {
+	r.closed.Add(1)
+}
+
+func TestBalancerRouteCloseClosesCandidateRoutes(t *testing.T) {
+	node := NewNode("sub", "127.0.0.1:1", &alwaysFailTransport{})
+	fake := &fakeRoute{nodes: []*Node{node}}
+
+	br := NewBalancerRouteWithCandidates([]BalancerCandidate{
+		{
+			Node:  node,
+			Route: fake,
+		},
+	}, time.Hour, 30*time.Millisecond)
+
+	br.Close()
+
+	if got := fake.closed.Load(); got != 1 {
+		t.Fatalf("candidate route close count = %d, want 1", got)
+	}
+}
+
+func TestBalancerRouteUpdateCandidatesClosesReplacedRoutes(t *testing.T) {
+	oldNode := NewNode("old", "127.0.0.1:1", &alwaysFailTransport{})
+	oldRoute := &fakeRoute{nodes: []*Node{oldNode}}
+	br := NewBalancerRouteWithCandidates([]BalancerCandidate{
+		{
+			Node:  oldNode,
+			Route: oldRoute,
+		},
+	}, time.Hour, 30*time.Millisecond)
+	defer br.Close()
+
+	newNode := NewNode("new", "127.0.0.1:2", &alwaysFailTransport{})
+	newRoute := &fakeRoute{nodes: []*Node{newNode}}
+
+	br.UpdateCandidates([]BalancerCandidate{
+		{
+			Node:  newNode,
+			Route: newRoute,
+		},
+	})
+
+	if got := oldRoute.closed.Load(); got != 1 {
+		t.Fatalf("old route close count = %d, want 1", got)
+	}
+	if got := newRoute.closed.Load(); got != 0 {
+		t.Fatalf("new route close count = %d, want 0 before balancer close", got)
+	}
 }
 
 type alwaysFailTransport struct{}

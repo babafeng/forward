@@ -115,16 +115,7 @@ func (h *Handler) Init(md metadata.Metadata) error {
 	if v := md.Get("udp"); v != nil {
 		h.enableUDP = parseBool(v)
 	}
-	if v := md.Get("udp_idle"); v != nil {
-		if t, ok := v.(time.Duration); ok && t > 0 {
-			h.udpIdle = t
-		}
-	}
-	if v := md.Get("max_udp_sessions"); v != nil {
-		if n, ok := v.(int); ok && n > 0 {
-			h.maxUDPSessions = n
-		}
-	}
+	corehandler.ApplyUDPRelayMetadata(md, &h.udpIdle, &h.maxUDPSessions)
 
 	if v := md.Get("read_header_timeout"); v != nil {
 		if t, ok := v.(time.Duration); ok && t > 0 {

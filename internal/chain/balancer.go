@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ type BalancerRoute struct {
 	testInterval time.Duration
 	dialTimeout  time.Duration
 	stopCh       chan struct{}
+	closeOnce    sync.Once
 }
 
 // BalancerCandidate 表示一个负载均衡候选项。
@@ -86,7 +88,16 @@ func NewBalancerRouteWithCandidates(candidates []BalancerCandidate, testInterval
 
 // Close 停止后台测速任务
 func (r *BalancerRoute) Close() {
-	close(r.stopCh)
+	if r == nil {
+		return
+	}
+	r.closeOnce.Do(func() {
+		close(r.stopCh)
+		r.mu.RLock()
+		routes := snapshotRoutes(r.routes)
+		r.mu.RUnlock()
+		closeRoutes(routes)
+	})
 }
 
 func (r *BalancerRoute) backgroundTest() {
@@ -321,6 +332,7 @@ func (r *BalancerRoute) UpdateCandidates(candidates []BalancerCandidate) {
 
 	// Hot swap
 	r.mu.Lock()
+	oldRoutes := r.routes
 
 	// Preserve latencies for identical nodes (matching address)
 	addrLatencyMap := make(map[string]time.Duration)
@@ -343,6 +355,80 @@ func (r *BalancerRoute) UpdateCandidates(candidates []BalancerCandidate) {
 	copy(r.sortedNodes, nodes)
 	r.mu.Unlock()
 
+	closeReplacedRoutes(oldRoutes, routes)
+
 	// Trigger async test to sort the new nodes
 	go r.testAll()
+}
+
+func snapshotRoutes(routes map[*Node]Route) []Route {
+	if len(routes) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(routes))
+	out := make([]Route, 0, len(routes))
+	for _, rt := range routes {
+		key := routeKey(rt)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, rt)
+	}
+	return out
+}
+
+func closeReplacedRoutes(oldRoutes, newRoutes map[*Node]Route) {
+	if len(oldRoutes) == 0 {
+		return
+	}
+	keep := make(map[string]struct{}, len(newRoutes))
+	for _, rt := range snapshotRoutes(newRoutes) {
+		keep[routeKey(rt)] = struct{}{}
+	}
+	for _, rt := range snapshotRoutes(oldRoutes) {
+		key := routeKey(rt)
+		if _, ok := keep[key]; ok {
+			continue
+		}
+		closeRoute(rt)
+	}
+}
+
+func closeRoutes(routes []Route) {
+	for _, rt := range routes {
+		closeRoute(rt)
+	}
+}
+
+func closeRoute(rt Route) {
+	if rt == nil {
+		return
+	}
+	if closer, ok := rt.(interface{ Close() }); ok {
+		closer.Close()
+		return
+	}
+	if closer, ok := rt.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
+}
+
+func routeKey(rt Route) string {
+	if rt == nil {
+		return ""
+	}
+	v := reflect.ValueOf(rt)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		if v.IsNil() {
+			return ""
+		}
+		return fmt.Sprintf("%T:%x", rt, v.Pointer())
+	default:
+		return fmt.Sprintf("%T:%v", rt, rt)
+	}
 }

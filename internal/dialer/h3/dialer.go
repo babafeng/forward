@@ -3,7 +3,6 @@ package h3
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -123,56 +122,16 @@ func (d *Dialer) Multiplex() bool {
 }
 
 func (d *Dialer) parseMetadata(md metadata.Metadata) {
-	d.md.authorizePath = "/authorize"
-	d.md.pushPath = "/push"
-	d.md.pullPath = "/pull"
-	if md == nil {
-		return
-	}
-
-	if v := getString(md.Get("authorize_path")); v != "" {
-		d.md.authorizePath = ensurePath(v, d.md.authorizePath)
-	}
-	if v := getString(md.Get("push_path")); v != "" {
-		d.md.pushPath = ensurePath(v, d.md.pushPath)
-	}
-	if v := getString(md.Get("pull_path")); v != "" {
-		d.md.pullPath = ensurePath(v, d.md.pullPath)
-	}
-	if v := getString(md.Get("host")); v != "" {
-		d.md.host = v
-	}
-
-	if getBool(md.Get("keepalive")) {
-		if v := getDuration(md.Get("ttl")); v > 0 {
-			d.md.keepAlivePeriod = v
-		}
-		if v := getDuration(md.Get("keepalive_period")); v > 0 {
-			d.md.keepAlivePeriod = v
-		}
-	}
-	if v := getDuration(md.Get("handshake_timeout")); v > 0 {
-		d.md.handshakeTimeout = v
-	}
-	if v := getDuration(md.Get("max_idle_timeout")); v > 0 {
-		d.md.maxIdleTimeout = v
-	}
-	if v := getInt(md.Get("max_streams")); v > 0 {
-		d.md.maxStreams = v
-	}
-	if v := getString(md.Get("secret")); v != "" {
-		d.md.secret = v
-	}
-}
-
-func ensurePath(v, fallback string) string {
-	if v == "" {
-		return fallback
-	}
-	if !strings.HasPrefix(v, "/") {
-		return fallback
-	}
-	return v
+	parsed := dialer.ParsePHTTransportMetadata(md)
+	d.md.authorizePath = parsed.AuthorizePath
+	d.md.pushPath = parsed.PushPath
+	d.md.pullPath = parsed.PullPath
+	d.md.host = parsed.Host
+	d.md.keepAlivePeriod = parsed.KeepAlivePeriod
+	d.md.handshakeTimeout = parsed.HandshakeTimeout
+	d.md.maxIdleTimeout = parsed.MaxIdleTimeout
+	d.md.maxStreams = parsed.MaxStreams
+	d.md.secret = parsed.Secret
 }
 
 func hostFromAddr(addr string) string {
@@ -188,66 +147,4 @@ func cloneTLSConfig(cfg *tls.Config) *tls.Config {
 		return &tls.Config{}
 	}
 	return cfg.Clone()
-}
-
-func getString(v any) string {
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	default:
-		return ""
-	}
-}
-
-func getInt(v any) int {
-	switch t := v.(type) {
-	case int:
-		return t
-	case int64:
-		return int(t)
-	case float64:
-		return int(t)
-	case string:
-		var n int
-		_, _ = fmt.Sscanf(strings.TrimSpace(t), "%d", &n)
-		return n
-	default:
-		return 0
-	}
-}
-
-func getBool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		t = strings.TrimSpace(strings.ToLower(t))
-		return t == "1" || t == "true" || t == "yes" || t == "on"
-	default:
-		return false
-	}
-}
-
-func getDuration(v any) time.Duration {
-	switch t := v.(type) {
-	case time.Duration:
-		return t
-	case int:
-		return time.Duration(t) * time.Second
-	case int64:
-		return time.Duration(t) * time.Second
-	case float64:
-		return time.Duration(t) * time.Second
-	case string:
-		if d, err := time.ParseDuration(strings.TrimSpace(t)); err == nil {
-			return d
-		}
-		var n int64
-		if _, err := fmt.Sscanf(strings.TrimSpace(t), "%d", &n); err == nil {
-			return time.Duration(n) * time.Second
-		}
-		return 0
-	default:
-		return 0
-	}
 }
