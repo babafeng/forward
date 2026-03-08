@@ -133,6 +133,7 @@ func Main() int {
 	}
 
 	var wg sync.WaitGroup
+	routers := newRouterCache()
 	listenerCount := 0
 	for _, node := range cfg.Nodes {
 		listenerCount += len(node.Listeners)
@@ -145,7 +146,7 @@ func Main() int {
 			subCfg := buildNodeConfig(cfg, node, l)
 			go func(c config.Config) {
 				defer wg.Done()
-				if err := runOne(ctx, c); err != nil {
+				if err := runOne(ctx, c, routers); err != nil {
 					logger.Error("[%s] Error running listener %s: %v", c.NodeName, c.Listen.RedactedString(), err)
 					errChan <- err
 					stop()
@@ -185,7 +186,7 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 	return cfg
 }
 
-func runOne(ctx context.Context, cfg config.Config) error {
+func runOne(ctx context.Context, cfg config.Config, routers *routerCache) error {
 	if isReverseServer(cfg) {
 		return runReverseServer(ctx, cfg)
 	}
@@ -193,22 +194,22 @@ func runOne(ctx context.Context, cfg config.Config) error {
 		return runReverseClient(ctx, cfg)
 	}
 	if isPortForward(cfg) {
-		return runPortForward(ctx, cfg)
+		return runPortForward(ctx, cfg, routers)
 	}
 	if !isProxyServer(cfg.Listen.Scheme) {
 		return fmt.Errorf("unsupported listen scheme: %s", cfg.Listen.Scheme)
 	}
-	return runProxyServer(ctx, cfg)
+	return runProxyServer(ctx, cfg, routers)
 }
 
-func runProxyServer(ctx context.Context, cfg config.Config) error {
+func runProxyServer(ctx context.Context, cfg config.Config, routers *routerCache) error {
 	cfg.Mode = config.ModeProxyServer
 
 	if !cfg.Listen.HasUserPass() && !strings.EqualFold(cfg.Listen.Scheme, "tproxy") {
 		cfg.Logger.Warn("Proxy server listening on %s without authentication", cfg.Listen.Address())
 	}
 
-	rt, err := buildRouter(cfg)
+	rt, err := routers.getOrBuild(cfg)
 	if err != nil {
 		return err
 	}
@@ -638,7 +639,7 @@ func (r reversePipeRoute) Nodes() []*chain.Node {
 	return nil
 }
 
-func runPortForward(ctx context.Context, cfg config.Config) error {
+func runPortForward(ctx context.Context, cfg config.Config, routers *routerCache) error {
 	cfg.Mode = config.ModePortForward
 
 	baseScheme, transport := splitSchemeTransport(cfg.Listen.Scheme)
@@ -657,7 +658,7 @@ func runPortForward(ctx context.Context, cfg config.Config) error {
 		routeCfg.ForwardChain = nil
 	}
 
-	rt, err := buildRouter(routeCfg)
+	rt, err := routers.getOrBuild(routeCfg)
 	if err != nil {
 		return err
 	}
@@ -998,16 +999,7 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		return rt, nil
 	}
 
-	proxies := map[string]chain.Route{}
-	for name := range cfg.Route.Proxies {
-		rt, err := buildProxyRoute(name)
-		if err != nil {
-			return nil, err
-		}
-		proxies[route.NormalizeProxyName(name)] = rt
-	}
-
-	sr := router.NewStore(store, defaultRoute, proxies)
+	sr := router.NewStore(store, defaultRoute, nil)
 	sr.SetProxyBuilder(buildProxyRoute)
 	return sr, nil
 }
@@ -1359,24 +1351,20 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 			DestOverride: []string{"http", "tls", "quic"},
 		}
 	} else if len(listenFlags) > 0 {
-		for _, l := range listenFlags {
-			ep, err := endpoint.Parse(l)
-			if err != nil {
-				return cfg, subOpts, fmt.Errorf("parse -L %s: %w", l, err)
-			}
-			cfg.Listeners = append(cfg.Listeners, ep)
+		listeners, idx, err := config.ParseEndpoints(listenFlags)
+		if err != nil {
+			return cfg, subOpts, fmt.Errorf("parse -L %s: %w", listenFlags[idx], err)
 		}
+		cfg.Listeners = append(cfg.Listeners, listeners...)
 		cfg.Listen = cfg.Listeners[0]
 	}
 
 	if len(forwardFlags) > 0 {
-		for _, raw := range forwardFlags {
-			ef, err := endpoint.Parse(raw)
-			if err != nil {
-				return cfg, subOpts, fmt.Errorf("parse -F %s: %w", raw, err)
-			}
-			cfg.ForwardChain = append(cfg.ForwardChain, ef)
+		chain, idx, err := config.ParseEndpoints(forwardFlags)
+		if err != nil {
+			return cfg, subOpts, fmt.Errorf("parse -F %s: %w", forwardFlags[idx], err)
 		}
+		cfg.ForwardChain = append(cfg.ForwardChain, chain...)
 		if len(cfg.ForwardChain) > 0 {
 			last := cfg.ForwardChain[len(cfg.ForwardChain)-1]
 			cfg.Forward = &last
@@ -1406,23 +1394,11 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 }
 
 func splitSubscribeValues(values []string) []string {
-	var urls []string
-	for _, raw := range values {
-		for _, part := range strings.Split(raw, ",") {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				urls = append(urls, part)
-			}
-		}
-	}
-	return config.NormalizeSubscribeURLs("", urls)
+	return config.NormalizeSubscribeURLs("", config.SplitCSVValues(values))
 }
 
 func primarySubscribeURL(urls []string) string {
-	if len(urls) == 0 {
-		return ""
-	}
-	return urls[0]
+	return config.PrimaryValue(urls)
 }
 
 func describeSubscribeSources(urls []string) string {

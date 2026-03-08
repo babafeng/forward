@@ -157,11 +157,16 @@ func (r *StoreRouter) resolveProxy(name string) (chain.Route, error) {
 		return nil, fmt.Errorf("unknown proxy %s", normalized)
 	}
 
+	var oldRoute chain.Route
 	r.mu.Lock()
+	if entry, ok := r.proxies[normalized]; ok {
+		oldRoute = entry.route
+	}
 	r.proxies[normalized] = proxyRoute{route: rt, version: version}
 	r.mu.Unlock()
 	// Proxy route refresh can change multi-hop composition.
 	r.clearChainCache()
+	closeRoute(oldRoute, rt)
 	return rt, nil
 }
 
@@ -194,5 +199,18 @@ func normalizeDecisionChain(decision route.Decision) []string {
 		return []string{"REJECT"}
 	default:
 		return []string{via}
+	}
+}
+
+func closeRoute(oldRoute, newRoute chain.Route) {
+	if oldRoute == nil || oldRoute == newRoute {
+		return
+	}
+	if closer, ok := oldRoute.(interface{ Close() }); ok {
+		closer.Close()
+		return
+	}
+	if closer, ok := oldRoute.(interface{ Close() error }); ok {
+		_ = closer.Close()
 	}
 }

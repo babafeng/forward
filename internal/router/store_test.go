@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"forward/base/endpoint"
@@ -34,6 +35,29 @@ func singleHopRoute(name string) chain.Route {
 	node := chain.NewNode(name, name, &stubTransport{})
 	node.Display = name
 	return chain.NewRoute(node)
+}
+
+type closableRoute struct {
+	nodes  []*chain.Node
+	closed atomic.Int32
+}
+
+func newClosableRoute(name string) *closableRoute {
+	node := chain.NewNode(name, name, &stubTransport{})
+	node.Display = name
+	return &closableRoute{nodes: []*chain.Node{node}}
+}
+
+func (r *closableRoute) Dial(_ context.Context, _ string, _ string) (net.Conn, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *closableRoute) Nodes() []*chain.Node {
+	return r.nodes
+}
+
+func (r *closableRoute) Close() {
+	r.closed.Add(1)
 }
 
 func TestStoreRouterRouteProxyChain(t *testing.T) {
@@ -119,9 +143,12 @@ func TestStoreRouterProxyBuilderRefreshesOnStoreUpdate(t *testing.T) {
 
 	rt := NewStore(store, chain.NewRoute(), nil)
 	buildCount := 0
+	var built []*closableRoute
 	rt.SetProxyBuilder(func(name string) (chain.Route, error) {
 		buildCount++
-		return singleHopRoute(name + "-" + strconv.Itoa(buildCount)), nil
+		route := newClosableRoute(name + "-" + strconv.Itoa(buildCount))
+		built = append(built, route)
+		return route, nil
 	})
 
 	first, err := rt.Route(context.Background(), "tcp", "example.com:443")
@@ -163,6 +190,12 @@ func TestStoreRouterProxyBuilderRefreshesOnStoreUpdate(t *testing.T) {
 	}
 	if buildCount != 2 {
 		t.Fatalf("build count = %d, want 2", buildCount)
+	}
+	if got := built[0].closed.Load(); got != 1 {
+		t.Fatalf("first built route close count = %d, want 1", got)
+	}
+	if got := built[1].closed.Load(); got != 0 {
+		t.Fatalf("second built route close count = %d, want 0", got)
 	}
 }
 

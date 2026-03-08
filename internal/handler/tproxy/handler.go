@@ -99,16 +99,7 @@ func (h *Handler) Init(md metadata.Metadata) error {
 			h.sniffTimeout = t
 		}
 	}
-	if v := md.Get("udp_idle"); v != nil {
-		if t, ok := v.(time.Duration); ok && t > 0 {
-			h.udpIdle = t
-		}
-	}
-	if v := md.Get("max_udp_sessions"); v != nil {
-		if n, ok := v.(int); ok && n > 0 {
-			h.maxUDPSession = n
-		}
-	}
+	corehandler.ApplyUDPRelayMetadata(md, &h.udpIdle, &h.maxUDPSession)
 	return nil
 }
 
@@ -187,8 +178,6 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...corehandler
 	h.options.Logger.Debug("TPROXY closed %s -> %s transferred %d bytes in %s", conn.RemoteAddr().String(), dialAddr, bytes, dur)
 	return err
 }
-
-
 
 func handleMetadata(opts []corehandler.HandleOption) metadata.Metadata {
 	if len(opts) == 0 {

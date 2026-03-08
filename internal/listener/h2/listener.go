@@ -3,10 +3,8 @@ package h2
 import (
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"forward/base/logging"
@@ -131,33 +129,13 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) parseMetadata(md metadata.Metadata) {
-	l.md.backlog = defaultBacklog
-	if md == nil {
-		return
-	}
-	if v := getInt(md.Get("backlog")); v > 0 {
-		l.md.backlog = v
-	}
-	if getBool(md.Get("keepalive")) {
-		if v := getDuration(md.Get("ttl")); v > 0 {
-			l.md.keepAlivePeriod = v
-		}
-		if v := getDuration(md.Get("keepalive_period")); v > 0 {
-			l.md.keepAlivePeriod = v
-		}
-	}
-	if v := getDuration(md.Get("handshake_timeout")); v > 0 {
-		l.md.handshakeTimeout = v
-	}
-	if v := getDuration(md.Get("max_idle_timeout")); v > 0 {
-		l.md.maxIdleTimeout = v
-	}
-	if v := getInt(md.Get("max_streams")); v > 0 {
-		l.md.maxStreams = v
-	}
-	if v := md.Get("secret"); v != nil {
-		l.md.secret = fmt.Sprintf("%v", v)
-	}
+	parsed := listener.ParsePHTTransportMetadata(md, defaultBacklog)
+	l.md.backlog = parsed.Backlog
+	l.md.keepAlivePeriod = parsed.KeepAlivePeriod
+	l.md.handshakeTimeout = parsed.HandshakeTimeout
+	l.md.maxIdleTimeout = parsed.MaxIdleTimeout
+	l.md.maxStreams = parsed.MaxStreams
+	l.md.secret = parsed.Secret
 }
 
 func cloneTLSConfig(cfg *tls.Config) *tls.Config {
@@ -179,58 +157,5 @@ func ensureNextProtos(cfg *tls.Config, protos []string) {
 		if _, ok := existing[p]; !ok {
 			cfg.NextProtos = append(cfg.NextProtos, p)
 		}
-	}
-}
-
-func getInt(v any) int {
-	switch t := v.(type) {
-	case int:
-		return t
-	case int64:
-		return int(t)
-	case float64:
-		return int(t)
-	case string:
-		var n int
-		_, _ = fmt.Sscanf(strings.TrimSpace(t), "%d", &n)
-		return n
-	default:
-		return 0
-	}
-}
-
-func getBool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		t = strings.TrimSpace(strings.ToLower(t))
-		return t == "1" || t == "true" || t == "yes" || t == "on"
-	default:
-		return false
-	}
-}
-
-func getDuration(v any) time.Duration {
-	switch t := v.(type) {
-	case time.Duration:
-		return t
-	case int:
-		return time.Duration(t) * time.Second
-	case int64:
-		return time.Duration(t) * time.Second
-	case float64:
-		return time.Duration(t) * time.Second
-	case string:
-		if d, err := time.ParseDuration(strings.TrimSpace(t)); err == nil {
-			return d
-		}
-		var n int64
-		if _, err := fmt.Sscanf(strings.TrimSpace(t), "%d", &n); err == nil {
-			return time.Duration(n) * time.Second
-		}
-		return 0
-	default:
-		return 0
 	}
 }

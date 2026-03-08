@@ -95,19 +95,17 @@ func Parse(data []byte) (config.Config, error) {
 	}
 
 	subURL := strings.TrimSpace(general["subscribe"])
-	if subURL == "" {
-		subURL = strings.TrimSpace(general["subscirbe"])
+	legacySubURLs := config.SplitCSVValues([]string{subURL})
+	subURL = config.PrimaryValue(legacySubURLs)
+	extraSubURLs := config.SplitCSVValues([]string{general["subscribes"]})
+	if len(legacySubURLs) > 1 {
+		extraSubURLs = append(legacySubURLs[1:], extraSubURLs...)
 	}
-	legacySubURLs := parseCommaList(subURL)
-	if len(legacySubURLs) == 0 && subURL != "" {
-		legacySubURLs = []string{subURL}
-	}
-	subURLs := config.NormalizeSubscribeURLs("", append(legacySubURLs, parseCommaList(general["subscribes"])...))
-	if len(legacySubURLs) > 0 {
-		subURL = legacySubURLs[0]
-	} else if len(subURLs) > 0 {
-		subURL = subURLs[0]
-	}
+	subURL, subURLs := config.ResolvePrimarySubscribe(
+		subURL,
+		strings.TrimSpace(general["subscirbe"]),
+		extraSubURLs,
+	)
 	subUpdate, _ := strconv.Atoi(strings.TrimSpace(general["update"]))
 	cfg := config.Config{
 		Listeners:       listeners,
@@ -211,17 +209,13 @@ func parseTProxyConfig(raw string, cfg map[string]string) (config.TProxyConfig, 
 }
 
 func parseEndpointList(raw string) ([]endpoint.Endpoint, error) {
-	parts := parseCommaList(raw)
+	parts := config.SplitCSVValues([]string{raw})
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("listen is empty")
 	}
-	list := make([]endpoint.Endpoint, 0, len(parts))
-	for _, p := range parts {
-		ep, err := endpoint.Parse(p)
-		if err != nil {
-			return nil, fmt.Errorf("parse listen %s: %w", p, err)
-		}
-		list = append(list, ep)
+	list, idx, err := config.ParseEndpoints(parts)
+	if err != nil {
+		return nil, fmt.Errorf("parse listen %s: %w", parts[idx], err)
 	}
 	return list, nil
 }

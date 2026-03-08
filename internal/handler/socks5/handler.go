@@ -85,21 +85,8 @@ func (h *Handler) Init(md metadata.Metadata) error {
 	if md == nil {
 		return nil
 	}
-	if v := md.Get("handshake_timeout"); v != nil {
-		if t, ok := v.(time.Duration); ok && t > 0 {
-			h.handshakeTimout = t
-		}
-	}
-	if v := md.Get("udp_idle"); v != nil {
-		if t, ok := v.(time.Duration); ok && t > 0 {
-			h.udpIdle = t
-		}
-	}
-	if v := md.Get("max_udp_sessions"); v != nil {
-		if n, ok := v.(int); ok && n > 0 {
-			h.maxUDPSessions = n
-		}
-	}
+	corehandler.ApplyHandshakeTimeoutMetadata(md, &h.handshakeTimout)
+	corehandler.ApplyUDPRelayMetadata(md, &h.udpIdle, &h.maxUDPSessions)
 	return nil
 }
 
@@ -542,8 +529,6 @@ func (s *udpSession) cleanupIdle() {
 	s.mu.Unlock()
 }
 
-
-
 func parseUDPRequest(b []byte) (dest string, payload []byte, err error) {
 	if len(b) < 4 {
 		return "", nil, errors.New("short udp request")
@@ -630,8 +615,6 @@ func (h *Handler) getSafeBindAddr(clientConn net.Conn, udpLn *net.UDPConn) strin
 	}
 	return hostPortFromAddr(udpLn.LocalAddr())
 }
-
-
 
 func (h *Handler) tracePrefix(ctx context.Context) string {
 	tr := ictx.TraceFromContext(ctx)
