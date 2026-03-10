@@ -36,9 +36,38 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
 		}
 
+		// 注册紧急回调：全部节点失败时立刻重新拉取订阅并热更新 (节流 5 分钟)
+		br := defaultRoute.(*chain.BalancerRoute)
+		emergencyCfg := cfg
+		emergencyHops := hops
+		br.SetOnAllFailed(func() {
+			if emergencyCfg.Logger != nil {
+				emergencyCfg.Logger.Warn("All nodes failed, emergency re-fetching subscriptions")
+			}
+			newNodes, newCandidates, err := fetchAndBuildSubCandidates(emergencyCfg, emergencyHops)
+			if err != nil {
+				if emergencyCfg.Logger != nil {
+					emergencyCfg.Logger.Error("Emergency subscription refresh failed: %v", err)
+				}
+				return
+			}
+			if len(emergencyHops) > 0 {
+				br.UpdateCandidates(newCandidates)
+			} else {
+				cands := make([]chain.BalancerCandidate, 0, len(newNodes))
+				for _, n := range newNodes {
+					cands = append(cands, chain.BalancerCandidate{Node: n})
+				}
+				br.UpdateCandidates(cands)
+			}
+			if emergencyCfg.Logger != nil {
+				emergencyCfg.Logger.Info("Emergency subscription refresh completed, loaded %d nodes", len(newCandidates))
+			}
+		})
+
 		// Start background update loop if enabled
 		if cfg.SubscribeUpdate > 0 {
-			go subscribeUpdateLoop(cfg, hops, subscribeURLs, defaultRoute.(*chain.BalancerRoute))
+			go subscribeUpdateLoop(cfg, hops, subscribeURLs, br)
 		}
 	} else if len(hops) > 0 {
 		rt, err := builder.BuildRoutePooled(cfg, hops)
