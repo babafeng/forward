@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +101,11 @@ func (r *BalancerRoute) Close() {
 	})
 }
 
+// Done returns a channel that is closed when the balancer is stopped.
+func (r *BalancerRoute) Done() <-chan struct{} {
+	return r.stopCh
+}
+
 func (r *BalancerRoute) backgroundTest() {
 	// 启动时立即测试一次
 	r.testAll()
@@ -118,7 +124,13 @@ func (r *BalancerRoute) backgroundTest() {
 }
 
 func (r *BalancerRoute) testAll() {
-	if len(r.nodes) == 0 {
+	// Snapshot nodes under read lock to avoid data race with UpdateCandidates.
+	r.mu.RLock()
+	nodes := make([]*Node, len(r.nodes))
+	copy(nodes, r.nodes)
+	r.mu.RUnlock()
+
+	if len(nodes) == 0 {
 		return
 	}
 	var wg sync.WaitGroup
@@ -126,9 +138,9 @@ func (r *BalancerRoute) testAll() {
 		node    *Node
 		latency time.Duration
 	}
-	results := make(chan result, len(r.nodes))
+	results := make(chan result, len(nodes))
 
-	for _, n := range r.nodes {
+	for _, n := range nodes {
 		wg.Add(1)
 		go func(node *Node) {
 			defer wg.Done()
@@ -136,16 +148,15 @@ func (r *BalancerRoute) testAll() {
 			ctx, cancel := context.WithTimeout(context.Background(), r.dialTimeout)
 			defer cancel()
 
-			// 对于代理节点，测试底层连接和握手时间
 			conn, err := node.Transport().Dial(ctx, node.Addr)
 			if err != nil {
-				results <- result{node: node, latency: time.Hour * 24} // 极大的值表示不可用
+				results <- result{node: node, latency: time.Hour * 24}
 				return
 			}
 			conn, err = node.Transport().Handshake(ctx, conn)
 			if err != nil {
 				conn.Close()
-				results <- result{node: node, latency: time.Hour * 24} // 握手失败
+				results <- result{node: node, latency: time.Hour * 24}
 				return
 			}
 			conn.Close()
@@ -163,7 +174,6 @@ func (r *BalancerRoute) testAll() {
 		r.latencies[res.node] = res.latency
 	}
 
-	// 更新排序
 	var available []*Node
 	var unavailable []*Node
 	for _, n := range r.nodes {
@@ -174,14 +184,9 @@ func (r *BalancerRoute) testAll() {
 		}
 	}
 
-	// 对可用的按延迟排序，简单的冒泡排序或插入即可，节点不多
-	for i := 0; i < len(available); i++ {
-		for j := i + 1; j < len(available); j++ {
-			if r.latencies[available[i]] > r.latencies[available[j]] {
-				available[i], available[j] = available[j], available[i]
-			}
-		}
-	}
+	sort.Slice(available, func(i, j int) bool {
+		return r.latencies[available[i]] < r.latencies[available[j]]
+	})
 
 	r.sortedNodes = append(available, unavailable...)
 }
@@ -209,7 +214,6 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 	start := time.Now()
 	var lastErr error
 
-	// 按顺序尝试最佳节点，最多尝试前3个，防止无限重试耗时太长
 	maxTries := len(nodes)
 
 	for i := 0; i < maxTries; i++ {

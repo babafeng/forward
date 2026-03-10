@@ -14,7 +14,7 @@ var (
 
 func Get() []byte {
 	b := pool.Get().([]byte)
-	return b[:cap(b)]
+	return b[:defaultSize]
 }
 
 func Put(b []byte) {

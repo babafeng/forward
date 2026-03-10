@@ -518,3 +518,13 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
 	}
 }
+
+// BuildHysteria2DialerMetadata is the exported wrapper for buildHysteria2DialerMetadata.
+func BuildHysteria2DialerMetadata(hop endpoint.Endpoint, cfgInsecure bool) metadata.Metadata {
+	return buildHysteria2DialerMetadata(hop, cfgInsecure)
+}
+
+// ResolveTypes is the exported wrapper for resolveTypes.
+func ResolveTypes(scheme string) (connectorName, dialerName string, err error) {
+	return resolveTypes(scheme)
+}

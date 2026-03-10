@@ -4,42 +4,21 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"hash/fnv"
-	"net"
-	"net/url"
 	"os"
 	"os/signal"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"forward/internal/builder"
-	"forward/internal/chain"
-	"forward/internal/config"
-	"forward/internal/subscribe"
-
 	"forward/base/endpoint"
 	"forward/base/logging"
-	"forward/base/route"
-	"forward/internal/handler"
-	hy2server "forward/internal/hysteria2"
+	"forward/internal/chain"
+	"forward/internal/config"
 	"forward/internal/listener"
-	"forward/internal/metadata"
-	"forward/internal/registry"
-	rev "forward/internal/reverse"
-	revclient "forward/internal/reverse/client"
-	"forward/internal/router"
-	"forward/internal/service"
-	"path/filepath"
+	"forward/internal/subscribe"
 
-	cini "forward/internal/config/ini"
-	cjson "forward/internal/config/json"
 	ctls "forward/internal/config/tls"
-
-	xlog "github.com/xtls/xray-core/common/log"
 
 	_ "forward/internal/connector/http"
 	_ "forward/internal/connector/http2"
@@ -58,7 +37,7 @@ import (
 	_ "forward/internal/dialer/udp"
 	_ "forward/internal/dialer/ws"
 	_ "forward/internal/handler/http"
-	revhandler "forward/internal/handler/reverse"
+	_ "forward/internal/handler/reverse"
 	_ "forward/internal/handler/socks5"
 	_ "forward/internal/handler/tcp"
 	_ "forward/internal/handler/tproxy"
@@ -67,7 +46,7 @@ import (
 	_ "forward/internal/listener/h2"
 	_ "forward/internal/listener/h3"
 	_ "forward/internal/listener/http3"
-	quiclistener "forward/internal/listener/quic"
+	_ "forward/internal/listener/quic"
 	_ "forward/internal/listener/tcp"
 	_ "forward/internal/listener/tproxy"
 	_ "forward/internal/listener/udp"
@@ -95,16 +74,16 @@ func Main() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, subscribeOpts, err := parseArgs(os.Args[1:])
+	cfg, subOpts, err := parseArgs(os.Args[1:])
 	logger := cfg.Logger
 	if logger == nil {
-		logger = logging.New(logging.Options{Level: logging.LevelError})
+		level := logging.LevelInfo
+		if err != nil {
+			level = logging.LevelError
+		}
+		logger = logging.New(logging.Options{Level: level})
 	}
-	xlog.RegisterHandler(&xrayLogHandler{
-		level:   cfg.LogLevel.String(),
-		logger:  logger,
-		verbose: cfg.DebugVerbose,
-	})
+	registerXrayLogHandler(logger.Level(), logger, cfg.DebugVerbose)
 
 	if err != nil {
 		if err == flag.ErrHelp {
@@ -114,53 +93,63 @@ func Main() int {
 		return 2
 	}
 
-	// 订阅模式：下载 → 保存 → 解析 → 过滤 → 测试延迟 (仅在没有起服务端的时候作为独立测试工具)
-	if len(subscribeOpts.URLs) > 0 && len(cfg.Nodes) == 0 && cfg.Listen.Scheme == "" {
-		return runSubscribe(ctx, subscribeOpts, cfg, logger)
-	}
-	if len(cfg.DNSParameters.Servers) > 0 {
-		chain.SetDefaultResolver(cfg.DNSParameters.Servers)
+	if cfg.Logger == nil {
+		cfg.Logger = logger
 	}
 
-	for _, node := range cfg.Nodes {
-		if node.Insecure {
-			logger.Warn("Node %s: --insecure is enabled, TLS verification is disabled", node.Name)
-		}
+	// 如果有订阅 URL 但没有监听配置，走纯订阅模式
+	if len(subOpts.URLs) > 0 && len(cfg.Listeners) == 0 && len(cfg.Nodes) == 0 {
+		return runSubscribe(ctx, subOpts, cfg, cfg.Logger)
 	}
+
+	// 设置全局订阅参数
+	cfg.SubscribeFilter = subOpts.Filter
+	cfg.SubscribeUpdate = subOpts.Update
+
+	routers := newRouterCache()
+
 	if err := initRouteStoreAndHotReload(ctx, &cfg); err != nil {
-		logger.Error("Init route store error: %v", err)
+		cfg.Logger.Error("Failed to init route store: %v", err)
 		return 2
 	}
 
-	var wg sync.WaitGroup
-	routers := newRouterCache()
-	listenerCount := 0
-	for _, node := range cfg.Nodes {
-		listenerCount += len(node.Listeners)
-	}
-	errChan := make(chan error, listenerCount)
-
-	for _, node := range cfg.Nodes {
-		for _, l := range node.Listeners {
-			wg.Add(1)
-			subCfg := buildNodeConfig(cfg, node, l)
-			go func(c config.Config) {
-				defer wg.Done()
-				if err := runOne(ctx, c, routers); err != nil {
-					logger.Error("[%s] Error running listener %s: %v", c.NodeName, c.Listen.RedactedString(), err)
-					errChan <- err
-					stop()
-				}
-			}(subCfg)
+	if len(cfg.Nodes) > 0 {
+		var wg sync.WaitGroup
+		listenerCount := 0
+		for _, node := range cfg.Nodes {
+			listenerCount += len(node.Listeners)
 		}
-	}
+		errCh := make(chan error, listenerCount)
 
-	wg.Wait()
-	close(errChan)
-
-	if err := <-errChan; err != nil {
+		for _, node := range cfg.Nodes {
+			for _, listen := range node.Listeners {
+				nodeCfg := buildNodeConfig(cfg, node, listen)
+				wg.Add(1)
+				go func(c config.Config) {
+					defer wg.Done()
+					if err := runOne(ctx, c, routers); err != nil {
+						c.Logger.Error("listener %s failed: %v", c.Listen.Address(), err)
+						errCh <- err
+						stop()
+					}
+				}(nodeCfg)
+			}
+		}
+		wg.Wait()
+		close(errCh)
+		if err := <-errCh; err != nil {
+			return 1
+		}
+	} else if len(cfg.Listeners) > 0 {
+		if err := runOne(ctx, cfg, routers); err != nil {
+			cfg.Logger.Error("Error: %v", err)
+			return 1
+		}
+	} else {
+		cfg.Logger.Error("No listen configsured. Use -L, -C, or -R.")
 		return 1
 	}
+
 	return 0
 }
 
@@ -168,14 +157,18 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 	cfg := global
 	cfg.NodeName = node.Name
 	cfg.Listen = listen
-	cfg.Listeners = node.Listeners
-	cfg.Forward = node.Forward
-	cfg.ForwardChain = node.ForwardChain
-	cfg.Insecure = node.Insecure
-
-	if effectiveURLs := node.EffectiveSubscribeURLs(); len(effectiveURLs) > 0 {
-		cfg.SubscribeURLs = effectiveURLs
-		cfg.SubscribeURL = effectiveURLs[0]
+	cfg.Insecure = node.Insecure || global.Insecure
+	if node.Forward != nil {
+		cfg.Forward = node.Forward
+	}
+	if len(node.ForwardChain) > 0 {
+		cfg.ForwardChain = node.ForwardChain
+	}
+	if node.SubscribeURL != "" {
+		cfg.SubscribeURL = node.SubscribeURL
+	}
+	if len(node.SubscribeURLs) > 0 {
+		cfg.SubscribeURLs = node.SubscribeURLs
 	}
 	if node.SubscribeFilter != "" {
 		cfg.SubscribeFilter = node.SubscribeFilter
@@ -183,1523 +176,130 @@ func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoi
 	if node.SubscribeUpdate > 0 {
 		cfg.SubscribeUpdate = node.SubscribeUpdate
 	}
+	cfg.Listeners = []endpoint.Endpoint{listen}
 	return cfg
 }
 
 func runOne(ctx context.Context, cfg config.Config, routers *routerCache) error {
-	if isReverseServer(cfg) {
-		return runReverseServer(ctx, cfg)
-	}
-	if isReverseClient(cfg) {
-		return runReverseClient(ctx, cfg)
-	}
-	if isPortForward(cfg) {
-		return runPortForward(ctx, cfg, routers)
-	}
-	if !isProxyServer(cfg.Listen.Scheme) {
-		return fmt.Errorf("unsupported listen scheme: %s", cfg.Listen.Scheme)
-	}
-	return runProxyServer(ctx, cfg, routers)
-}
-
-func runProxyServer(ctx context.Context, cfg config.Config, routers *routerCache) error {
-	cfg.Mode = config.ModeProxyServer
-
-	if !cfg.Listen.HasUserPass() && !strings.EqualFold(cfg.Listen.Scheme, "tproxy") {
-		cfg.Logger.Warn("Proxy server listening on %s without authentication", cfg.Listen.Address())
-	}
-
-	rt, err := routers.getOrBuild(cfg)
-	if err != nil {
-		return err
-	}
-
-	rawScheme := strings.ToLower(cfg.Listen.Scheme)
-	if rawScheme == "hysteria2" || rawScheme == "hy2" {
-		return runHysteria2ProxyServer(ctx, cfg, rt)
-	}
-
-	handlerScheme, listenerScheme, transport := normalizeProxySchemes(rawScheme)
-
-	// 先创建并初始化 Listener
-	newListener := registry.ListenerRegistry().Get(listenerScheme)
-	if newListener == nil {
-		newListener = registry.ListenerRegistry().Get("tcp")
-	}
-	if newListener == nil {
-		return fmt.Errorf("listener not registered for scheme %s", cfg.Listen.Scheme)
-	}
-
-	lopts := []listener.Option{
-		listener.AddrOption(cfg.Listen.Address()),
-		listener.LoggerOption(cfg.Logger),
-		listener.RouterOption(rt),
-		listener.ContextOption(ctx),
-	}
-	switch {
-	case listenerScheme == "http3":
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h3"},
-		})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	case listenerScheme == "h3":
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h3"},
-		})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	case listenerScheme == "http2":
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h2"},
-		})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	case listenerScheme == "h2":
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h2"},
-		})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	case transport == transportTLS:
-		tlsOpts := ctls.ServerOptions{}
-		if handlerScheme == "http" {
-			tlsOpts.NextProtos = []string{"h2", "http/1.1"}
-		}
-		tlsCfg, err := ctls.ServerConfig(cfg, tlsOpts)
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	case transport == transportDTLS:
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	}
-
-	ln := newListener(lopts...)
-	// 构建 listener metadata
-	lmdMap := map[string]any{
-		"handshake_timeout": cfg.HandshakeTimeout,
-		// Reality Listener 需要的配置
-		metadata.KeyHost:    cfg.Listen.Host,
-		metadata.KeyPort:    cfg.Listen.Port,
-		metadata.KeySNI:     cfg.Listen.Query.Get("sni"),
-		metadata.KeyShortID: cfg.Listen.Query.Get("sid"),
-		metadata.KeyFlow:    cfg.Listen.Query.Get("flow"),
-		metadata.KeyNetwork: cfg.Listen.Query.Get("type"),
-		"dest":              cfg.Listen.Query.Get("dest"),
-		"privatekey":        cfg.Listen.Query.Get("key"),
-	}
-	if listenerScheme == "tproxy" && cfg.TProxy != nil {
-		if len(cfg.TProxy.Network) > 0 {
-			lmdMap["network"] = strings.Join(cfg.TProxy.Network, ",")
-		}
-		lmdMap["udp_idle"] = cfg.UDPIdleTimeout
-	}
-	if cfg.Listen.User != nil {
-		lmdMap[metadata.KeyUUID] = cfg.Listen.User.Username()
-		if p, ok := cfg.Listen.User.Password(); ok {
-			lmdMap["secret"] = p
-		}
-	}
-	lmd := metadata.New(lmdMap)
-	if err := ln.Init(lmd); err != nil {
-		return err
-	}
-
-	// 创建 Handler
-	newHandler := registry.HandlerRegistry().Get(handlerScheme)
-	if newHandler == nil {
-		return fmt.Errorf("handler not registered for scheme %s", handlerScheme)
-	}
-
-	h := newHandler(
-		handler.RouterOption(rt),
-		handler.AuthOption(cfg.Listen.User),
-		handler.LoggerOption(cfg.Logger),
-	)
-
-	mdMap := map[string]any{
-		"transparent":         strings.EqualFold(cfg.Listen.Query.Get("transparent"), "true"),
-		"insecure":            cfg.Insecure,
-		"handshake_timeout":   cfg.HandshakeTimeout,
-		"udp_idle":            cfg.UDPIdleTimeout,
-		"max_udp_sessions":    cfg.MaxUDPSessions,
-		"read_header_timeout": cfg.ReadHeaderTimeout,
-		"max_header_bytes":    cfg.MaxHeaderBytes,
-		"idle_timeout":        cfg.IdleTimeout,
-		"max_idle_conns": readPositiveQueryInt(
-			cfg.Listen.Query,
-			config.DefaultHTTPMaxIdleConns,
-			"max_idle_conns",
-			"max-idle-conns",
-		),
-		"max_idle_conns_per_host": readPositiveQueryInt(
-			cfg.Listen.Query,
-			config.DefaultHTTPMaxIdleConnsPerHost,
-			"max_idle_conns_per_host",
-			"max-idle-conns-per-host",
-		),
-		"max_conns_per_host": readPositiveQueryInt(
-			cfg.Listen.Query,
-			config.DefaultHTTPMaxConnsPerHost,
-			"max_conns_per_host",
-			"max-conns-per-host",
-		),
-	}
-	if handlerScheme == "tproxy" && cfg.TProxy != nil {
-		mdMap["sniffing"] = cfg.TProxy.Sniffing
-		if len(cfg.TProxy.DestOverride) > 0 {
-			mdMap["dest_override"] = strings.Join(cfg.TProxy.DestOverride, ",")
-		}
-		mdMap["sniff_timeout"] = cfg.ReadHeaderTimeout
-	}
-	md := metadata.New(mdMap)
-
-	// VMess Handler 需要额外的配置
-	if handlerScheme == "vmess" {
-		uuid := ""
-		security := ""
-		if cfg.Listen.User != nil {
-			security = cfg.Listen.User.Username() // 加密方式在用户名
-			if p, ok := cfg.Listen.User.Password(); ok {
-				uuid = p // UUID 在密码
-			}
-		}
-		md.Set(metadata.KeyUUID, uuid)
-		md.Set(metadata.KeySecurity, security)
-		md.Set(metadata.KeyAlterID, cfg.Listen.Query.Get("alterId"))
-	}
-
-	// SS Handler 需要额外的配置
-	if handlerScheme == "ss" {
-		method := ""
-		password := ""
-		if cfg.Listen.User != nil {
-			method = cfg.Listen.User.Username() // 加密方法在用户名
-			if p, ok := cfg.Listen.User.Password(); ok {
-				password = p // 密码在密码字段
-			}
-		}
-		md.Set(metadata.KeyMethod, method)
-		md.Set(metadata.KeyPassword, password)
-	}
-
-	if err := h.Init(md); err != nil {
-		return err
-	}
-
-	// 如果是 VLESS+Reality，传递 validator 给 Handler
-	if handlerScheme == "vless" && listenerScheme == "reality" {
-		type validatorProvider interface {
-			Validator() interface{}
-		}
-		type validatorSetter interface {
-			SetValidator(v interface{})
-		}
-		if vp, ok := ln.(validatorProvider); ok {
-			if vs, ok := h.(validatorSetter); ok {
-				vs.SetValidator(vp.Validator())
-			}
-		}
-	}
-
-	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
-	go func() {
-		<-ctx.Done()
-		_ = svc.Close()
-	}()
-
-	cfg.Logger.Info("forward %s proxy listening on %s", cfg.Listen.Scheme, cfg.Listen.Address())
-	return svc.Serve()
-}
-
-func runHysteria2ProxyServer(ctx context.Context, cfg config.Config, rt router.Router) error {
-	return hy2server.Serve(ctx, cfg, rt)
-}
-
-func runReverseServer(ctx context.Context, cfg config.Config) error {
-	cfg.Mode = config.ModeReverseServer
-
-	if cfg.Listen.Query.Get("bind") != "true" {
-		return fmt.Errorf("reverse server requires bind=true")
-	}
-	if !cfg.Listen.HasUserPass() {
-		return fmt.Errorf("reverse server with bind=true requires authentication (user/pass)")
-	}
-
-	h := revhandler.NewHandler(
-		handler.AuthOption(cfg.Listen.User),
-		handler.LoggerOption(cfg.Logger),
-	)
-	hmd := metadata.New(map[string]any{
-		"handshake_timeout": cfg.HandshakeTimeout,
-		"udp_idle":          cfg.UDPIdleTimeout,
-		"max_udp_sessions":  cfg.MaxUDPSessions,
-	})
-	if err := h.Init(hmd); err != nil {
-		return err
-	}
-
 	scheme := strings.ToLower(cfg.Listen.Scheme)
-	if scheme == "reality" || scheme == "vless+reality" {
-		return runReverseRealityServer(ctx, cfg, h)
-	}
-	lopts := []listener.Option{
-		listener.AddrOption(cfg.Listen.Address()),
-		listener.LoggerOption(cfg.Logger),
-	}
-	if protos := rev.NextProtosForScheme(scheme); len(protos) > 0 {
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{NextProtos: protos})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	}
 
-	var ln listener.Listener
-	if scheme == "http3" || scheme == "quic" {
-		ln = quiclistener.NewListener(lopts...)
-	} else {
-		newListener := registry.ListenerRegistry().Get("tcp")
-		if newListener == nil {
-			return fmt.Errorf("listener not registered for scheme tcp")
-		}
-		ln = newListener(lopts...)
+	switch {
+	case isReverseClient(cfg):
+		return runReverseClient(ctx, cfg)
+	case isReverseServer(cfg):
+		return runReverseServer(ctx, cfg)
+	case isPortForward(cfg):
+		return runPortForward(ctx, cfg, routers)
+	case isProxyServer(scheme):
+		return runProxyServer(ctx, cfg, routers)
+	default:
+		return fmt.Errorf("unsupported scheme: %s", cfg.Listen.Scheme)
 	}
-
-	lmd := metadata.New(map[string]any{
-		"handshake_timeout": cfg.HandshakeTimeout,
-	})
-	if err := ln.Init(lmd); err != nil {
-		return err
-	}
-
-	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
-	go func() {
-		<-ctx.Done()
-		_ = svc.Close()
-	}()
-
-	cfg.Logger.Info("forward reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
-	return svc.Serve()
 }
 
-func runReverseRealityServer(ctx context.Context, cfg config.Config, revHandler handler.Handler) error {
-	newHandler := registry.HandlerRegistry().Get("vless")
-	if newHandler == nil {
-		return fmt.Errorf("handler not registered for scheme vless")
-	}
+// validatorProvider is implemented by listeners that expose a protocol validator.
+type validatorProvider interface {
+	Validator() interface{}
+}
 
-	pipeRouter := &reversePipeRouter{
-		handler: revHandler,
-		logger:  cfg.Logger,
-	}
+// validatorSetter is implemented by handlers that accept a protocol validator.
+type validatorSetter interface {
+	SetValidator(v interface{})
+}
 
-	vlessHandler := newHandler(
-		handler.RouterOption(pipeRouter),
-		handler.AuthOption(cfg.Listen.User),
-		handler.LoggerOption(cfg.Logger),
-	)
-	if err := vlessHandler.Init(nil); err != nil {
-		return err
-	}
-
-	newListener := registry.ListenerRegistry().Get("reality")
-	if newListener == nil {
-		return fmt.Errorf("listener not registered for scheme reality")
-	}
-
-	lopts := []listener.Option{
-		listener.AddrOption(cfg.Listen.Address()),
-		listener.LoggerOption(cfg.Logger),
-	}
-	ln := newListener(lopts...)
-
-	lmdMap := map[string]any{
-		metadata.KeyHost:        cfg.Listen.Host,
-		metadata.KeyPort:        cfg.Listen.Port,
-		metadata.KeySecurity:    cfg.Listen.Query.Get("security"),
-		metadata.KeyNetwork:     cfg.Listen.Query.Get("type"),
-		metadata.KeySNI:         cfg.Listen.Query.Get("sni"),
-		metadata.KeyFingerprint: cfg.Listen.Query.Get("fp"),
-		metadata.KeyPublicKey:   cfg.Listen.Query.Get("pbk"),
-		metadata.KeyShortID:     cfg.Listen.Query.Get("sid"),
-		metadata.KeySpiderX:     cfg.Listen.Query.Get("spiderx"),
-		metadata.KeyALPN:        cfg.Listen.Query.Get("alpn"),
-		metadata.KeyInsecure:    cfg.Insecure,
-		metadata.KeyFlow:        cfg.Listen.Query.Get("flow"),
-		"dest":                  cfg.Listen.Query.Get("dest"),
-		"privatekey":            cfg.Listen.Query.Get("key"),
-	}
-	if cfg.Listen.User != nil {
-		lmdMap[metadata.KeyUUID] = cfg.Listen.User.Username()
-	}
-	lmd := metadata.New(lmdMap)
-	if err := ln.Init(lmd); err != nil {
-		return err
-	}
-
-	type validatorProvider interface {
-		Validator() interface{}
-	}
-	type validatorSetter interface {
-		SetValidator(v interface{})
-	}
+// passValidatorToHandler wires the listener's validator into the handler,
+// used for VLESS + Reality authentication.
+func passValidatorToHandler(ln interface{}, h interface{}) {
 	if vp, ok := ln.(validatorProvider); ok {
-		if vs, ok := vlessHandler.(validatorSetter); ok {
+		if vs, ok := h.(validatorSetter); ok {
 			vs.SetValidator(vp.Validator())
 		}
 	}
-
-	svc := service.NewService(ln, vlessHandler, cfg.Logger, cfg.DebugVerbose)
-	go func() {
-		<-ctx.Done()
-		_ = svc.Close()
-	}()
-
-	cfg.Logger.Info("forward reverse server listening on %s (%s)", cfg.Listen.Address(), cfg.Listen.Scheme)
-	return svc.Serve()
 }
 
-func runReverseClient(ctx context.Context, cfg config.Config) error {
-	cfg.Mode = config.ModeReverseClient
+// buildTLSOption returns a listener.TLSConfigOption for the given scheme and
+// transport combination, or nil when no TLS is needed.
+func buildTLSOption(cfg config.Config, handlerScheme, listenerScheme string, transport transportKind) (listener.Option, error) {
+	var nextProtos []string
+	needTLS := true
 
-	if cfg.Listen.FAddress == "" {
-		return fmt.Errorf("reverse client requires target address in listen path")
+	switch {
+	case listenerScheme == "http3" || listenerScheme == "h3":
+		nextProtos = []string{"h3"}
+	case listenerScheme == "http2" || listenerScheme == "h2":
+		nextProtos = []string{"h2"}
+	case transport == transportTLS:
+		if handlerScheme == "http" {
+			nextProtos = []string{"h2", "http/1.1"}
+		}
+	case transport == transportDTLS:
+		// no nextProtos needed
+	default:
+		needTLS = false
 	}
 
-	var hops []endpoint.Endpoint
-	if len(cfg.ForwardChain) > 0 {
-		hops = cfg.ForwardChain
-	} else if cfg.Forward != nil {
-		hops = []endpoint.Endpoint{*cfg.Forward}
-	}
-	if len(hops) == 0 {
-		return fmt.Errorf("reverse client requires forward target")
+	if !needTLS {
+		return nil, nil
 	}
 
-	route, err := builder.BuildReverseRoute(cfg, hops)
+	tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{NextProtos: nextProtos})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	forward := hops[len(hops)-1]
-
-	client := revclient.New(cfg, route, forward)
-	if err := client.Run(ctx); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("reverse client run error: %w", err)
-	}
-	return nil
+	return listener.TLSConfigOption(tlsCfg), nil
 }
 
-type reversePipeRouter struct {
-	handler handler.Handler
-	logger  *logging.Logger
-}
-
-func (r *reversePipeRouter) Route(ctx context.Context, _ string, _ string) (chain.Route, error) {
-	return reversePipeRoute{handler: r.handler, logger: r.logger}, nil
-}
-
-type reversePipeRoute struct {
-	handler handler.Handler
-	logger  *logging.Logger
-}
-
-func (r reversePipeRoute) Dial(ctx context.Context, _, _ string) (net.Conn, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	client, server := net.Pipe()
-	go func() {
-		if err := r.handler.Handle(ctx, server); err != nil && r.logger != nil {
-			r.logger.Debug("Reverse server pipe handler error: %v", err)
-		}
-	}()
-	go func() {
-		<-ctx.Done()
-		_ = client.Close()
-		_ = server.Close()
-	}()
-	return client, nil
-}
-
-func (r reversePipeRoute) Nodes() []*chain.Node {
-	return nil
-}
-
-func runPortForward(ctx context.Context, cfg config.Config, routers *routerCache) error {
-	cfg.Mode = config.ModePortForward
-
-	baseScheme, transport := splitSchemeTransport(cfg.Listen.Scheme)
-	if baseScheme == "udp" && transport != transportNone {
-		return fmt.Errorf("udp over %s is not supported", transport)
-	}
-
-	target, useForwardAsTarget, err := resolveForwardTarget(cfg)
-	if err != nil {
-		return err
-	}
-
-	routeCfg := cfg
-	if useForwardAsTarget {
-		routeCfg.Forward = nil
-		routeCfg.ForwardChain = nil
-	}
-
-	rt, err := routers.getOrBuild(routeCfg)
-	if err != nil {
-		return err
-	}
-
-	newHandler := registry.HandlerRegistry().Get(baseScheme)
-	if newHandler == nil {
-		return fmt.Errorf("handler not registered for scheme %s", baseScheme)
-	}
-
-	h := newHandler(
-		handler.RouterOption(rt),
-		handler.LoggerOption(cfg.Logger),
-	)
-	hmd := metadata.New(map[string]any{
-		"target":   target,
-		"udp_idle": cfg.UDPIdleTimeout,
-	})
-	if err := h.Init(hmd); err != nil {
-		return err
-	}
-
-	listenerScheme := baseScheme
-	if transport == transportDTLS {
-		listenerScheme = "dtls"
-	}
-	if transport == transportH2 {
-		listenerScheme = "h2"
-	}
-	if transport == transportH3 {
-		listenerScheme = "h3"
-	}
-	newListener := registry.ListenerRegistry().Get(listenerScheme)
-	if newListener == nil {
-		return fmt.Errorf("listener not registered for scheme %s", listenerScheme)
-	}
-	lopts := []listener.Option{
-		listener.AddrOption(cfg.Listen.Address()),
-		listener.LoggerOption(cfg.Logger),
-		listener.RouterOption(rt),
-	}
-	switch transport {
-	case transportTLS, transportDTLS:
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	case transportH2:
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h2"},
-		})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	case transportH3:
-		tlsCfg, err := ctls.ServerConfig(cfg, ctls.ServerOptions{
-			NextProtos: []string{"h3"},
-		})
-		if err != nil {
-			return err
-		}
-		lopts = append(lopts, listener.TLSConfigOption(tlsCfg))
-	}
-	ln := newListener(lopts...)
-
-	lmdMap := map[string]any{
-		"handshake_timeout": cfg.HandshakeTimeout,
-		"udp_idle":          cfg.UDPIdleTimeout,
-	}
-	if cfg.Listen.User != nil {
-		if p, ok := cfg.Listen.User.Password(); ok {
-			lmdMap["secret"] = p
-		}
-	}
-	lmd := metadata.New(lmdMap)
-	if err := ln.Init(lmd); err != nil {
-		return err
-	}
-
-	svc := service.NewService(ln, h, cfg.Logger, cfg.DebugVerbose)
-	go func() {
-		<-ctx.Done()
-		_ = svc.Close()
-	}()
-
-	cfg.Logger.Info("forward %s forward listening on %s -> %s", cfg.Listen.Scheme, cfg.Listen.Address(), target)
-	return svc.Serve()
-}
-
-type routeFileState struct {
-	modTimeUnixNano int64
-	size            int64
-	checksum        uint64
-}
-
-func initRouteStoreAndHotReload(ctx context.Context, cfg *config.Config) error {
-	if cfg == nil || cfg.Route == nil {
-		return nil
-	}
-	if cfg.RouteStore == nil {
-		store, err := route.NewStore(cfg.Route, cfg.Logger)
-		if err != nil {
-			return err
-		}
-		cfg.RouteStore = store
-	}
-	path := strings.TrimSpace(cfg.RoutePath)
-	if path == "" {
-		return nil
-	}
-	var initialState *routeFileState
-	if state, err := readRouteFileState(path); err == nil {
-		initialState = &state
-	}
-	go watchRouteConfig(ctx, cfg, initialState)
-	return nil
-}
-
-func watchRouteConfig(ctx context.Context, cfg *config.Config, initialState *routeFileState) {
-	if cfg == nil || cfg.RouteStore == nil {
-		return
-	}
-	path := strings.TrimSpace(cfg.RoutePath)
-	if path == "" {
-		return
-	}
-
-	lastState := routeFileState{}
-	hasState := false
-	lastStatErr := ""
-	if initialState != nil {
-		lastState = *initialState
-		hasState = true
-	} else if state, err := readRouteFileState(path); err == nil {
-		lastState = state
-		hasState = true
-	} else {
-		lastStatErr = err.Error()
-		if cfg.Logger != nil {
-			cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
-		}
-	}
-
-	if cfg.Logger != nil {
-		cfg.Logger.Info("Route hot reload enabled: %s (poll: 1s)", path)
-	}
-
-	ticker := time.NewTicker(time.Second)
+// subscribeUpdateLoop periodically re-fetches subscription nodes and hot-swaps
+// them into the balancer. It exits when the BalancerRoute is closed.
+func subscribeUpdateLoop(cfg config.Config, hops []endpoint.Endpoint, subscribeURLs []string, br *chain.BalancerRoute) {
+	ticker := time.NewTicker(time.Duration(cfg.SubscribeUpdate) * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-br.Done():
 			return
 		case <-ticker.C:
-			state, err := readRouteFileState(path)
-			if err != nil {
-				if cfg.Logger != nil {
-					msg := err.Error()
-					if msg != lastStatErr {
-						cfg.Logger.Warn("Route hot reload stat %s failed: %v", path, err)
-						lastStatErr = msg
-					}
-				}
-				continue
-			}
-			lastStatErr = ""
-			if hasState && state == lastState {
-				continue
-			}
-
-			routeCfg, err := parseRouteConfig(path)
-			// Parse/update errors should not break serving. Keep current route and wait for next file change.
-			if err != nil {
-				if cfg.Logger != nil {
-					cfg.Logger.Warn("Route hot reload parse %s failed: %v", path, err)
-				}
-				lastState = state
-				hasState = true
-				continue
-			}
-			if routeCfg.Route == nil {
-				if cfg.Logger != nil {
-					cfg.Logger.Warn("Route hot reload skipped: no route config in %s", path)
-				}
-				lastState = state
-				hasState = true
-				continue
-			}
-			if err := cfg.RouteStore.Update(routeCfg.Route, cfg.Logger); err != nil {
-				if cfg.Logger != nil {
-					cfg.Logger.Warn("Route hot reload update %s failed: %v", path, err)
-				}
-				lastState = state
-				hasState = true
-				continue
-			}
-
-			lastState = state
-			hasState = true
 			if cfg.Logger != nil {
-				cfg.Logger.Info("Route config reloaded from %s (version=%d)", path, cfg.RouteStore.Version())
+				cfg.Logger.Info("Auto-updating subscriptions from %s", describeSubscribeSources(subscribeURLs))
 			}
-		}
-	}
-}
+			var newNodes []*chain.Node
+			var newCandidates []chain.BalancerCandidate
+			var updateErr error
 
-func readRouteFileState(path string) (routeFileState, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return routeFileState{}, err
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return routeFileState{}, err
-	}
-	hasher := fnv.New64a()
-	_, _ = hasher.Write(content)
-	return routeFileState{
-		modTimeUnixNano: info.ModTime().UnixNano(),
-		size:            info.Size(),
-		checksum:        hasher.Sum64(),
-	}, nil
-}
-
-func buildRouter(cfg config.Config) (router.Router, error) {
-	var hops []endpoint.Endpoint
-	if len(cfg.ForwardChain) > 0 {
-		hops = cfg.ForwardChain
-	} else if cfg.Forward != nil {
-		hops = []endpoint.Endpoint{*cfg.Forward}
-	}
-
-	var defaultRoute chain.Route
-	subscribeURLs := cfg.EffectiveSubscribeURLs()
-	if len(subscribeURLs) > 0 {
-		subNodes, subCandidates, err := fetchAndBuildSubCandidates(cfg, hops)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(hops) > 0 {
-			defaultRoute = chain.NewBalancerRouteWithCandidates(subCandidates, 2*time.Minute, cfg.DialTimeout)
-		} else {
-			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
-		}
-
-		// Start background update loop if enabled
-		if cfg.SubscribeUpdate > 0 {
-			go func(br *chain.BalancerRoute) {
-				ticker := time.NewTicker(time.Duration(cfg.SubscribeUpdate) * time.Minute)
-				defer ticker.Stop()
-
-				for range ticker.C {
-					if cfg.Logger != nil {
-						cfg.Logger.Info("Auto-updating subscriptions from %s", describeSubscribeSources(subscribeURLs))
-					}
-					var newNodes []*chain.Node
-					var newCandidates []chain.BalancerCandidate
-					var updateErr error
-
-					// Retry logic up to 3 times
-					for retry := 1; retry <= 3; retry++ {
-						newNodes, newCandidates, updateErr = fetchAndBuildSubCandidates(cfg, hops)
-						if updateErr == nil {
-							break
-						}
-						if cfg.Logger != nil {
-							cfg.Logger.Warn("Failed to update subscriptions (attempt %d/3): %v", retry, updateErr)
-						}
-						if retry < 3 {
-							time.Sleep(5 * time.Second)
-						}
-					}
-
-					if updateErr != nil {
-						if cfg.Logger != nil {
-							cfg.Logger.Error("Subscription update failed after 3 retries, keeping existing nodes.")
-						}
-						continue
-					}
-
-					if cfg.Logger != nil {
-						cfg.Logger.Info("Successfully updated subscriptions, loaded %d nodes.", len(newCandidates))
-					}
-
-					if len(hops) > 0 {
-						br.UpdateCandidates(newCandidates)
-					} else {
-						// Convert *Node to BalancerCandidate
-						cands := make([]chain.BalancerCandidate, 0, len(newNodes))
-						for _, n := range newNodes {
-							cands = append(cands, chain.BalancerCandidate{Node: n})
-						}
-						br.UpdateCandidates(cands)
-					}
+			for retry := 1; retry <= 3; retry++ {
+				newNodes, newCandidates, updateErr = fetchAndBuildSubCandidates(cfg, hops)
+				if updateErr == nil {
+					break
 				}
-			}(defaultRoute.(*chain.BalancerRoute))
-		}
-	} else if len(hops) > 0 {
-		rt, err := builder.BuildRoutePooled(cfg, hops)
-		if err != nil {
-			return nil, err
-		}
-		defaultRoute = rt
-	} else {
-		defaultRoute = chain.NewRouteWithTimeout(cfg.DialTimeout)
-	}
-
-	if cfg.Route == nil {
-		return router.NewStatic(defaultRoute), nil
-	}
-
-	store := cfg.RouteStore
-	if store == nil {
-		rstore, err := route.NewStore(cfg.Route, cfg.Logger)
-		if err != nil {
-			return nil, err
-		}
-		store = rstore
-	}
-
-	buildProxyRoute := func(name string) (chain.Route, error) {
-		ep, ok := store.GetProxy(name)
-		if !ok {
-			return nil, fmt.Errorf("unknown proxy %s", name)
-		}
-		rt, err := builder.BuildRoutePooled(cfg, []endpoint.Endpoint{ep})
-		if err != nil {
-			return nil, err
-		}
-		for _, node := range rt.Nodes() {
-			if node != nil {
-				node.Display = name
+				if cfg.Logger != nil {
+					cfg.Logger.Warn("Failed to update subscriptions (attempt %d/3): %v", retry, updateErr)
+				}
+				if retry < 3 {
+					time.Sleep(5 * time.Second)
+				}
 			}
-		}
-		return rt, nil
-	}
 
-	sr := router.NewStore(store, defaultRoute, nil)
-	sr.SetProxyBuilder(buildProxyRoute)
-	return sr, nil
-}
-
-func fetchAndBuildSubCandidates(cfg config.Config, hops []endpoint.Endpoint) ([]*chain.Node, []chain.BalancerCandidate, error) {
-	proxies, err := loadSubscribeProxies(cfg.EffectiveSubscribeURLs(), cfg.Logger)
-	if err != nil {
-		return nil, nil, err
-	}
-	if cfg.SubscribeFilter != "" {
-		proxies = subscribe.FilterProxies(proxies, cfg.SubscribeFilter)
-	}
-	proxies = dedupeSubscribeProxies(proxies)
-	if len(proxies) == 0 {
-		return nil, nil, fmt.Errorf("no matching nodes in subscription")
-	}
-	// Keep subscription startup bounded: pre-warming hundreds of candidates
-	// creates significant background dials. Use pooled routes only for a
-	// moderate candidate set.
-	usePooled := len(proxies) <= 32
-
-	var subNodes []*chain.Node
-	var subCandidates []chain.BalancerCandidate
-	for _, proxy := range proxies {
-		ep, err := subscribe.ProxyToEndpoint(proxy)
-		if err != nil {
-			continue
-		}
-
-		routeHops := make([]endpoint.Endpoint, 0, 1+len(hops))
-		routeHops = append(routeHops, ep)
-		routeHops = append(routeHops, hops...)
-
-		var rt chain.Route
-		if usePooled {
-			rt, err = builder.BuildRoutePooled(cfg, routeHops)
-		} else {
-			rt, err = builder.BuildRoute(cfg, routeHops)
-		}
-		if err != nil {
-			continue
-		}
-		nodes := rt.Nodes()
-		if len(nodes) > 0 {
-			nodes[0].Display = proxy.Name
-			subNodes = append(subNodes, nodes[0])
-			subCandidates = append(subCandidates, chain.BalancerCandidate{
-				Node:  nodes[0],
-				Route: rt,
-			})
-		}
-	}
-
-	if len(subCandidates) == 0 {
-		return nil, nil, fmt.Errorf("no valid matching nodes in subscription")
-	}
-
-	if cfg.Logger != nil {
-		if len(hops) > 0 {
-			cfg.Logger.Info("Built balancer route with %d nodes from subscriptions and %d fixed forward hop(s)", len(subCandidates), len(hops))
-		} else {
-			cfg.Logger.Info("Built balancer route with %d nodes from subscriptions", len(subCandidates))
-		}
-	}
-
-	return subNodes, subCandidates, nil
-}
-
-func loadSubscribeProxies(urls []string, logger *logging.Logger) ([]subscribe.ClashProxy, error) {
-	urls = config.NormalizeSubscribeURLs("", urls)
-	if len(urls) == 0 {
-		return nil, fmt.Errorf("no subscription sources configured")
-	}
-
-	var (
-		proxies []subscribe.ClashProxy
-		errors  []string
-	)
-
-	for _, subURL := range urls {
-		if logger != nil {
-			logger.Info("Downloading subscription from %s", subURL)
-		}
-		data, err := subscribeDownload(subURL)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("Failed to download subscription from %s: %v", subURL, err)
+			if updateErr != nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Error("Subscription update failed after 3 retries, keeping existing nodes.")
+				}
+				continue
 			}
-			errors = append(errors, fmt.Sprintf("%s: %v", subURL, err))
-			continue
-		}
 
-		subProxies, err := subscribe.Parse(data)
-		if err != nil {
-			if logger != nil {
-				logger.Warn("Failed to parse subscription from %s: %v", subURL, err)
+			if cfg.Logger != nil {
+				cfg.Logger.Info("Successfully updated subscriptions, loaded %d nodes.", len(newCandidates))
 			}
-			errors = append(errors, fmt.Sprintf("%s: %v", subURL, err))
-			continue
-		}
-		proxies = append(proxies, subProxies...)
-	}
 
-	if len(proxies) == 0 {
-		if len(errors) == 0 {
-			return nil, fmt.Errorf("no valid matching nodes in subscription")
-		}
-		return nil, fmt.Errorf("download subscribe nodes: all subscription sources failed: %s", strings.Join(errors, "; "))
-	}
-
-	return proxies, nil
-}
-
-func dedupeSubscribeProxies(proxies []subscribe.ClashProxy) []subscribe.ClashProxy {
-	seen := make(map[string]struct{}, len(proxies))
-	deduped := make([]subscribe.ClashProxy, 0, len(proxies))
-	for _, proxy := range proxies {
-		key := subscribeProxyKey(proxy)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		deduped = append(deduped, proxy)
-	}
-	return deduped
-}
-
-func subscribeProxyKey(proxy subscribe.ClashProxy) string {
-	hostHeader := ""
-	if proxy.WSOpts != nil {
-		hostHeader = proxy.WSOpts.Headers["Host"]
-	}
-
-	return strings.Join([]string{
-		strings.ToLower(strings.TrimSpace(proxy.Type)),
-		strings.ToLower(strings.TrimSpace(proxy.Server)),
-		strconv.Itoa(proxy.Port),
-		strings.TrimSpace(proxy.UUID),
-		strconv.Itoa(proxy.AlterID),
-		strings.TrimSpace(proxy.Cipher),
-		strconv.FormatBool(proxy.UDP),
-		strings.TrimSpace(proxy.Password),
-		strconv.FormatBool(proxy.TLS),
-		strings.TrimSpace(proxy.SNI),
-		strings.ToLower(strings.TrimSpace(proxy.Network)),
-		strings.TrimSpace(hostHeader),
-		func() string {
-			if proxy.WSOpts == nil {
-				return ""
+			if len(hops) > 0 {
+				br.UpdateCandidates(newCandidates)
+			} else {
+				cands := make([]chain.BalancerCandidate, 0, len(newNodes))
+				for _, n := range newNodes {
+					cands = append(cands, chain.BalancerCandidate{Node: n})
+				}
+				br.UpdateCandidates(cands)
 			}
-			return strings.TrimSpace(proxy.WSOpts.Path)
-		}(),
-	}, "\x00")
-}
-
-// subscribeOptions 保存订阅模式相关的选项。
-type subscribeOptions struct {
-	URLs       []string
-	Filter     string
-	Update     int
-	ConnectURL string
-}
-
-func runSubscribe(ctx context.Context, opts subscribeOptions, cfg config.Config, logger *logging.Logger) int {
-	logger.Info("开始处理订阅源: %s", describeSubscribeSources(opts.URLs))
-
-	var (
-		proxies []subscribe.ClashProxy
-		errors  []string
-	)
-
-	for _, subURL := range config.NormalizeSubscribeURLs("", opts.URLs) {
-		logger.Info("开始下载订阅链接: %s", subURL)
-
-		data, err := subscribeDownload(subURL)
-		if err != nil {
-			logger.Warn("下载订阅链接失败: %s: %v", subURL, err)
-			errors = append(errors, fmt.Sprintf("%s: %v", subURL, err))
-			continue
-		}
-		logger.Info("订阅内容下载完成，大小: %d 字节", len(data))
-
-		savedPath, err := subscribe.SaveToFile(data, subURL)
-		if err != nil {
-			logger.Warn("保存订阅文件失败: %s: %v", subURL, err)
-		} else {
-			logger.Info("订阅文件已保存到: %s", savedPath)
-		}
-
-		subProxies, err := subscribe.Parse(data)
-		if err != nil {
-			logger.Warn("解析订阅内容失败: %s: %v", subURL, err)
-			errors = append(errors, fmt.Sprintf("%s: %v", subURL, err))
-			continue
-		}
-		logger.Info("订阅 %s 解析到 %d 个代理节点", subURL, len(subProxies))
-		proxies = append(proxies, subProxies...)
-	}
-
-	if len(proxies) == 0 {
-		if len(errors) == 0 {
-			logger.Error("没有可用的订阅节点")
-		} else {
-			logger.Error("所有订阅源都处理失败: %s", strings.Join(errors, "; "))
-		}
-		return 1
-	}
-
-	logger.Info("聚合后共解析到 %d 个代理节点", len(proxies))
-
-	// 过滤节点
-	if opts.Filter != "" {
-		proxies = subscribe.FilterProxies(proxies, opts.Filter)
-		logger.Info("过滤后剩余 %d 个代理节点", len(proxies))
-	}
-	proxies = dedupeSubscribeProxies(proxies)
-	logger.Info("去重后剩余 %d 个代理节点", len(proxies))
-
-	if len(proxies) == 0 {
-		logger.Warn("没有匹配的代理节点")
-		return 0
-	}
-
-	// 测试节点延迟
-	connectURL := opts.ConnectURL
-	if connectURL == "" {
-		connectURL = defaultConnectURL
-	}
-	logger.Info("开始测试 %d 个节点延迟，测试目标: %s", len(proxies), connectURL)
-	subscribe.TestNodes(ctx, proxies, connectURL, cfg, logger)
-
-	return 0
-}
-
-func parseArgs(args []string) (config.Config, subscribeOptions, error) {
-	fs := flag.NewFlagSet("forward-internal", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-
-	var listenFlags stringSlice
-	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. http://127.0.0.1:8080 (can be repeated)")
-	var forwardFlags stringSlice
-	fs.Var(&forwardFlags, "F", "Forward target endpoint, e.g. socks5://remote:1080 (can be repeated)")
-	tproxyPort := fs.Int("T", 0, "Enable transparent proxy listener on 127.0.0.1:<port> (use with -F only)")
-	configFile := fs.String("C", "", "Path to JSON config file")
-	routeFile := fs.String("R", "", "Path to proxy route config file")
-	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
-	var subscribeURLs stringSlice
-	fs.Var(&subscribeURLs, "S", "Subscribe URL to download and test nodes (Clash YAML format, can be repeated or comma-separated)")
-	fs.Var(&subscribeURLs, "subscribe", "Subscribe URL to download and test nodes (Clash YAML format, can be repeated or comma-separated)")
-	filterExpr := fs.String("filter", "", "Filter expression for node names (e.g. \"美国|US\", \"?!日本&?!JP\")")
-	subUpdate := fs.Int("sub-update", 60, "Subscription auto-update interval in minutes (0 to disable)")
-	connectURL := fs.String("connect-url", defaultConnectURL, "URL to test node latency (used with -S)")
-	isDebug := fs.Bool("debug", false, "Enable debug logging")
-	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
-	isVersion := fs.Bool("version", false, "Show version information")
-
-	fmt.Printf("forward %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	if *isVersion {
-		return config.Config{}, subscribeOptions{}, nil
-	}
-
-	fs.Usage = func() { Usage(fs) }
-
-	if err := fs.Parse(args); err != nil {
-		return config.Config{}, subscribeOptions{}, err
-	}
-
-	subOpts := subscribeOptions{
-		URLs:       splitSubscribeValues(subscribeURLs),
-		Filter:     strings.TrimSpace(*filterExpr),
-		ConnectURL: strings.TrimSpace(*connectURL),
-		Update:     *subUpdate,
-	}
-
-	if tproxyPort != nil && *tproxyPort > 0 {
-		if *configFile != "" || *routeFile != "" || len(listenFlags) > 0 {
-			return config.Config{}, subOpts, fmt.Errorf("-T cannot be used with -C/-R/-L")
-		}
-		if len(forwardFlags) == 0 {
-			return config.Config{}, subOpts, fmt.Errorf("-T requires -F (one or more forward endpoints)")
-		}
-	}
-
-	if *routeFile != "" {
-		if *configFile != "" || len(listenFlags) > 0 || len(forwardFlags) > 0 {
-			return config.Config{}, subOpts, fmt.Errorf("-R cannot be used with -C/-L/-F")
-		}
-		cfg, err := parseRouteConfig(*routeFile)
-		if err != nil {
-			return config.Config{}, subOpts, err
-		}
-		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
-		cfg.RoutePath = *routeFile
-		return cfg, subOpts, nil
-	}
-
-	if *configFile != "" {
-		cfg, err := parseConfigFile(*configFile)
-		if err != nil {
-			return config.Config{}, subOpts, err
-		}
-		applyDebugFlags(&cfg, *isDebug, *isDebugVerbose)
-		return cfg, subOpts, nil
-	}
-
-	logLevel := "info"
-	if (isDebug != nil && *isDebug) || (isDebugVerbose != nil && *isDebugVerbose) {
-		logLevel = "debug"
-	}
-
-	cfg := config.Config{}
-
-	llevel, err := logging.ParseLevel(logLevel)
-	if err != nil {
-		return config.Config{}, subOpts, err
-	}
-	logger := logging.New(logging.Options{Level: llevel})
-	cfg.Logger = logger
-	cfg.LogLevel = llevel
-	cfg.DebugVerbose = isDebugVerbose != nil && *isDebugVerbose
-
-	// 订阅模式不需要 listen 参数
-	if len(subOpts.URLs) == 0 && (tproxyPort == nil || *tproxyPort == 0) && len(listenFlags) == 0 {
-		defaultPath, err := cjson.FindDefaultConfig()
-		if err != nil {
-			fs.Usage()
-			return cfg, subOpts, err
-		}
-		dcfg, err := parseConfigFile(defaultPath)
-		if err != nil {
-			return config.Config{}, subOpts, err
-		}
-		applyDebugFlags(&dcfg, *isDebug, *isDebugVerbose)
-		return dcfg, subOpts, nil
-	}
-
-	if tproxyPort != nil && *tproxyPort > 0 {
-		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(*tproxyPort))
-		ep, err := endpoint.Parse("tproxy://" + addr)
-		if err != nil {
-			return cfg, subOpts, fmt.Errorf("parse -T %d: %w", *tproxyPort, err)
-		}
-		cfg.Listeners = append(cfg.Listeners, ep)
-		cfg.Listen = ep
-		cfg.TProxy = &config.TProxyConfig{
-			Port:         *tproxyPort,
-			Network:      []string{"tcp"},
-			Sniffing:     true,
-			DestOverride: []string{"http", "tls", "quic"},
-		}
-	} else if len(listenFlags) > 0 {
-		listeners, idx, err := config.ParseEndpoints(listenFlags)
-		if err != nil {
-			return cfg, subOpts, fmt.Errorf("parse -L %s: %w", listenFlags[idx], err)
-		}
-		cfg.Listeners = append(cfg.Listeners, listeners...)
-		cfg.Listen = cfg.Listeners[0]
-	}
-
-	if len(forwardFlags) > 0 {
-		chain, idx, err := config.ParseEndpoints(forwardFlags)
-		if err != nil {
-			return cfg, subOpts, fmt.Errorf("parse -F %s: %w", forwardFlags[idx], err)
-		}
-		cfg.ForwardChain = append(cfg.ForwardChain, chain...)
-		if len(cfg.ForwardChain) > 0 {
-			last := cfg.ForwardChain[len(cfg.ForwardChain)-1]
-			cfg.Forward = &last
-		}
-	}
-
-	cfg.Insecure = *insecure
-
-	if len(cfg.Listeners) > 0 {
-		cfg.Nodes = []config.NodeConfig{{
-			Name:          "default",
-			Listeners:     cfg.Listeners,
-			Forward:       cfg.Forward,
-			ForwardChain:  cfg.ForwardChain,
-			Insecure:      cfg.Insecure,
-			SubscribeURL:  primarySubscribeURL(subOpts.URLs),
-			SubscribeURLs: subOpts.URLs,
-		}}
-	}
-
-	config.ApplyDefaults(&cfg)
-	cfg.SubscribeURL = primarySubscribeURL(subOpts.URLs)
-	cfg.SubscribeURLs = subOpts.URLs
-	cfg.SubscribeFilter = subOpts.Filter
-	cfg.SubscribeUpdate = subOpts.Update
-	return cfg, subOpts, nil
-}
-
-func splitSubscribeValues(values []string) []string {
-	return config.NormalizeSubscribeURLs("", config.SplitCSVValues(values))
-}
-
-func primarySubscribeURL(urls []string) string {
-	return config.PrimaryValue(urls)
-}
-
-func describeSubscribeSources(urls []string) string {
-	urls = config.NormalizeSubscribeURLs("", urls)
-	switch len(urls) {
-	case 0:
-		return "0 subscription sources"
-	case 1:
-		return urls[0]
-	case 2, 3:
-		return strings.Join(urls, ", ")
-	default:
-		return fmt.Sprintf("%d subscription sources", len(urls))
-	}
-}
-
-func parseConfigFile(path string) (config.Config, error) {
-	return cjson.ParseFile(path)
-}
-
-func parseRouteConfig(path string) (config.Config, error) {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".ini", ".conf", ".cfg":
-		return cini.ParseFile(path)
-	default:
-		return config.Config{}, fmt.Errorf("route config must be .ini/.conf/.cfg")
-	}
-}
-
-func applyDebugFlags(cfg *config.Config, debug, debugVerbose bool) {
-	if cfg == nil {
-		return
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = logging.New(logging.Options{Level: logging.LevelInfo})
-		cfg.LogLevel = logging.LevelInfo
-	}
-	if debug || debugVerbose {
-		cfg.Logger.SetLevel(logging.LevelDebug)
-		cfg.LogLevel = logging.LevelDebug
-	}
-	if debugVerbose {
-		cfg.DebugVerbose = true
-	}
-}
-
-func isProxyServer(scheme string) bool {
-	base, transport := splitSchemeTransport(scheme)
-	if base == "http2" || base == "http3" {
-		return transport == transportNone
-	}
-	if base == "vless" {
-		return true
-	}
-	if base == "vmess" {
-		return true
-	}
-	if base == "hysteria2" || base == "hy2" {
-		return true
-	}
-	if base == "ss" || base == "shadowsocks" {
-		return true
-	}
-	switch base {
-	case "http", "socks5", "socks5h", "tproxy":
-		return true
-	default:
-		return false
-	}
-}
-
-func isReverseServer(cfg config.Config) bool {
-	if cfg.Listen.Query.Get("bind") != "true" {
-		return false
-	}
-	switch strings.ToLower(cfg.Listen.Scheme) {
-	case "tls", "https", "http3", "quic", "reality", "vless+reality":
-		return true
-	default:
-		return false
-	}
-}
-
-func isReverseClient(cfg config.Config) bool {
-	ls := strings.ToLower(cfg.Listen.Scheme)
-	if ls != "rtcp" && ls != "rudp" {
-		return false
-	}
-	if cfg.Listen.FAddress == "" {
-		return false
-	}
-	if cfg.Forward == nil && len(cfg.ForwardChain) == 0 {
-		return false
-	}
-	return true
-}
-
-func isPortForward(cfg config.Config) bool {
-	ls, transport := splitSchemeTransport(cfg.Listen.Scheme)
-	if ls != "tcp" && ls != "udp" {
-		return false
-	}
-	if ls == "udp" && transport != transportNone {
-		return false
-	}
-	if cfg.Forward == nil {
-		return cfg.Listen.FAddress != ""
-	}
-	fs, _ := splitSchemeTransport(cfg.Forward.Scheme)
-	return strings.EqualFold(ls, fs)
-}
-
-func resolveForwardTarget(cfg config.Config) (target string, useForwardAsTarget bool, err error) {
-	if cfg.Listen.FAddress != "" {
-		return cfg.Listen.FAddress, false, nil
-	}
-	if cfg.Forward == nil {
-		return "", false, fmt.Errorf("missing target address (use -L .../target or -F target)")
-	}
-	ls, _ := splitSchemeTransport(cfg.Listen.Scheme)
-	fs, _ := splitSchemeTransport(cfg.Forward.Scheme)
-	if !strings.EqualFold(ls, fs) {
-		return "", false, fmt.Errorf("forward scheme %s does not match listen scheme %s", cfg.Forward.Scheme, cfg.Listen.Scheme)
-	}
-	if len(cfg.ForwardChain) > 1 {
-		return "", false, fmt.Errorf("forward chain requires target in listen path")
-	}
-	return cfg.Forward.Address(), true, nil
-}
-
-type transportKind string
-
-const (
-	transportNone transportKind = ""
-	transportTLS  transportKind = "tls"
-	transportDTLS transportKind = "dtls"
-	transportH2   transportKind = "h2"
-	transportH3   transportKind = "h3"
-)
-
-func splitSchemeTransport(scheme string) (base string, transport transportKind) {
-	s := strings.ToLower(strings.TrimSpace(scheme))
-	switch s {
-	case "https":
-		return "http", transportTLS
-	case "http2":
-		return "http2", transportNone
-	case "http3":
-		return "http3", transportNone
-	case "tls":
-		return "http", transportTLS
-	case "h2":
-		return "http", transportH2
-	case "h3":
-		return "http", transportH3
-	case "dtls":
-		return "tcp", transportDTLS
-	case "hysteria2", "hy2":
-		return "hysteria2", transportNone
-	// VLESS + Reality
-	case "vless", "vless+reality", "reality":
-		return "vless", transportNone
-	case "vless+tls":
-		return "vless", transportTLS
-	// VMess
-	case "vmess":
-		return "vmess", transportNone
-	case "vmess+tls":
-		return "vmess", transportTLS
-	}
-	if strings.HasSuffix(s, "+h2") {
-		return strings.TrimSuffix(s, "+h2"), transportH2
-	}
-	if strings.HasSuffix(s, "+h3") {
-		return strings.TrimSuffix(s, "+h3"), transportH3
-	}
-	if strings.HasSuffix(s, "+tls") {
-		return strings.TrimSuffix(s, "+tls"), transportTLS
-	}
-	if strings.HasSuffix(s, "+dtls") {
-		return strings.TrimSuffix(s, "+dtls"), transportDTLS
-	}
-	// VLESS + Reality 带后缀
-	if strings.HasSuffix(s, "+reality") {
-		return strings.TrimSuffix(s, "+reality"), transportNone
-	}
-	return s, transportNone
-}
-
-func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string, transport transportKind) {
-	base, transport := splitSchemeTransport(scheme)
-	handlerScheme = base
-	listenerScheme = base
-
-	switch base {
-	case "http3":
-		handlerScheme = "http"
-		listenerScheme = "http3"
-		return handlerScheme, listenerScheme, transportNone
-	case "http2":
-		handlerScheme = "http"
-		listenerScheme = "http2"
-		return handlerScheme, listenerScheme, transportNone
-	case "socks5h":
-		handlerScheme = "socks5"
-	// VLESS + Reality
-	case "vless":
-		handlerScheme = "vless"
-		listenerScheme = "reality"
-		return handlerScheme, listenerScheme, transportNone
-	// VMess
-	case "vmess":
-		handlerScheme = "vmess"
-		listenerScheme = "tcp" // VMess 使用普通 TCP 监听
-	// Shadowsocks
-	case "ss", "shadowsocks":
-		handlerScheme = "ss"
-		listenerScheme = "tcp" // SS 使用普通 TCP 监听
-	}
-
-	if transport == transportDTLS {
-		listenerScheme = "dtls"
-	}
-	if transport == transportH2 {
-		listenerScheme = "h2"
-	}
-	if transport == transportH3 {
-		listenerScheme = "h3"
-	}
-	return
-}
-
-func readPositiveQueryInt(q url.Values, fallback int, keys ...string) int {
-	for _, key := range keys {
-		raw := strings.TrimSpace(q.Get(key))
-		if raw == "" {
-			continue
-		}
-		n, err := strconv.Atoi(raw)
-		if err != nil || n <= 0 {
-			continue
-		}
-		return n
-	}
-	return fallback
-}
-
-func Usage(fs *flag.FlagSet) {
-	fmt.Fprintf(fs.Output(), "Usage of %s:\n", os.Args[0])
-	fs.PrintDefaults()
-}
-
-type stringSlice []string
-
-func (s *stringSlice) String() string {
-	return strings.Join(*s, ", ")
-}
-
-func (s *stringSlice) Set(value string) error {
-	*s = append(*s, value)
-	return nil
-}
-
-type xrayLogHandler struct {
-	level   string
-	logger  *logging.Logger
-	verbose bool
-}
-
-func (h *xrayLogHandler) Handle(msg xlog.Message) {
-	var severity xlog.Severity
-	var content interface{}
-
-	if gm, ok := msg.(*xlog.GeneralMessage); ok {
-		severity = gm.Severity
-		content = gm.Content
-	} else {
-		severity = xlog.Severity_Info
-		content = msg.String()
-	}
-
-	txt := fmt.Sprint(content)
-
-	switch severity {
-	case xlog.Severity_Debug:
-		if h.level == "debug" && h.verbose {
-			h.logger.Debug("%s", txt)
-		}
-	case xlog.Severity_Info:
-		// Keep xray component chatter opt-in to avoid overwhelming debug logs.
-		if h.level == "debug" && h.verbose {
-			h.logger.Debug("%s", txt)
-		}
-	case xlog.Severity_Warning:
-		h.logger.Warn("%s", txt)
-	case xlog.Severity_Error:
-		h.logger.Error("%s", txt)
-	default:
-		if h.level == "debug" && h.verbose {
-			h.logger.Debug("%s", txt)
 		}
 	}
 }

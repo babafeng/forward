@@ -34,8 +34,8 @@ const (
 )
 
 var (
-	cleanupTickInterval = 30 * time.Second
-	sessionIdleTimeout  = 60 * time.Second
+	CleanupTickInterval = 30 * time.Second
+	SessionIdleTimeout  = 60 * time.Second
 )
 
 type serverOptions struct {
@@ -244,7 +244,7 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) cleanupLoop() {
-	interval := cleanupTickInterval
+	interval := CleanupTickInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
@@ -256,7 +256,7 @@ func (s *Server) cleanupLoop() {
 			return
 		case <-ticker.C:
 			now := time.Now().UnixNano()
-			timeout := int64(sessionIdleTimeout)
+			timeout := int64(SessionIdleTimeout)
 			if timeout <= 0 {
 				timeout = int64(60 * time.Second)
 			}
