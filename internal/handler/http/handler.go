@@ -920,3 +920,8 @@ func redactURL(u *url.URL) string {
 	}
 	return redacted.String()
 }
+
+// RedactURL is the exported wrapper for redactURL, used by external tests.
+func RedactURL(u *url.URL) string {
+	return redactURL(u)
+}

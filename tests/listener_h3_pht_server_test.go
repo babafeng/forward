@@ -80,13 +80,13 @@ func TestCloseClosesStoredSessionConn(t *testing.T) {
 }
 
 func TestListenAndServeHTTP3StartsCleanupLoop(t *testing.T) {
-	oldTick := h3CleanupTickInterval
-	oldTimeout := h3SessionIdleTimeout
-	h3CleanupTickInterval = 10 * time.Millisecond
-	h3SessionIdleTimeout = 5 * time.Millisecond
+	oldTick := h3listener.CleanupTickInterval
+	oldTimeout := h3listener.SessionIdleTimeout
+	h3listener.CleanupTickInterval = 10 * time.Millisecond
+	h3listener.SessionIdleTimeout = 5 * time.Millisecond
 	t.Cleanup(func() {
-		h3CleanupTickInterval = oldTick
-		h3SessionIdleTimeout = oldTimeout
+		h3listener.CleanupTickInterval = oldTick
+		h3listener.SessionIdleTimeout = oldTimeout
 	})
 
 	tlsConfig := mustMakeH3TLSConfig(t)
