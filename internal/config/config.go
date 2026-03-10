@@ -30,6 +30,9 @@ const (
 	DefaultMaxConnections   = 4096
 	DefaultMaxUDPSessions   = 1024
 
+	// DefaultSubscribeUpdate 订阅自动刷新间隔（分钟）。
+	DefaultSubscribeUpdate = 60
+
 	// HTTP upstream transport pooling defaults.
 	DefaultHTTPMaxIdleConns        = 2048
 	DefaultHTTPMaxIdleConnsPerHost = 512

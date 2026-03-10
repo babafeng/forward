@@ -24,7 +24,12 @@ type BalancerRoute struct {
 	testInterval time.Duration
 	dialTimeout  time.Duration
 	stopCh       chan struct{}
+	retestCh     chan struct{} // 用于触发即时重测
 	closeOnce    sync.Once
+
+	// 全部节点失败时的回调（可选），由上层注册用于紧急刷新订阅。
+	onAllFailed   func()
+	lastAllFailed time.Time // 节流：最短 5 分钟间隔
 }
 
 // BalancerCandidate 表示一个负载均衡候选项。
@@ -76,6 +81,7 @@ func NewBalancerRouteWithCandidates(candidates []BalancerCandidate, testInterval
 		testInterval: testInterval,
 		dialTimeout:  dialTimeout,
 		stopCh:       make(chan struct{}),
+		retestCh:     make(chan struct{}, 1),
 	}
 	copy(r.sortedNodes, nodes)
 	// 初始化时给所有节点设置一个合理的默认延迟
@@ -116,6 +122,8 @@ func (r *BalancerRoute) backgroundTest() {
 	for {
 		select {
 		case <-ticker.C:
+			r.testAll()
+		case <-r.retestCh:
 			r.testAll()
 		case <-r.stopCh:
 			return
@@ -260,6 +268,26 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 	if hasTraceLog {
 		tr.Logger.Debug("%sdial fail balancer %s %s err=%v dur=%s", tr.Prefix(), strings.ToUpper(network), address, lastErr, time.Since(start))
 	}
+
+	// 所有节点失败：触发即时重测（非阻塞）
+	select {
+	case r.retestCh <- struct{}{}:
+	default:
+	}
+
+	// 触发上层紧急回调（节流 5 分钟）
+	r.mu.Lock()
+	cb := r.onAllFailed
+	now := time.Now()
+	throttled := now.Sub(r.lastAllFailed) < 5*time.Minute
+	if cb != nil && !throttled {
+		r.lastAllFailed = now
+	}
+	r.mu.Unlock()
+	if cb != nil && !throttled {
+		go cb()
+	}
+
 	return nil, fmt.Errorf("balancer all nodes failed, last err: %v", lastErr)
 }
 
@@ -304,6 +332,14 @@ func (r *BalancerRoute) Nodes() []*Node {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.sortedNodes
+}
+
+// SetOnAllFailed 注册一个回调，当所有节点都失败时调用。
+// 回调会被节流为最短 5 分钟间隔，并在独立的 goroutine 中执行。
+func (r *BalancerRoute) SetOnAllFailed(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onAllFailed = fn
 }
 
 // RouteSummary 返回简单的只包含单节点的总结
