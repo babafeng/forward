@@ -214,7 +214,7 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 	// Print connection routing info
 	if hasTraceLog {
 		// Just print load balanced name for the balancer itself for now, or "Balancer"
-		tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, "Balancer")
+		tr.Logger.Info("%s%s -> %s -> %s %s via %s", tr.Prefix(), tr.Src, tr.Local, strings.ToUpper(network), address, "Balancer")
 	}
 
 	verbose := hasTraceLog && tr.Verbose
@@ -260,7 +260,7 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 			} else {
 				summary = labelNode(node)
 			}
-			tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, summary)
+			tr.Logger.Info("%s%s -> %s -> %s %s via %s", tr.Prefix(), tr.Src, tr.Local, strings.ToUpper(network), address, summary)
 		}
 		return cc, nil
 	}

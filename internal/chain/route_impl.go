@@ -52,7 +52,7 @@ func SetDefaultResolver(dnsServers []string) {
 func (r defaultRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	tr := ictx.TraceFromContext(ctx)
 	if tr != nil && tr.Logger != nil {
-		tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, RouteSummary(r))
+		tr.Logger.Info("%s%s -> %s -> %s %s via %s", tr.Prefix(), tr.Src, tr.Local, strings.ToUpper(network), address, RouteSummary(r))
 	}
 	start := time.Now()
 
@@ -120,7 +120,7 @@ func (r *chainRoute) Dial(ctx context.Context, network, address string) (net.Con
 	tr := ictx.TraceFromContext(ctx)
 	hasTraceLog := tr != nil && tr.Logger != nil
 	if hasTraceLog {
-		tr.Logger.Info("%s%s -> %s -> %s via %s", tr.Prefix(), tr.Src, tr.Local, address, RouteSummary(r))
+		tr.Logger.Info("%s%s -> %s -> %s %s via %s", tr.Prefix(), tr.Src, tr.Local, strings.ToUpper(network), address, RouteSummary(r))
 	}
 	verbose := hasTraceLog && tr.Verbose
 	if verbose {
