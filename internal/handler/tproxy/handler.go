@@ -158,7 +158,8 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...corehandler
 		route = chain.NewRoute()
 	}
 
-	if len(route.Nodes()) > 0 && sniffHost != "" && shouldOverride(sniffProto, h.destOverride) {
+	if sniffHost != "" && shouldOverride(sniffProto, h.destOverride) &&
+		(len(route.Nodes()) > 0 || strings.EqualFold(chain.RouteSummary(route), "DIRECT")) {
 		dialAddr = routeAddr
 	}
 

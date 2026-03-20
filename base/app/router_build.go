@@ -38,6 +38,13 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 
 		// 注册紧急回调：全部节点失败时立刻重新拉取订阅并热更新 (节流 5 分钟)
 		br := defaultRoute.(*chain.BalancerRoute)
+		if len(hops) > 0 {
+			fallbackRoute, err := builder.BuildRoutePooled(cfg, hops)
+			if err != nil {
+				return nil, err
+			}
+			br.SetFallbackRoute(fallbackRoute)
+		}
 		emergencyCfg := cfg
 		emergencyHops := hops
 		br.SetOnAllFailed(func() {
@@ -101,10 +108,10 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, node := range rt.Nodes() {
-			if node != nil {
-				node.Display = name
-			}
+		nodes := rt.Nodes()
+		if len(nodes) > 0 && nodes[0] != nil {
+			nodes[0].Name = name
+			nodes[0].Display = ""
 		}
 		return rt, nil
 	}
