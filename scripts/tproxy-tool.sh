@@ -161,7 +161,8 @@ set xray_server6 { type ipv6_addr; flags interval; }
 
 chain xray_prerouting {
   type filter hook prerouting priority mangle; policy accept;
-
+  udp dport ${TPROXY_PORT} return
+  tcp dport ${TPROXY_PORT} return
   # 只抓 LAN 进来的流量。
   iifname != "$(shell_quote "$LAN_IFACE")" return
 EOF
@@ -218,12 +219,15 @@ TPROXY_PORT=$(shell_quote "$TPROXY_PORT")
 BYPASS_REMOTE=$(shell_quote "$BYPASS_REMOTE")
 NO_CRON=$(shell_quote "$NO_CRON")
 
+PS4='+ '
+set -x
+
 has_bypass_changes() {
-  [ -n "$BYPASS_REMOTE" ] && return 0
-  grep -qE '^[[:space:]]+ip saddr \{' "$RULE_FILE" 2>/dev/null && return 0
-  grep -qE '^[[:space:]]+ip6 saddr \{' "$RULE_FILE" 2>/dev/null && return 0
-  grep -qE '^[[:space:]]+ip daddr \{' "$RULE_FILE" 2>/dev/null && return 0
-  grep -qE '^[[:space:]]+ip6 daddr \{' "$RULE_FILE" 2>/dev/null && return 0
+  [ -n "\$BYPASS_REMOTE" ] && return 0
+  grep -qE '^[[:space:]]+ip saddr \{' "\$RULE_FILE" 2>/dev/null && return 0
+  grep -qE '^[[:space:]]+ip6 saddr \{' "\$RULE_FILE" 2>/dev/null && return 0
+  grep -qE '^[[:space:]]+ip daddr \{' "\$RULE_FILE" 2>/dev/null && return 0
+  grep -qE '^[[:space:]]+ip6 daddr \{' "\$RULE_FILE" 2>/dev/null && return 0
   return 1
 }
 
@@ -329,7 +333,7 @@ SCRIPT_EOF
 }
 
 apply_runtime() {
-  if [ "$EXISTED_BEFORE" = "1" ] && has_bypass_changes; then
+  if [ "\$EXISTED_BEFORE" = "1" ] && has_bypass_changes; then
     :
   else
     /etc/init.d/network restart
@@ -356,6 +360,10 @@ set -eu
 
 RULE_FILE="/etc/nftables.d/90-xray-tproxy.nft"
 LOOKUP_TABLE=$(shell_quote "$LOOKUP_TABLE")
+RULE_PRIORITY=$(shell_quote "$RULE_PRIORITY")
+
+PS4='+ '
+set -x
 
 delete_anonymous_network_rules() {
   local idx section mark lookup priority family
@@ -414,6 +422,23 @@ cleanup_nft_runtime() {
   nft delete set inet fw4 xray_server6 >/dev/null 2>&1 || true
 }
 
+cleanup_runtime_policy() {
+  while ip rule del priority "\$RULE_PRIORITY" fwmark 0x1 lookup "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+  while ip rule del priority "\$RULE_PRIORITY" fwmark 0x1/0x1 lookup "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+  while ip -6 rule del priority "\$RULE_PRIORITY" fwmark 0x1 lookup "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+  while ip -6 rule del priority "\$RULE_PRIORITY" fwmark 0x1/0x1 lookup "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+
+  while ip route del local default dev lo table "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+  while ip route del local 0.0.0.0/0 dev lo table "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+  while ip -6 route del local default dev lo table "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+  while ip -6 route del local ::/0 dev lo table "\$LOOKUP_TABLE" >/dev/null 2>&1; do :; done
+  ip route flush table "\$LOOKUP_TABLE" >/dev/null 2>&1 || true
+  ip -6 route flush table "\$LOOKUP_TABLE" >/dev/null 2>&1 || true
+
+  ip route flush cache >/dev/null 2>&1 || true
+  ip -6 route flush cache >/dev/null 2>&1 || true
+}
+
 uci -q delete network.forward_tproxy4 || true
 uci -q delete network.forward_tproxy6 || true
 uci -q delete network.forward_tproxy_route4 || true
@@ -432,8 +457,10 @@ if [ -f /etc/crontabs/root ]; then
   /etc/init.d/cron restart
 fi
 
-/etc/init.d/network restart
 cleanup_nft_runtime
+cleanup_runtime_policy
+/etc/init.d/network restart
+cleanup_runtime_policy
 fw4 reload
 
 echo "Uninstalled transparent proxy policy."
@@ -500,10 +527,30 @@ run_remote_script_detached() {
     local op_name="$2"
     local remote_script="/tmp/tproxy-tool-${op_name}-$$.sh"
     local remote_log="/tmp/tproxy-tool-${op_name}-$$.log"
+    local remote_done="/tmp/tproxy-tool-${op_name}-$$.done"
+    local remote_wrapper
+    local remote_cmd
+
+    remote_wrapper="rm -f ${remote_done}; sh ${remote_script}; rc=\$?; printf '%s\n' \"\$rc\" > ${remote_done}; rm -f ${remote_script}"
+    remote_cmd="rm -f $(shell_quote "$remote_script") $(shell_quote "$remote_log") $(shell_quote "$remote_done") && \
+cat > $(shell_quote "$remote_script") && chmod +x $(shell_quote "$remote_script") && \
+if command -v nohup >/dev/null 2>&1; then \
+  launcher='nohup'; \
+  printf '[INFO] detached launcher=%s\n' \"\$launcher\" >$(shell_quote "$remote_log"); \
+  nohup sh -c $(shell_quote "$remote_wrapper") >>$(shell_quote "$remote_log") 2>&1 </dev/null & \
+elif command -v setsid >/dev/null 2>&1; then \
+  launcher='setsid'; \
+  printf '[INFO] detached launcher=%s\n' \"\$launcher\" >$(shell_quote "$remote_log"); \
+  setsid sh -c $(shell_quote "$remote_wrapper") >>$(shell_quote "$remote_log") 2>&1 </dev/null & \
+else \
+  launcher='background'; \
+  printf '[WARN] detached launcher=%s\n' \"\$launcher\" >$(shell_quote "$remote_log"); \
+  sh -c $(shell_quote "$remote_wrapper") >>$(shell_quote "$remote_log") 2>&1 </dev/null & \
+fi && printf '%s\n%s\n' $(shell_quote "$remote_log") $(shell_quote "$remote_done")"
 
     ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
         "${SSH_USER}@${TARGET_HOST}" \
-        "cat > $(shell_quote "$remote_script") && chmod +x $(shell_quote "$remote_script") && nohup $(shell_quote "$remote_script") >$(shell_quote "$remote_log") 2>&1 </dev/null & printf '%s\n' $(shell_quote "$remote_log")" \
+        "$remote_cmd" \
         <<<"$script_text"
 }
 
@@ -539,13 +586,68 @@ wait_for_reconnect() {
     while true; do
         if ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
             -o ConnectTimeout=5 "${SSH_USER}@${TARGET_HOST}" 'true' >/dev/null 2>&1; then
-            info "Wi-Fi reconnected. Listing current transparent proxy state."
+            info "Wi-Fi reconnected."
             break
         fi
         info "Waiting for Wi-Fi reconnection to ${TARGET_HOST}..."
         sleep 5
     done
-    run_remote_script "$(build_remote_list_script)"
+}
+
+wait_for_remote_completion() {
+    local remote_done="$1"
+    local remote_log="$2"
+    local status=""
+    local start_ts
+    local prev_log=""
+    local current_log=""
+    start_ts="$(date +%s)"
+
+    while true; do
+        current_log="$(ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=5 "${SSH_USER}@${TARGET_HOST}" \
+            "cat $(shell_quote "$remote_log") 2>/dev/null || true" 2>/dev/null || true)"
+        if [[ "$current_log" != "$prev_log" ]]; then
+            if [[ -n "$prev_log" && "$current_log" == "$prev_log"* ]]; then
+                printf '%s' "${current_log:${#prev_log}}"
+            else
+                printf '%s' "$current_log"
+            fi
+            prev_log="$current_log"
+        fi
+
+        status="$(ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            -o ConnectTimeout=5 "${SSH_USER}@${TARGET_HOST}" \
+            "[ -f $(shell_quote "$remote_done") ] && cat $(shell_quote "$remote_done")" 2>/dev/null || true)"
+        if [[ -n "$status" ]]; then
+            break
+        fi
+        if (( $(date +%s) - start_ts >= 180 )); then
+            warn "Timed out waiting for remote ${MODE} script completion."
+            ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+                "${SSH_USER}@${TARGET_HOST}" "tail -n 100 $(shell_quote "$remote_log") 2>/dev/null || true" || true
+            die "remote ${MODE} script did not finish within 180 seconds"
+        fi
+        info "Waiting for remote ${MODE} script completion on ${TARGET_HOST}..."
+        sleep 2
+    done
+
+    current_log="$(ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=5 "${SSH_USER}@${TARGET_HOST}" \
+        "cat $(shell_quote "$remote_log") 2>/dev/null || true" 2>/dev/null || true)"
+    if [[ "$current_log" != "$prev_log" ]]; then
+        if [[ -n "$prev_log" && "$current_log" == "$prev_log"* ]]; then
+            printf '%s' "${current_log:${#prev_log}}"
+        else
+            printf '%s' "$current_log"
+        fi
+    fi
+
+    if [[ "$status" != "0" ]]; then
+        ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            "${SSH_USER}@${TARGET_HOST}" "cat $(shell_quote "$remote_log")" || true
+        die "remote ${MODE} script failed with exit code ${status}"
+    fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -629,11 +731,18 @@ install)
         warn "Installing transparent proxy will restart OpenWrt network and your Wi-Fi/network connection will disconnect temporarily."
         confirm_yes "Proceed with install?" || die "installation cancelled"
         info "Starting transparent proxy installation. Network will disconnect temporarily."
-        run_remote_script_detached "$(build_remote_install_script)" "install" >/dev/null
+        install_script_text="$(build_remote_install_script)" || die "failed to build remote install script"
+        remote_paths="$(run_remote_script_detached "$install_script_text" "install")"
+        remote_log="${remote_paths%%$'\n'*}"
+        remote_done="${remote_paths#*$'\n'}"
         wait_for_reconnect
+        wait_for_remote_completion "$remote_done" "$remote_log"
+        info "Install completed. Listing current transparent proxy state."
+        run_remote_script "$(build_remote_list_script)"
     else
         info "Updating transparent proxy bypass rules. This will reload firewall rules and may briefly affect existing connections."
-        run_remote_script "$(build_remote_install_script)"
+        install_script_text="$(build_remote_install_script)" || die "failed to build remote install script"
+        run_remote_script "$install_script_text"
         info "Bypass update completed. Listing current transparent proxy state."
         run_remote_script "$(build_remote_list_script)"
     fi
@@ -642,8 +751,13 @@ uninstall)
     warn "Uninstalling transparent proxy will restart OpenWrt network and your Wi-Fi/network connection will disconnect temporarily."
     confirm_yes "Proceed with uninstall?" || die "uninstall cancelled"
     info "Starting transparent proxy uninstall. Network will disconnect temporarily."
-    run_remote_script_detached "$(build_remote_uninstall_script)" "uninstall" >/dev/null
+    remote_paths="$(run_remote_script_detached "$(build_remote_uninstall_script)" "uninstall")"
+    remote_log="${remote_paths%%$'\n'*}"
+    remote_done="${remote_paths#*$'\n'}"
     wait_for_reconnect
+    wait_for_remote_completion "$remote_done" "$remote_log"
+    info "Uninstall completed. Listing current transparent proxy state."
+    run_remote_script "$(build_remote_list_script)"
     ;;
 list)
     info "Listing key transparent proxy route and firewall settings."

@@ -51,9 +51,7 @@ func SetDefaultResolver(dnsServers []string) {
 
 func (r defaultRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	tr := ictx.TraceFromContext(ctx)
-	if tr != nil && tr.Logger != nil {
-		tr.Logger.Info("%s%s -> %s -> %s %s via %s", tr.Prefix(), tr.Src, tr.Local, strings.ToUpper(network), address, RouteSummary(r))
-	}
+	logRouteInfo(tr, network, address, RouteSummary(r))
 	start := time.Now()
 
 	timeout := r.dialTimeout
@@ -120,7 +118,7 @@ func (r *chainRoute) Dial(ctx context.Context, network, address string) (net.Con
 	tr := ictx.TraceFromContext(ctx)
 	hasTraceLog := tr != nil && tr.Logger != nil
 	if hasTraceLog {
-		tr.Logger.Info("%s%s -> %s -> %s %s via %s", tr.Prefix(), tr.Src, tr.Local, strings.ToUpper(network), address, RouteSummary(r))
+		logRouteInfo(tr, network, address, RouteSummary(r))
 	}
 	verbose := hasTraceLog && tr.Verbose
 	if verbose {
@@ -255,6 +253,18 @@ func (r *chainRoute) Nodes() []*Node {
 		return nil
 	}
 	return r.nodes
+}
+
+func logRouteInfo(tr *ictx.Trace, network, address, summary string) {
+	if tr == nil || tr.Logger == nil {
+		return
+	}
+	proto := strings.ToUpper(network)
+	if strings.EqualFold(strings.TrimSpace(summary), "DIRECT") {
+		tr.Logger.Info("%s%s -> %s %s --> DIRECT", tr.Prefix(), tr.Src, proto, address)
+		return
+	}
+	tr.Logger.Info("%s%s -> %s -> %s %s via %s", tr.Prefix(), tr.Src, tr.Local, proto, address, summary)
 }
 
 // Close releases resources held by node transports (e.g. dial pools).

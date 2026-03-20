@@ -19,6 +19,7 @@ type BalancerRoute struct {
 	mu           sync.RWMutex
 	nodes        []*Node
 	routes       map[*Node]Route
+	fallback     Route
 	latencies    map[*Node]time.Duration
 	sortedNodes  []*Node // 根据延迟排序的节点
 	testInterval time.Duration
@@ -26,6 +27,7 @@ type BalancerRoute struct {
 	stopCh       chan struct{}
 	retestCh     chan struct{} // 用于触发即时重测
 	closeOnce    sync.Once
+	allFailed    bool
 
 	// 全部节点失败时的回调（可选），由上层注册用于紧急刷新订阅。
 	onAllFailed   func()
@@ -102,8 +104,10 @@ func (r *BalancerRoute) Close() {
 		close(r.stopCh)
 		r.mu.RLock()
 		routes := snapshotRoutes(r.routes)
+		fallback := r.fallback
 		r.mu.RUnlock()
 		closeRoutes(routes)
+		closeRoute(fallback)
 	})
 }
 
@@ -197,12 +201,19 @@ func (r *BalancerRoute) testAll() {
 	})
 
 	r.sortedNodes = append(available, unavailable...)
+	r.allFailed = len(r.nodes) > 0 && len(available) == 0
 }
 
 func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	r.mu.RLock()
 	nodes := r.sortedNodes
+	fallback := r.fallback
+	allFailed := r.allFailed
 	r.mu.RUnlock()
+
+	if allFailed && fallback != nil {
+		return fallback.Dial(ctx, network, address)
+	}
 
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("balancer: no nodes available")
@@ -342,6 +353,29 @@ func (r *BalancerRoute) SetOnAllFailed(fn func()) {
 	r.onAllFailed = fn
 }
 
+// SetFallbackRoute registers the route to use after background retest confirms
+// every balancer candidate is still unavailable.
+func (r *BalancerRoute) SetFallbackRoute(rt Route) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if old := r.fallback; old != nil && routeKey(old) != routeKey(rt) {
+		closeRoute(old)
+	}
+	r.fallback = rt
+}
+
+func (r *BalancerRoute) AllFailed() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.allFailed
+}
+
 // RouteSummary 返回简单的只包含单节点的总结
 func RouteSummaryLoadBalanced(node *Node) string {
 	return labelNode(node)
@@ -393,6 +427,7 @@ func (r *BalancerRoute) UpdateCandidates(candidates []BalancerCandidate) {
 	r.latencies = newLatencies
 	r.sortedNodes = make([]*Node, len(nodes))
 	copy(r.sortedNodes, nodes)
+	r.allFailed = false
 	r.mu.Unlock()
 
 	closeReplacedRoutes(oldRoutes, routes)

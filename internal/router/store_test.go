@@ -1,16 +1,21 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"forward/base/endpoint"
+	"forward/base/logging"
 	"forward/base/route"
 	"forward/internal/chain"
+	ictx "forward/internal/ctx"
 )
 
 type stubTransport struct{}
@@ -28,6 +33,24 @@ func (t *stubTransport) Connect(_ context.Context, conn net.Conn, _, _ string) (
 }
 
 func (t *stubTransport) Copy() chain.Transporter {
+	return t
+}
+
+type failTransport struct{}
+
+func (t *failTransport) Dial(context.Context, string) (net.Conn, error) {
+	return nil, errors.New("dial failed")
+}
+
+func (t *failTransport) Handshake(_ context.Context, conn net.Conn) (net.Conn, error) {
+	return conn, nil
+}
+
+func (t *failTransport) Connect(_ context.Context, _ net.Conn, _, _ string) (net.Conn, error) {
+	return nil, errors.New("connect failed")
+}
+
+func (t *failTransport) Copy() chain.Transporter {
 	return t
 }
 
@@ -199,6 +222,182 @@ func TestStoreRouterProxyBuilderRefreshesOnStoreUpdate(t *testing.T) {
 	}
 }
 
+func TestStoreRouterPrefixesBalancerFallbackOntoProxyRoute(t *testing.T) {
+	store, err := route.NewStore(&route.Config{
+		Proxies: map[string]endpoint.Endpoint{
+			"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
+		},
+		Rules: []route.Rule{
+			{
+				Type: route.RuleFinal,
+				Action: route.Action{
+					Type:  route.ActionProxy,
+					Proxy: "PROXY_HK_01",
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("new route store: %v", err)
+	}
+
+	subNode := chain.NewNode("sub", "127.0.0.1:1", &successTransport{})
+	subNode.Display = "香港 | V1 | 05"
+	defaultRoute := chain.NewBalancerRouteWithCandidates([]chain.BalancerCandidate{
+		{
+			Node:  subNode,
+			Route: chain.NewRoute(subNode),
+		},
+	}, time.Hour, 30*time.Millisecond)
+	defer defaultRoute.Close()
+
+	rt := NewStore(store, defaultRoute, nil)
+	rt.SetProxyBuilder(func(name string) (chain.Route, error) {
+		node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
+		return chain.NewRoute(node), nil
+	})
+
+	var out bytes.Buffer
+	logger := logging.New(logging.Options{
+		Level: logging.LevelInfo,
+		Out:   &out,
+		Err:   &out,
+	})
+	traceCtx := ictx.ContextWithTrace(context.Background(), &ictx.Trace{
+		Src:    "192.168.1.224:51666",
+		Local:  "1.2.3.4:80",
+		Logger: logger,
+	})
+
+	got, err := rt.Route(context.Background(), "tcp", "szextshort.weixin.qq.com:80")
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+
+	conn, err := got.Dial(traceCtx, "tcp", "szextshort.weixin.qq.com:80")
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	logs := out.String()
+	if !strings.Contains(logs, "via [香港 | V1 | 05] -> PROXY_HK_01(1.2.3.4:443)") {
+		t.Fatalf("log missing composed route summary, got: %s", logs)
+	}
+}
+
+func TestStoreRouterExplicitDirectBypassesBalancerFallback(t *testing.T) {
+	store, err := route.NewStore(&route.Config{
+		Rules: []route.Rule{
+			{
+				Type:   route.RuleFinal,
+				Action: route.Action{Type: route.ActionDirect},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("new route store: %v", err)
+	}
+
+	subNode := chain.NewNode("sub", "127.0.0.1:1", &successTransport{})
+	subNode.Display = "香港 | V1 | 05"
+	defaultRoute := chain.NewBalancerRouteWithCandidates([]chain.BalancerCandidate{
+		{
+			Node:  subNode,
+			Route: chain.NewRoute(subNode),
+		},
+	}, time.Hour, 30*time.Millisecond)
+	defer defaultRoute.Close()
+
+	rt := NewStore(store, defaultRoute, nil)
+
+	got, err := rt.Route(context.Background(), "tcp", "api5-normal-sinfonlinec.fqnovel.com:443")
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+	if summary := chain.RouteSummary(got); summary != "DIRECT" {
+		t.Fatalf("RouteSummary = %q, want DIRECT", summary)
+	}
+	if got.Nodes() != nil {
+		t.Fatalf("Nodes() = %v, want nil for direct route", got.Nodes())
+	}
+}
+
+func TestStoreRouterFallsBackToProxyWhenBalancerRetestMarksAllFailed(t *testing.T) {
+	store, err := route.NewStore(&route.Config{
+		Proxies: map[string]endpoint.Endpoint{
+			"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
+		},
+		Rules: []route.Rule{
+			{
+				Type: route.RuleFinal,
+				Action: route.Action{
+					Type:  route.ActionProxy,
+					Proxy: "PROXY_HK_01",
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("new route store: %v", err)
+	}
+
+	subNode := chain.NewNode("sub", "127.0.0.1:1", &failTransport{})
+	subNode.Display = "香港 | V1 | 05"
+	defaultRoute := chain.NewBalancerRouteWithCandidates([]chain.BalancerCandidate{
+		{
+			Node:  subNode,
+			Route: chain.NewRoute(subNode),
+		},
+	}, time.Hour, 30*time.Millisecond)
+	defer defaultRoute.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for !defaultRoute.AllFailed() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !defaultRoute.AllFailed() {
+		t.Fatal("AllFailed = false, want true after background retest marks every candidate unavailable")
+	}
+
+	rt := NewStore(store, defaultRoute, nil)
+	rt.SetProxyBuilder(func(name string) (chain.Route, error) {
+		node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
+		return chain.NewRoute(node), nil
+	})
+
+	var out bytes.Buffer
+	logger := logging.New(logging.Options{
+		Level: logging.LevelInfo,
+		Out:   &out,
+		Err:   &out,
+	})
+	traceCtx := ictx.ContextWithTrace(context.Background(), &ictx.Trace{
+		Src:    "192.168.1.224:33612",
+		Local:  "1.2.3.4:443",
+		Logger: logger,
+	})
+
+	got, err := rt.Route(context.Background(), "tcp", "android.googleapis.com:443")
+	if err != nil {
+		t.Fatalf("Route returned error: %v", err)
+	}
+
+	conn, err := got.Dial(traceCtx, "tcp", "android.googleapis.com:443")
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	logs := out.String()
+	if !strings.Contains(logs, "via PROXY_HK_01(1.2.3.4:443)") {
+		t.Fatalf("log missing proxy-only fallback summary, got: %s", logs)
+	}
+	if strings.Contains(logs, "[香港 | V1 | 05] -> PROXY_HK_01") {
+		t.Fatalf("log should bypass subscription prefix after fallback, got: %s", logs)
+	}
+}
+
 func mustParseEndpoint(t *testing.T, raw string) endpoint.Endpoint {
 	t.Helper()
 	ep, err := endpoint.Parse(raw)
@@ -206,4 +405,24 @@ func mustParseEndpoint(t *testing.T, raw string) endpoint.Endpoint {
 		t.Fatalf("parse endpoint %s: %v", raw, err)
 	}
 	return ep
+}
+
+type successTransport struct{}
+
+func (t *successTransport) Dial(context.Context, string) (net.Conn, error) {
+	c1, c2 := net.Pipe()
+	_ = c2.Close()
+	return c1, nil
+}
+
+func (t *successTransport) Handshake(_ context.Context, conn net.Conn) (net.Conn, error) {
+	return conn, nil
+}
+
+func (t *successTransport) Connect(_ context.Context, conn net.Conn, _, _ string) (net.Conn, error) {
+	return conn, nil
+}
+
+func (t *successTransport) Copy() chain.Transporter {
+	return t
 }

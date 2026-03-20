@@ -104,6 +104,9 @@ type subscribeOptions struct {
 	Filter     string
 	Update     int
 	ConnectURL string
+	URLsSet    bool
+	FilterSet  bool
+	UpdateSet  bool
 }
 
 func runSubscribe(ctx context.Context, opts subscribeOptions, cfg config.Config, logger *logging.Logger) int {

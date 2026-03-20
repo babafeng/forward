@@ -102,9 +102,7 @@ func Main() int {
 		return runSubscribe(ctx, subOpts, cfg, cfg.Logger)
 	}
 
-	// 设置全局订阅参数
-	cfg.SubscribeFilter = subOpts.Filter
-	cfg.SubscribeUpdate = subOpts.Update
+	applySubscribeOptions(&cfg, subOpts)
 
 	routers := newRouterCache()
 
@@ -151,6 +149,22 @@ func Main() int {
 	}
 
 	return 0
+}
+
+func applySubscribeOptions(cfg *config.Config, opts subscribeOptions) {
+	if cfg == nil {
+		return
+	}
+	if opts.URLsSet {
+		cfg.SubscribeURL = primarySubscribeURL(opts.URLs)
+		cfg.SubscribeURLs = append([]string(nil), opts.URLs...)
+	}
+	if opts.FilterSet {
+		cfg.SubscribeFilter = opts.Filter
+	}
+	if opts.UpdateSet {
+		cfg.SubscribeUpdate = opts.Update
+	}
 }
 
 func buildNodeConfig(global config.Config, node config.NodeConfig, listen endpoint.Endpoint) config.Config {

@@ -106,6 +106,41 @@ func TestBalancerRouteUpdateCandidatesClosesReplacedRoutes(t *testing.T) {
 	}
 }
 
+func TestBalancerRouteFallsBackAfterRetestConfirmsAllFailed(t *testing.T) {
+	node := NewNode("sub", "127.0.0.1:1", &alwaysFailTransport{})
+	fallbackNode := NewNode("vless_2", "1.2.3.4:443", &alwaysFailTransport{})
+	fallback := &fakeRoute{nodes: []*Node{fallbackNode}}
+
+	br := NewBalancerRouteWithCandidates([]BalancerCandidate{
+		{
+			Node: node,
+		},
+	}, time.Hour, 30*time.Millisecond)
+	defer br.Close()
+	br.SetFallbackRoute(fallback)
+
+	br.testAll()
+	if !br.AllFailed() {
+		t.Fatal("AllFailed = false, want true after retest marks every candidate unavailable")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	conn, err := br.Dial(ctx, "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("Dial returned nil conn")
+	}
+	_ = conn.Close()
+
+	if got := fallback.calls.Load(); got == 0 {
+		t.Fatalf("fallback dial calls = %d, want > 0", got)
+	}
+}
+
 type alwaysFailTransport struct{}
 
 func (t *alwaysFailTransport) Dial(_ context.Context, _ string) (net.Conn, error) {

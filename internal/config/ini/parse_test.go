@@ -1,6 +1,7 @@
 package ini
 
 import (
+	"reflect"
 	"testing"
 
 	"forward/base/route"
@@ -91,5 +92,39 @@ subscribe = https://sub-a.example.com/api, https://sub-b.example.com/api
 	}
 	if cfg.SubscribeURLs[1] != "https://sub-b.example.com/api" {
 		t.Fatalf("cfg.SubscribeURLs[1] = %q, want %q", cfg.SubscribeURLs[1], "https://sub-b.example.com/api")
+	}
+}
+
+func TestParseTProxyNetworkExplicitModes(t *testing.T) {
+	tests := []struct {
+		name    string
+		network string
+		want    []string
+	}{
+		{name: "tcp_only", network: "tcp", want: []string{"tcp"}},
+		{name: "udp_only", network: "udp", want: []string{"udp"}},
+		{name: "tcp_udp", network: "tcp,udp", want: []string{"tcp", "udp"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(`
+[General]
+listen = http://127.0.0.1:1080
+tproxy = 12345
+
+[TProxy]
+network = ` + tt.network + `
+`))
+			if err != nil {
+				t.Fatalf("Parse returned error: %v", err)
+			}
+			if cfg.TProxy == nil {
+				t.Fatal("cfg.TProxy should not be nil")
+			}
+			if !reflect.DeepEqual(cfg.TProxy.Network, tt.want) {
+				t.Fatalf("cfg.TProxy.Network = %v, want %v", cfg.TProxy.Network, tt.want)
+			}
+		})
 	}
 }

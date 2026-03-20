@@ -26,7 +26,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	fs.Var(&listenFlags, "L", "Local listen endpoint, e.g. http://127.0.0.1:8080 (can be repeated)")
 	var forwardFlags stringSlice
 	fs.Var(&forwardFlags, "F", "Forward target endpoint, e.g. socks5://remote:1080 (can be repeated)")
-	tproxyPort := fs.Int("T", 0, "Enable transparent proxy listener on 127.0.0.1:<port> (use with -F only)")
+	tproxyPort := fs.Int("T", 0, "Enable transparent proxy listener on 127.0.0.1:<port> for TCP/UDP (use with -F only)")
 	configFile := fs.String("C", "", "Path to JSON config file")
 	routeFile := fs.String("R", "", "Path to proxy route config file")
 	insecure := fs.Bool("insecure", false, "Disable TLS certificate verification")
@@ -51,11 +51,19 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 		return config.Config{}, subscribeOptions{}, err
 	}
 
+	visited := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+
 	subOpts := subscribeOptions{
 		URLs:       splitSubscribeValues(subscribeURLs),
 		Filter:     strings.TrimSpace(*filterExpr),
 		ConnectURL: strings.TrimSpace(*connectURL),
 		Update:     *subUpdate,
+		URLsSet:    visited["S"] || visited["subscribe"],
+		FilterSet:  visited["filter"],
+		UpdateSet:  visited["sub-update"],
 	}
 
 	if tproxyPort != nil && *tproxyPort > 0 {
@@ -130,7 +138,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 		cfg.Listen = ep
 		cfg.TProxy = &config.TProxyConfig{
 			Port:         *tproxyPort,
-			Network:      []string{"tcp"},
+			Network:      []string{"tcp", "udp"},
 			Sniffing:     true,
 			DestOverride: []string{"http", "tls", "quic"},
 		}
