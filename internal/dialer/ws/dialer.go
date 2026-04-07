@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"forward/internal/dialer"
@@ -89,6 +90,7 @@ type wsConn struct {
 	net.Conn
 	c      *websocket.Conn
 	reader io.Reader
+	wmu    sync.Mutex // 保护 WebSocket 写入操作，防止并发写 panic
 }
 
 func (w *wsConn) Read(b []byte) (int, error) {
@@ -113,6 +115,8 @@ func (w *wsConn) Read(b []byte) (int, error) {
 }
 
 func (w *wsConn) Write(b []byte) (int, error) {
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
 	if err := w.c.WriteMessage(websocket.BinaryMessage, b); err != nil {
 		return 0, err
 	}
@@ -120,5 +124,8 @@ func (w *wsConn) Write(b []byte) (int, error) {
 }
 
 func (w *wsConn) Close() error {
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
 	return w.c.Close()
 }
+

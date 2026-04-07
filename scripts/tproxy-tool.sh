@@ -95,6 +95,70 @@ shell_quote() {
     printf "%q" "$1"
 }
 
+trim_spaces() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+array_contains() {
+    local needle="$1"
+    shift || true
+    local item
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+append_bypass_client_unique() {
+    local item="$1"
+    array_contains "$item" "${BYPASS_CLIENTS[@]}" || BYPASS_CLIENTS+=("$item")
+}
+
+append_bypass_dest_unique() {
+    local item="$1"
+    array_contains "$item" "${BYPASS_DESTS[@]}" || BYPASS_DESTS+=("$item")
+}
+
+fetch_remote_rule_file() {
+    ssh -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+        "${SSH_USER}@${TARGET_HOST}" \
+        "cat /etc/nftables.d/90-xray-tproxy.nft 2>/dev/null || true"
+}
+
+merge_existing_remote_bypass_rules() {
+    local rule_text=""
+    local line=""
+    local values=""
+    local item=""
+    local -a items=()
+
+    rule_text="$(fetch_remote_rule_file)"
+    [[ -n "$rule_text" ]] || return 0
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]+ip6?[[:space:]]+saddr[[:space:]]+\{[[:space:]]*(.*)[[:space:]]*\}[[:space:]]+return$ ]]; then
+            values="${BASH_REMATCH[1]}"
+            IFS=',' read -r -a items <<<"$values"
+            for item in "${items[@]}"; do
+                item="$(trim_spaces "$item")"
+                [[ -n "$item" ]] || continue
+                append_bypass_client_unique "$item"
+            done
+        elif [[ "$line" =~ ^[[:space:]]+ip6?[[:space:]]+daddr[[:space:]]+\{[[:space:]]*(.*)[[:space:]]*\}[[:space:]]+return$ ]]; then
+            values="${BASH_REMATCH[1]}"
+            IFS=',' read -r -a items <<<"$values"
+            for item in "${items[@]}"; do
+                item="$(trim_spaces "$item")"
+                [[ -n "$item" ]] || continue
+                append_bypass_dest_unique "$item"
+            done
+        fi
+    done <<<"$rule_text"
+}
+
 render_nft_file() {
     local bypass_clients4=()
     local bypass_clients6=()
@@ -727,6 +791,7 @@ require_cmd ssh
 
 case "$MODE" in
 install)
+    merge_existing_remote_bypass_rules
     if install_requires_network_restart; then
         warn "Installing transparent proxy will restart OpenWrt network and your Wi-Fi/network connection will disconnect temporarily."
         confirm_yes "Proceed with install?" || die "installation cancelled"

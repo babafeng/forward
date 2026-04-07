@@ -111,6 +111,13 @@ func parseClashYAML(data []byte) ([]ClashProxy, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+	// 清理字段中可能存在的前导/尾随空白字符（例如 YAML 中的 Tab）
+	for i := range cfg.Proxies {
+		cfg.Proxies[i].UUID = strings.TrimSpace(cfg.Proxies[i].UUID)
+		cfg.Proxies[i].Name = strings.TrimSpace(cfg.Proxies[i].Name)
+		cfg.Proxies[i].Server = strings.TrimSpace(cfg.Proxies[i].Server)
+		cfg.Proxies[i].Password = strings.TrimSpace(cfg.Proxies[i].Password)
+	}
 	return cfg.Proxies, nil
 }
 
