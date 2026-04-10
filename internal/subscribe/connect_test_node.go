@@ -12,14 +12,15 @@ import (
 	"forward/base/logging"
 	"forward/internal/builder"
 	"forward/internal/config"
+	"forward/internal/chain"
 )
 
 const (
-	testRounds     = 2  // 每个节点测试轮次
+	testRounds     = 3  // 每个节点测试轮次（第 1 轮作为热身，取后续最优值）
 	maxConcurrency = 10 // 最大并发数
 )
 
-// TestNodes 并发测试节点延迟，最多 10 个节点同时测试，每个节点测试 2 次取最优。
+// TestNodes 并发测试节点延迟，最多 10 个节点同时测试，每个节点测试 3 次取最优。
 // 输出格式: time Forward Subscribe Connect Test Node-[节点名] 协议类型 延迟 ms
 func TestNodes(ctx context.Context, proxies []ClashProxy, connectURL string, cfg config.Config, logger *logging.Logger) {
 	if connectURL == "" {
@@ -55,6 +56,19 @@ loop:
 				return
 			}
 
+			// 构建路由只做一次，多轮测试复用
+			hops := []endpoint.Endpoint{ep}
+			rt, err := builder.BuildRoute(cfg, hops)
+			if err != nil {
+				fmt.Printf("%s Forward Subscribe Connect Test Node-[%s] %s error: 构建路由失败: %v\n",
+					time.Now().Format("15:04:05"),
+					p.Name,
+					p.Type,
+					err,
+				)
+				return
+			}
+
 			var bestLatency time.Duration
 			var lastErr error
 
@@ -65,7 +79,7 @@ loop:
 				default:
 				}
 
-				latency, err := testNodeLatency(ctx, ep, connectURL, cfg, logger)
+				latency, err := testNodeLatency(ctx, rt, connectURL)
 				if err != nil {
 					lastErr = err
 					continue
@@ -97,22 +111,15 @@ loop:
 	wg.Wait()
 }
 
-// testNodeLatency 通过构建单节点转发链，对指定 URL 发起请求测量延迟。
-func testNodeLatency(ctx context.Context, ep endpoint.Endpoint, connectURL string, cfg config.Config, logger *logging.Logger) (time.Duration, error) {
-	hops := []endpoint.Endpoint{ep}
-
-	route, err := builder.BuildRoute(cfg, hops)
-	if err != nil {
-		return 0, fmt.Errorf("构建路由失败: %w", err)
-	}
-
+// testNodeLatency 通过已构建的路由发起请求测量单次延迟。
+func testNodeLatency(ctx context.Context, rt chain.Route, connectURL string) (time.Duration, error) {
 	testCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	start := time.Now()
 
 	// 通过转发链拨号
-	conn, err := route.Dial(testCtx, "tcp", extractHostFromURL(connectURL))
+	conn, err := rt.Dial(testCtx, "tcp", extractHostFromURL(connectURL))
 	if err != nil {
 		return 0, fmt.Errorf("连接失败: %w", err)
 	}

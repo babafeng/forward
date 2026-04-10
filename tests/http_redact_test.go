@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	httphandler "forward/internal/handler/http"
 )
 
 func TestRedactURLCaseInsensitiveSensitiveKeys(t *testing.T) {
@@ -13,7 +15,7 @@ func TestRedactURLCaseInsensitiveSensitiveKeys(t *testing.T) {
 		t.Fatalf("parse url: %v", err)
 	}
 
-	got := httpRedactURL(u)
+	got := httphandler.RedactURL(u)
 	ru, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("parse redacted url: %v", err)

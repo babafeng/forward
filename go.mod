@@ -1,6 +1,6 @@
 module forward
 
-go 1.25.7
+go 1.26.2
 
 require (
 	github.com/quic-go/quic-go v0.58.0

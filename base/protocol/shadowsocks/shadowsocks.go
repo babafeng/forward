@@ -1,4 +1,4 @@
-// Package shadowsocks 提供 Shadowsocks 2022 协议的编解码功能封装
+// Package shadowsocks 提供 Shadowsocks 协议的编解码功能封装，支持传统 AEAD 和 2022 方法
 package shadowsocks
 
 import (
@@ -7,11 +7,17 @@ import (
 	"strings"
 
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
+	"github.com/sagernet/sing-shadowsocks/shadowaead"
 	"github.com/sagernet/sing-shadowsocks/shadowaead_2022"
 )
 
-// 支持的加密方法
-var SupportedMethods = shadowaead_2022.List
+// 支持的加密方法（传统 AEAD + 2022）
+var SupportedMethods = func() []string {
+	all := make([]string, 0, len(shadowaead.List)+len(shadowaead_2022.List))
+	all = append(all, shadowaead.List...)
+	all = append(all, shadowaead_2022.List...)
+	return all
+}()
 
 // Method 名称常量
 const (
@@ -38,16 +44,22 @@ func ParseConfig(method, password string) (*Config, error) {
 		return nil, fmt.Errorf("shadowsocks password is required")
 	}
 
-	// 解析多级 PSK
-	pskList, err := ParsePSKList(password)
-	if err != nil {
-		return nil, fmt.Errorf("parse psk failed: %w", err)
+	// 仅 2022 方法需要解析多级 PSK
+	if is2022Method(method) {
+		pskList, err := ParsePSKList(password)
+		if err != nil {
+			return nil, fmt.Errorf("parse psk failed: %w", err)
+		}
+		return &Config{
+			Method:   method,
+			Password: password,
+			PSKList:  pskList,
+		}, nil
 	}
 
 	return &Config{
 		Method:   method,
 		Password: password,
-		PSKList:  pskList,
 	}, nil
 }
 
@@ -92,10 +104,36 @@ func KeySize(method string) int {
 
 // NewMethod 创建 Shadowsocks 客户端 Method 实例
 func NewMethod(method, password string) (shadowsocks.Method, error) {
+	method = strings.ToLower(strings.TrimSpace(method))
 	if !IsMethodSupported(method) {
 		return nil, fmt.Errorf("unsupported shadowsocks method: %s", method)
 	}
+	// 传统 AEAD 方法使用 shadowaead.New（密码派生密钥）
+	if isLegacyAEADMethod(method) {
+		return shadowaead.New(method, nil, password)
+	}
+	// 2022 方法使用 shadowaead_2022.NewWithPassword
 	return shadowaead_2022.NewWithPassword(method, password, nil)
+}
+
+// is2022Method 判断是否为 Shadowsocks 2022 方法
+func is2022Method(method string) bool {
+	for _, m := range shadowaead_2022.List {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
+// isLegacyAEADMethod 判断是否为传统 AEAD 方法
+func isLegacyAEADMethod(method string) bool {
+	for _, m := range shadowaead.List {
+		if m == method {
+			return true
+		}
+	}
+	return false
 }
 
 // NewService 创建 Shadowsocks 服务端 Service 实例

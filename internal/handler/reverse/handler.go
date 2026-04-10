@@ -63,21 +63,8 @@ func (h *Handler) Init(md metadata.Metadata) error {
 	if md == nil {
 		return nil
 	}
-	if v := md.Get("handshake_timeout"); v != nil {
-		if d, ok := v.(time.Duration); ok && d > 0 {
-			h.handshakeTimeout = d
-		}
-	}
-	if v := md.Get("udp_idle"); v != nil {
-		if d, ok := v.(time.Duration); ok && d > 0 {
-			h.udpIdle = d
-		}
-	}
-	if v := md.Get("max_udp_sessions"); v != nil {
-		if n, ok := v.(int); ok && n > 0 {
-			h.maxUDPSessions = n
-		}
-	}
+	handler.ApplyHandshakeTimeoutMetadata(md, &h.handshakeTimeout)
+	handler.ApplyUDPRelayMetadata(md, &h.udpIdle, &h.maxUDPSessions)
 	return nil
 }
 

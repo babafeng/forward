@@ -28,20 +28,36 @@ type ClashConfig struct {
 // ClashProxy 表示 Clash 中的单个代理节点。
 type ClashProxy struct {
 	Name     string `yaml:"name"`
-	Type     string `yaml:"type"`     // vmess, ss, trojan, vless, hysteria2 ...
+	Type     string `yaml:"type"`     // vmess, ss, trojan, vless, hysteria2, socks5, http ...
 	Server   string `yaml:"server"`   // 服务器地址
 	Port     int    `yaml:"port"`     // 端口
 	UUID     string `yaml:"uuid"`     // VMess/VLESS UUID
 	AlterID  int    `yaml:"alterId"`  // VMess alterID
 	Cipher   string `yaml:"cipher"`   // 加密方式
 	UDP      bool   `yaml:"udp"`      // 是否支持 UDP
-	Password string `yaml:"password"` // SS/Trojan 密码
+	Username string `yaml:"username"` // SOCKS5/HTTP 用户名
+	Password string `yaml:"password"` // SS/Trojan/SOCKS5/HTTP 密码
 	TLS      bool   `yaml:"tls"`      // 是否启用 TLS
 	SNI      string `yaml:"sni"`      // TLS SNI
 	Network  string `yaml:"network"`  // 传输网络 (ws, grpc 等)
 
+	Plugin     string         `yaml:"plugin,omitempty"`      // Shadowsocks 插件名称
+	PluginOpts map[string]any `yaml:"plugin-opts,omitempty"` // Shadowsocks 插件参数
+
+	// VLESS 特有字段
+	Flow              string         `yaml:"flow,omitempty"`               // VLESS flow (e.g. xtls-rprx-vision)
+	ServerName        string         `yaml:"servername,omitempty"`          // TLS/Reality SNI
+	ClientFingerprint string         `yaml:"client-fingerprint,omitempty"` // uTLS 指纹
+	RealityOpts       *RealityOptions `yaml:"reality-opts,omitempty"`       // Reality 选项
+
 	// WebSocket 选项
 	WSOpts *WSOptions `yaml:"ws-opts,omitempty"`
+}
+
+// RealityOptions 表示 VLESS Reality 传输选项。
+type RealityOptions struct {
+	PublicKey string `yaml:"public-key"`
+	ShortID   string `yaml:"short-id"`
 }
 
 // WSOptions 表示 WebSocket 传输选项。
@@ -79,7 +95,7 @@ func Parse(data []byte) ([]ClashProxy, error) {
 
 	// 1. 先尝试 Clash YAML
 	if proxies, err := parseClashYAML([]byte(text)); err == nil && len(proxies) > 0 {
-		return proxies, nil
+		return normalizeProxyNames(proxies), nil
 	}
 
 	// 2. 尝试 base64 解码
@@ -88,18 +104,18 @@ func Parse(data []byte) ([]ClashProxy, error) {
 
 		// 2a. 解码后尝试 Clash YAML
 		if proxies, err := parseClashYAML([]byte(decodedStr)); err == nil && len(proxies) > 0 {
-			return proxies, nil
+			return normalizeProxyNames(proxies), nil
 		}
 
 		// 2b. 解码后尝试 URI 列表
 		if proxies, err := parseURIList(decodedStr); err == nil && len(proxies) > 0 {
-			return proxies, nil
+			return normalizeProxyNames(proxies), nil
 		}
 	}
 
 	// 3. 尝试纯文本 URI 列表
 	if proxies, err := parseURIList(text); err == nil && len(proxies) > 0 {
-		return proxies, nil
+		return normalizeProxyNames(proxies), nil
 	}
 
 	return nil, fmt.Errorf("订阅内容格式无法识别（不是 Clash YAML 也不是 base64 编码的代理 URI 列表）")
@@ -110,6 +126,14 @@ func parseClashYAML(data []byte) ([]ClashProxy, error) {
 	var cfg ClashConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+	// 清理字段中可能存在的前导/尾随空白字符（例如 YAML 中的 Tab）
+	for i := range cfg.Proxies {
+		cfg.Proxies[i].UUID = strings.TrimSpace(cfg.Proxies[i].UUID)
+		cfg.Proxies[i].Name = strings.TrimSpace(cfg.Proxies[i].Name)
+		cfg.Proxies[i].Server = strings.TrimSpace(cfg.Proxies[i].Server)
+		cfg.Proxies[i].Username = strings.TrimSpace(cfg.Proxies[i].Username)
+		cfg.Proxies[i].Password = strings.TrimSpace(cfg.Proxies[i].Password)
 	}
 	return cfg.Proxies, nil
 }
@@ -564,6 +588,10 @@ func ProxyToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 		return vlesToEndpoint(p)
 	case "hysteria2", "hy2":
 		return hy2ToEndpoint(p)
+	case "socks5", "socks5h":
+		return socks5ToEndpoint(p)
+	case "http", "https":
+		return httpToEndpoint(p)
 	default:
 		return endpoint.Endpoint{}, fmt.Errorf("不支持的代理类型: %s", p.Type)
 	}
@@ -622,14 +650,30 @@ func vmessToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 }
 
 // ssToEndpoint 将 Shadowsocks 代理转换为 endpoint。
-// 格式: ss://method:password@server:port
+// 格式: ss://method:password@server:port?plugin=xxx&plugin_mode=xxx
 func ssToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
+	q := url.Values{}
+	if p.Plugin != "" {
+		q.Set("plugin", p.Plugin)
+		if p.PluginOpts != nil {
+			if mode, ok := p.PluginOpts["mode"].(string); ok {
+				q.Set("plugin_mode", mode)
+			}
+			if host, ok := p.PluginOpts["host"].(string); ok {
+				q.Set("plugin_host", host)
+			}
+		}
+	}
+
 	rawURL := fmt.Sprintf("ss://%s:%s@%s:%d",
 		url.PathEscape(p.Cipher),
 		url.PathEscape(p.Password),
 		p.Server,
 		p.Port,
 	)
+	if len(q) > 0 {
+		rawURL += "?" + q.Encode()
+	}
 	return endpoint.Parse(rawURL)
 }
 
@@ -654,13 +698,58 @@ func trojanToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 // vlesToEndpoint 将 VLESS 代理转换为 endpoint。
 func vlesToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 	q := url.Values{}
-	if p.SNI != "" {
-		q.Set("sni", p.SNI)
+
+	// SNI: 优先用 servername，其次 sni
+	sni := p.ServerName
+	if sni == "" {
+		sni = p.SNI
 	}
+	if sni != "" {
+		q.Set("sni", sni)
+	}
+
+	// Flow (e.g. xtls-rprx-vision)
+	if p.Flow != "" {
+		q.Set("flow", p.Flow)
+	}
+
+	// 指纹
+	if p.ClientFingerprint != "" {
+		q.Set("fp", p.ClientFingerprint)
+	}
+
+	// 确定 scheme
 	scheme := "vless"
-	if p.TLS {
+	if p.RealityOpts != nil {
+		// Reality 传输
+		scheme = "vless+reality"
+		if p.RealityOpts.PublicKey != "" {
+			q.Set("pbk", p.RealityOpts.PublicKey)
+		}
+		if p.RealityOpts.ShortID != "" {
+			q.Set("sid", p.RealityOpts.ShortID)
+		}
+		q.Set("security", "reality")
+	} else if p.TLS {
 		scheme = "vless+tls"
 	}
+
+	// WebSocket 传输
+	if strings.EqualFold(p.Network, "ws") {
+		q.Set("type", "ws")
+		if p.WSOpts != nil {
+			if p.WSOpts.Path != "" {
+				q.Set("path", p.WSOpts.Path)
+			}
+			if host, ok := p.WSOpts.Headers["Host"]; ok {
+				q.Set("host", host)
+			}
+		}
+		if p.TLS {
+			q.Set("security", "tls")
+		}
+	}
+
 	rawURL := fmt.Sprintf("%s://%s@%s:%d",
 		scheme,
 		url.PathEscape(p.UUID),
@@ -686,6 +775,45 @@ func hy2ToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 	)
 	if len(q) > 0 {
 		rawURL += "?" + q.Encode()
+	}
+	return endpoint.Parse(rawURL)
+}
+
+// socks5ToEndpoint 将 SOCKS5 代理转换为 endpoint。
+// 格式: socks5://user:pass@server:port 或 socks5://server:port
+func socks5ToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
+	var rawURL string
+	if p.Username != "" || p.Password != "" {
+		rawURL = fmt.Sprintf("socks5://%s:%s@%s:%d",
+			url.PathEscape(p.Username),
+			url.PathEscape(p.Password),
+			p.Server,
+			p.Port,
+		)
+	} else {
+		rawURL = fmt.Sprintf("socks5://%s:%d", p.Server, p.Port)
+	}
+	return endpoint.Parse(rawURL)
+}
+
+// httpToEndpoint 将 HTTP 代理转换为 endpoint。
+// 格式: http://user:pass@server:port 或 http://server:port
+func httpToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
+	scheme := "http"
+	if p.TLS || strings.EqualFold(p.Type, "https") {
+		scheme = "https"
+	}
+	var rawURL string
+	if p.Username != "" || p.Password != "" {
+		rawURL = fmt.Sprintf("%s://%s:%s@%s:%d",
+			scheme,
+			url.PathEscape(p.Username),
+			url.PathEscape(p.Password),
+			p.Server,
+			p.Port,
+		)
+	} else {
+		rawURL = fmt.Sprintf("%s://%s:%d", scheme, p.Server, p.Port)
 	}
 	return endpoint.Parse(rawURL)
 }

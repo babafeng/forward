@@ -20,8 +20,9 @@ import (
 )
 
 type Decision struct {
-	Via   string
-	Chain []string
+	Via     string
+	Chain   []string
+	Matched bool
 }
 
 type Router struct {
@@ -125,7 +126,7 @@ func (r *Router) Decide(ctx context.Context, address string) (Decision, error) {
 	if len(ips) > 0 && len(r.skipProxy) > 0 {
 		for _, ip := range ips {
 			if matchPrefixes(ip, r.skipProxy) {
-				return Decision{Via: "DIRECT"}, nil
+				return directDecision(true), nil
 			}
 		}
 	}
@@ -212,19 +213,24 @@ func ruleMatch(rule compiledRule, host string, ips []net.IP, db *mmdb.Reader) bo
 func actionDecision(a Action) Decision {
 	switch a.Type {
 	case ActionReject:
-		return Decision{Via: "REJECT"}
+		return Decision{Via: "REJECT", Matched: true}
 	case ActionProxy:
 		chain := a.ProxyNames()
 		if len(chain) == 0 {
-			return Decision{Via: "DIRECT"}
+			return directDecision(true)
 		}
 		return Decision{
-			Via:   strings.Join(chain, " -> "),
-			Chain: chain,
+			Via:     strings.Join(chain, " -> "),
+			Chain:   chain,
+			Matched: true,
 		}
 	default:
-		return Decision{Via: "DIRECT"}
+		return directDecision(true)
 	}
+}
+
+func directDecision(matched bool) Decision {
+	return Decision{Via: "DIRECT", Matched: matched}
 }
 
 func normalizeHost(address string) string {

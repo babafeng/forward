@@ -48,6 +48,9 @@ type Listener struct {
 	errCh  chan error
 	laddr  net.Addr
 
+	localIPs    map[netip.Addr]struct{}
+	udpBindPort uint16
+
 	mu      sync.Mutex
 	errOnce sync.Once
 }
@@ -112,6 +115,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	l.cqueue = make(chan net.Conn, l.md.backlog)
 	l.closed = make(chan struct{})
 	l.errCh = make(chan error, 1)
+	l.cacheLocalTargets()
 
 	if l.tcpLn != nil {
 		go l.acceptTCP()
@@ -248,6 +252,9 @@ func (l *Listener) getConn(raddr, dstAddr *net.UDPAddr) *udpMetaConn {
 	if raddr == nil || dstAddr == nil {
 		return nil
 	}
+	if l.shouldIgnoreUDP(dstAddr) {
+		return nil
+	}
 	src, ok := netipAddrPort(raddr)
 	if !ok {
 		return nil
@@ -336,6 +343,48 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 			}
 		}
 	}
+}
+
+func (l *Listener) cacheLocalTargets() {
+	localIPs := make(map[netip.Addr]struct{})
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, addr := range addrs {
+			switch v := addr.(type) {
+			case *net.IPNet:
+				if ip, ok := netipAddrFromIP(v.IP); ok {
+					localIPs[ip] = struct{}{}
+				}
+			case *net.IPAddr:
+				if ip, ok := netipAddrFromIP(v.IP); ok {
+					localIPs[ip] = struct{}{}
+				}
+			}
+		}
+	}
+	if l.udpLn != nil {
+		if udpAddr, ok := l.udpLn.LocalAddr().(*net.UDPAddr); ok && udpAddr != nil {
+			l.udpBindPort = uint16(udpAddr.Port)
+			if ip, ok := netipAddrFromIP(udpAddr.IP); ok {
+				localIPs[ip] = struct{}{}
+			}
+		}
+	}
+	l.localIPs = localIPs
+}
+
+func (l *Listener) shouldIgnoreUDP(dstAddr *net.UDPAddr) bool {
+	if l == nil || dstAddr == nil || l.udpBindPort == 0 {
+		return false
+	}
+	if dstAddr.Port != int(l.udpBindPort) {
+		return false
+	}
+	ip, ok := netipAddrFromIP(dstAddr.IP)
+	if !ok {
+		return false
+	}
+	_, ok = l.localIPs[ip]
+	return ok
 }
 
 type tcpMetaConn struct {
@@ -578,11 +627,22 @@ func netipAddrPort(addr *net.UDPAddr) (netip.AddrPort, bool) {
 	if addr == nil || addr.Port < 0 || addr.Port > 65535 {
 		return netip.AddrPort{}, false
 	}
-	ip, ok := netip.AddrFromSlice(addr.IP)
+	ip, ok := netipAddrFromIP(addr.IP)
 	if !ok {
 		return netip.AddrPort{}, false
 	}
-	return netip.AddrPortFrom(ip.Unmap(), uint16(addr.Port)), true
+	return netip.AddrPortFrom(ip, uint16(addr.Port)), true
+}
+
+func netipAddrFromIP(ip net.IP) (netip.Addr, bool) {
+	if len(ip) == 0 {
+		return netip.Addr{}, false
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), !addr.Unmap().IsUnspecified()
 }
 
 func getString(v any) string {
