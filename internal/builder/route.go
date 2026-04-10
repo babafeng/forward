@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -266,21 +267,200 @@ func buildWSDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 // buildSSConnectorMetadata 为 Shadowsocks Connector 构建 metadata
 // URL 格式: ss://method:password@host:port
 func buildSSConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
-	method := ""
-	password := ""
-	if hop.User != nil {
-		method = hop.User.Username() // 加密方法在用户名
-		if p, ok := hop.User.Password(); ok {
-			password = p // 密码在密码字段
-		}
-	}
+	method, password := parseSSCredentials(hop.User)
+	plugin, pluginMode, pluginHost := parseSSPluginOptions(hop)
 	return metadata.New(map[string]any{
 		metadata.KeyMethod:   method,
 		metadata.KeyPassword: password,
-		"plugin":             hop.Query.Get("plugin"),
-		"plugin_mode":        hop.Query.Get("plugin_mode"),
-		"plugin_host":        hop.Query.Get("plugin_host"),
+		"plugin":             plugin,
+		"plugin_mode":        pluginMode,
+		"plugin_host":        pluginHost,
 	})
+}
+
+func parseSSCredentials(user *url.Userinfo) (method, password string) {
+	if user == nil {
+		return "", ""
+	}
+	method = strings.TrimSpace(user.Username())
+	if p, ok := user.Password(); ok {
+		return method, p
+	}
+
+	decoded, ok := decodeBase64Flexible(method)
+	if !ok {
+		return method, ""
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(decoded)), ":", 2)
+	if len(parts) != 2 {
+		return method, ""
+	}
+	m := strings.TrimSpace(parts[0])
+	p := parts[1]
+	if m == "" || p == "" {
+		return method, ""
+	}
+	return m, p
+}
+
+func decodeBase64Flexible(s string) ([]byte, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	if v, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return v, true
+	}
+	if v, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+		return v, true
+	}
+	if v, err := base64.URLEncoding.DecodeString(s); err == nil {
+		return v, true
+	}
+	if v, err := base64.RawURLEncoding.DecodeString(s); err == nil {
+		return v, true
+	}
+	return nil, false
+}
+
+func parseSSPluginOptions(hop endpoint.Endpoint) (plugin, mode, host string) {
+	q := hop.Query
+	plugin = strings.TrimSpace(q.Get("plugin"))
+	mode = strings.TrimSpace(q.Get("plugin_mode"))
+	host = strings.TrimSpace(q.Get("plugin_host"))
+
+	// 兼容 obfs 风格参数键。
+	if mode == "" {
+		mode = strings.TrimSpace(q.Get("obfs"))
+	}
+	if host == "" {
+		host = strings.TrimSpace(q.Get("obfs-host"))
+	}
+
+	rawQuery := rawQueryFromEndpoint(hop.Raw)
+	if rawQuery != "" {
+		kv := parseLooseQuery(rawQuery)
+		if plugin == "" {
+			plugin = kv["plugin"]
+		}
+		if mode == "" {
+			mode = kv["plugin_mode"]
+			if mode == "" {
+				mode = kv["obfs"]
+			}
+		}
+		if host == "" {
+			host = kv["plugin_host"]
+			if host == "" {
+				host = kv["obfs-host"]
+			}
+		}
+	}
+
+	basePlugin, pluginOpts := parseSSPluginSpec(plugin)
+	if basePlugin != "" {
+		plugin = basePlugin
+	}
+	if mode == "" {
+		mode = pluginOpts["plugin_mode"]
+		if mode == "" {
+			mode = pluginOpts["obfs"]
+		}
+	}
+	if host == "" {
+		host = pluginOpts["plugin_host"]
+		if host == "" {
+			host = pluginOpts["obfs-host"]
+		}
+	}
+
+	plugin = normalizeSSPluginName(plugin)
+	return strings.TrimSpace(plugin), strings.TrimSpace(mode), strings.TrimSpace(host)
+}
+
+func rawQueryFromEndpoint(raw string) string {
+	idx := strings.IndexByte(raw, '?')
+	if idx < 0 || idx+1 >= len(raw) {
+		return ""
+	}
+	return raw[idx+1:]
+}
+
+// parseLooseQuery 兼容 `&` 和 `;` 两种分隔符。
+func parseLooseQuery(rawQuery string) map[string]string {
+	out := make(map[string]string)
+	fields := strings.FieldsFunc(rawQuery, func(r rune) bool {
+		return r == '&' || r == ';'
+	})
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		key, value, found := strings.Cut(field, "=")
+		if !found {
+			if decodedField, err := url.QueryUnescape(field); err == nil {
+				key, value, found = strings.Cut(decodedField, "=")
+			}
+		}
+		if !found {
+			key = field
+			value = ""
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if dk, err := url.QueryUnescape(key); err == nil {
+			key = dk
+		}
+		value = strings.TrimSpace(value)
+		if dv, err := url.QueryUnescape(value); err == nil {
+			value = dv
+		}
+		out[strings.ToLower(key)] = value
+	}
+	return out
+}
+
+// parseSSPluginSpec 兼容 `plugin=obfs-local;obfs=http;obfs-host=...` 这类写法。
+func parseSSPluginSpec(raw string) (string, map[string]string) {
+	opts := make(map[string]string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", opts
+	}
+	if decoded, err := url.QueryUnescape(raw); err == nil {
+		raw = decoded
+	}
+	parts := strings.Split(raw, ";")
+	name := strings.TrimSpace(parts[0])
+	for _, part := range parts[1:] {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, found := strings.Cut(part, "=")
+		if !found {
+			continue
+		}
+		k = strings.ToLower(strings.TrimSpace(k))
+		v = strings.TrimSpace(v)
+		if k == "" {
+			continue
+		}
+		opts[k] = v
+	}
+	return name, opts
+}
+
+func normalizeSSPluginName(plugin string) string {
+	switch strings.ToLower(strings.TrimSpace(plugin)) {
+	case "obfs", "obfs-local", "simple-obfs":
+		return "obfs"
+	default:
+		return strings.TrimSpace(plugin)
+	}
 }
 
 func buildHysteria2DialerMetadata(hop endpoint.Endpoint, cfgInsecure bool) metadata.Metadata {

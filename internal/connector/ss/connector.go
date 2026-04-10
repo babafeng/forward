@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
 	B "github.com/sagernet/sing/common/buf"
@@ -74,6 +75,9 @@ func (c *Connector) Init(md metadata.Metadata) error {
 	c.method = m
 	c.methodName = method
 	c.options.Logger.Debug("SS connector initialized with method %s", method)
+	if c.plugin != "" {
+		c.options.Logger.Debug("SS connector plugin=%s mode=%s host=%s", c.plugin, c.pluginMode, c.pluginHost)
+	}
 	return nil
 }
 
@@ -93,7 +97,16 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 	// TCP 使用 DialEarlyConn（支持 0-RTT）
 	if network == "tcp" {
 		if c.plugin == "obfs" && c.pluginMode == "http" {
-			conn = NewHttpObfsConn(conn, c.pluginHost)
+			port := "80"
+			if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+				port = strconv.Itoa(tcpAddr.Port)
+			} else {
+				_, proxyPort, err := net.SplitHostPort(conn.RemoteAddr().String())
+				if err == nil {
+					port = proxyPort
+				}
+			}
+			conn = NewHttpObfsConn(conn, c.pluginHost, port)
 		} else if c.plugin != "" {
 			c.options.Logger.Warn("unsupported shadowsocks plugin: %s mode: %s, connecting directly", c.plugin, c.pluginMode)
 		}
@@ -112,8 +125,6 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 
 	return nil, fmt.Errorf("unsupported network: %s", network)
 }
-
-
 
 // ssPacketConn 封装 Shadowsocks UDP 连接
 type ssPacketConn struct {
