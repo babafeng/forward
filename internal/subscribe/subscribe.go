@@ -41,6 +41,9 @@ type ClashProxy struct {
 	SNI      string `yaml:"sni"`      // TLS SNI
 	Network  string `yaml:"network"`  // 传输网络 (ws, grpc 等)
 
+	Plugin     string         `yaml:"plugin,omitempty"`      // Shadowsocks 插件名称
+	PluginOpts map[string]any `yaml:"plugin-opts,omitempty"` // Shadowsocks 插件参数
+
 	// VLESS 特有字段
 	Flow              string         `yaml:"flow,omitempty"`               // VLESS flow (e.g. xtls-rprx-vision)
 	ServerName        string         `yaml:"servername,omitempty"`          // TLS/Reality SNI
@@ -647,14 +650,30 @@ func vmessToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 }
 
 // ssToEndpoint 将 Shadowsocks 代理转换为 endpoint。
-// 格式: ss://method:password@server:port
+// 格式: ss://method:password@server:port?plugin=xxx&plugin_mode=xxx
 func ssToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
+	q := url.Values{}
+	if p.Plugin != "" {
+		q.Set("plugin", p.Plugin)
+		if p.PluginOpts != nil {
+			if mode, ok := p.PluginOpts["mode"].(string); ok {
+				q.Set("plugin_mode", mode)
+			}
+			if host, ok := p.PluginOpts["host"].(string); ok {
+				q.Set("plugin_host", host)
+			}
+		}
+	}
+
 	rawURL := fmt.Sprintf("ss://%s:%s@%s:%d",
 		url.PathEscape(p.Cipher),
 		url.PathEscape(p.Password),
 		p.Server,
 		p.Port,
 	)
+	if len(q) > 0 {
+		rawURL += "?" + q.Encode()
+	}
 	return endpoint.Parse(rawURL)
 }
 
@@ -713,6 +732,22 @@ func vlesToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 		q.Set("security", "reality")
 	} else if p.TLS {
 		scheme = "vless+tls"
+	}
+
+	// WebSocket 传输
+	if strings.EqualFold(p.Network, "ws") {
+		q.Set("type", "ws")
+		if p.WSOpts != nil {
+			if p.WSOpts.Path != "" {
+				q.Set("path", p.WSOpts.Path)
+			}
+			if host, ok := p.WSOpts.Headers["Host"]; ok {
+				q.Set("host", host)
+			}
+		}
+		if p.TLS {
+			q.Set("security", "tls")
+		}
 	}
 
 	rawURL := fmt.Sprintf("%s://%s@%s:%d",

@@ -26,6 +26,10 @@ type Connector struct {
 	method     shadowsocks.Method
 	methodName string
 	options    connector.Options
+
+	plugin     string
+	pluginMode string
+	pluginHost string
 }
 
 // NewConnector 创建新的 Shadowsocks Connector
@@ -57,6 +61,10 @@ func (c *Connector) Init(md metadata.Metadata) error {
 		return fmt.Errorf("shadowsocks password is required")
 	}
 
+	c.plugin = md.GetString("plugin")
+	c.pluginMode = md.GetString("plugin_mode")
+	c.pluginHost = md.GetString("plugin_host")
+
 	// 创建 Method 实例
 	m, err := pss.NewMethod(method, password)
 	if err != nil {
@@ -84,6 +92,11 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 
 	// TCP 使用 DialEarlyConn（支持 0-RTT）
 	if network == "tcp" {
+		if c.plugin == "obfs" && c.pluginMode == "http" {
+			conn = NewHttpObfsConn(conn, c.pluginHost)
+		} else if c.plugin != "" {
+			c.options.Logger.Warn("unsupported shadowsocks plugin: %s mode: %s, connecting directly", c.plugin, c.pluginMode)
+		}
 		return c.method.DialEarlyConn(conn, dest), nil
 	}
 
