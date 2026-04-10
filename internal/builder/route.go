@@ -60,13 +60,6 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 		if dialerName == "tls" || dialerName == "http3" || dialerName == "h3" || dialerName == "dtls" || dialerName == "h2" || dialerName == "quic" {
 			tlsOpts := ctls.ClientOptions{}
 			if dialerName == "http3" || dialerName == "h3" || dialerName == "quic" {
-				tlsOpts.NextProtos = []string{"h3"} // QUIC typically uses h3 ALPN or similar, but for raw quic maybe empty or custom?
-				// Wait, if it's raw QUIC, does it default to 'h3'?
-				// The quic listener implementation might set NextProtos.
-				// Let's check quic listener. But generally, for quic-go, ALPN is needed.
-				// Assuming 'h3' for now as it was aliased to http3 before, or maybe no ALPN?
-				// quic-go requires ALPN to match.
-				// Let's check internal/listener/quic/listener.go to see what ALPN it expects.
 				tlsOpts.NextProtos = []string{"h3"}
 			}
 			if dialerName == "h2" {
@@ -257,10 +250,6 @@ func buildWSDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 		metadata.KeySecurity: q.Get("security"), // e.g. "tls"
 		metadata.KeyInsecure: q.Get("insecure") == "true" || q.Get("insecure") == "1",
 	}
-	// Also fallback to endpoint host if "host" not in query?
-	// VMess "sni" query often used for TLS SNI, and "host" for WS Host header.
-	// If "host" query is missing, maybe default to hop.Host if they differ?
-	// Usually for VMess, hop.Host is the server IP, and SNI/Host is for obfuscation.
 	return metadata.New(mdMap)
 }
 
