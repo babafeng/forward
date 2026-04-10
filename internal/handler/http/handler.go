@@ -59,6 +59,13 @@ type routeContextKey int
 
 const routeKey routeContextKey = iota
 
+type connInfo struct {
+	remote string
+	local  string
+}
+
+type connInfoKey struct{}
+
 var streamNoHalfCloseGrace = 3 * time.Second
 
 func NewHandler(opts ...corehandler.Option) corehandler.Handler {
@@ -108,16 +115,7 @@ func (h *Handler) Init(md metadata.Metadata) error {
 	if v := md.Get("udp"); v != nil {
 		h.enableUDP = parseBool(v)
 	}
-	if v := md.Get("udp_idle"); v != nil {
-		if t, ok := v.(time.Duration); ok && t > 0 {
-			h.udpIdle = t
-		}
-	}
-	if v := md.Get("max_udp_sessions"); v != nil {
-		if n, ok := v.(int); ok && n > 0 {
-			h.maxUDPSessions = n
-		}
-	}
+	corehandler.ApplyUDPRelayMetadata(md, &h.udpIdle, &h.maxUDPSessions)
 
 	if v := md.Get("read_header_timeout"); v != nil {
 		if t, ok := v.(time.Duration); ok && t > 0 {
@@ -157,8 +155,11 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
-	h.options.Logger.Info("%sHTTP connection %s -> %s", h.tracePrefix(ctx), remote, local)
-	h.debugVerbose(ctx, "%sHTTP connection %s -> %s", h.tracePrefix(ctx), remote, local)
+	ctx = context.WithValue(ctx, connInfoKey{}, connInfo{remote: remote, local: local})
+	if h.options.Logger != nil {
+		h.options.Logger.Debug("%sHTTP accept %s -> %s", h.tracePrefix(ctx), remote, local)
+	}
+	h.debugVerbose(ctx, "%sHTTP accept %s -> %s", h.tracePrefix(ctx), remote, local)
 
 	if md := ictx.MetadataFromContext(ctx); md != nil {
 		if w, ok := md.Get(metadata.MetaHTTPResponseWriter).(stdhttp.ResponseWriter); ok && w != nil {
@@ -239,6 +240,13 @@ type closeNotifyConn struct {
 	net.Conn
 	onClose func()
 	once    sync.Once
+}
+
+func (c *closeNotifyConn) Context() context.Context {
+	if cc, ok := c.Conn.(interface{ Context() context.Context }); ok {
+		return cc.Context()
+	}
+	return context.Background()
 }
 
 func (c *closeNotifyConn) Close() error {
@@ -373,6 +381,7 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	ctx := r.Context()
 	start := time.Now()
 	prefix := h.tracePrefix(ctx)
+	h.logHTTPConnectionInfo(ctx, r.RemoteAddr, target)
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("HTTP Route error: %v", err)
@@ -382,6 +391,7 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	if route == nil {
 		route = chain.NewRoute()
 	}
+	h.logHTTPConnectionDebug(ctx, r.RemoteAddr, target, route)
 	up, err := route.Dial(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("HTTP connect dial error: %v", err)
@@ -441,6 +451,7 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	}
 
 	target := req.URL.Host
+	h.logHTTPConnectionInfo(ctx, r.RemoteAddr, target)
 	route, err := h.options.Router.Route(ctx, "tcp", target)
 	if err != nil {
 		h.options.Logger.Error("HTTP Route error: %v", err)
@@ -450,6 +461,7 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	if route == nil {
 		route = chain.NewRoute()
 	}
+	h.logHTTPConnectionDebug(ctx, r.RemoteAddr, target, route)
 	req = req.WithContext(context.WithValue(req.Context(), routeKey, route))
 
 	resp, err := h.transportClient().RoundTrip(req)
@@ -604,7 +616,6 @@ func (h *Handler) transportClient() *stdhttp.Transport {
 	})
 	return h.transport
 }
-
 
 func (h *Handler) routeDialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	route, _ := ctx.Value(routeKey).(chain.Route)
@@ -825,6 +836,51 @@ func (h *Handler) debugVerbose(ctx context.Context, format string, args ...any) 
 	h.options.Logger.Debug(format, args...)
 }
 
+func (h *Handler) logHTTPConnectionInfo(ctx context.Context, remote, target string) {
+	if h.options.Logger == nil {
+		return
+	}
+	remote, local := h.connectionEndpoints(ctx, remote)
+	h.options.Logger.Info("%sHTTP connection %s -> %s -> %s", h.tracePrefix(ctx), remote, local, target)
+}
+
+func (h *Handler) logHTTPConnectionDebug(ctx context.Context, remote, target string, route chain.Route) {
+	if h.options.Logger == nil {
+		return
+	}
+	remote, local := h.connectionEndpoints(ctx, remote)
+	h.options.Logger.Debug("%sHTTP connection %s -> %s -> %s via %s", h.tracePrefix(ctx), remote, local, target, chain.RouteSummary(route))
+}
+
+func (h *Handler) connectionEndpoints(ctx context.Context, remoteFallback string) (remote, local string) {
+	remote = remoteFallback
+	if info, ok := ctx.Value(connInfoKey{}).(connInfo); ok {
+		if info.remote != "" {
+			remote = info.remote
+		}
+		if info.local != "" {
+			local = info.local
+		}
+	}
+	if local == "" {
+		if tr := ictx.TraceFromContext(ctx); tr != nil {
+			if tr.Src != "" && remote == "" {
+				remote = tr.Src
+			}
+			if tr.Local != "" {
+				local = tr.Local
+			}
+		}
+	}
+	if remote == "" {
+		remote = "unknown-remote"
+	}
+	if local == "" {
+		local = "unknown-local"
+	}
+	return remote, local
+}
+
 func (h *Handler) log() *logging.Logger {
 	return h.options.Logger
 }
@@ -863,4 +919,9 @@ func redactURL(u *url.URL) string {
 		redacted.RawQuery = q.Encode()
 	}
 	return redacted.String()
+}
+
+// RedactURL is the exported wrapper for redactURL, used by external tests.
+func RedactURL(u *url.URL) string {
+	return redactURL(u)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
 	B "github.com/sagernet/sing/common/buf"
@@ -26,6 +27,10 @@ type Connector struct {
 	method     shadowsocks.Method
 	methodName string
 	options    connector.Options
+
+	plugin     string
+	pluginMode string
+	pluginHost string
 }
 
 // NewConnector 创建新的 Shadowsocks Connector
@@ -57,6 +62,10 @@ func (c *Connector) Init(md metadata.Metadata) error {
 		return fmt.Errorf("shadowsocks password is required")
 	}
 
+	c.plugin = md.GetString("plugin")
+	c.pluginMode = md.GetString("plugin_mode")
+	c.pluginHost = md.GetString("plugin_host")
+
 	// 创建 Method 实例
 	m, err := pss.NewMethod(method, password)
 	if err != nil {
@@ -66,6 +75,9 @@ func (c *Connector) Init(md metadata.Metadata) error {
 	c.method = m
 	c.methodName = method
 	c.options.Logger.Debug("SS connector initialized with method %s", method)
+	if c.plugin != "" {
+		c.options.Logger.Debug("SS connector plugin=%s mode=%s host=%s", c.plugin, c.pluginMode, c.pluginHost)
+	}
 	return nil
 }
 
@@ -84,6 +96,20 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 
 	// TCP 使用 DialEarlyConn（支持 0-RTT）
 	if network == "tcp" {
+		if c.plugin == "obfs" && c.pluginMode == "http" {
+			port := "80"
+			if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+				port = strconv.Itoa(tcpAddr.Port)
+			} else {
+				_, proxyPort, err := net.SplitHostPort(conn.RemoteAddr().String())
+				if err == nil {
+					port = proxyPort
+				}
+			}
+			conn = NewHttpObfsConn(conn, c.pluginHost, port)
+		} else if c.plugin != "" {
+			c.options.Logger.Warn("unsupported shadowsocks plugin: %s mode: %s, connecting directly", c.plugin, c.pluginMode)
+		}
 		return c.method.DialEarlyConn(conn, dest), nil
 	}
 
@@ -99,8 +125,6 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 
 	return nil, fmt.Errorf("unsupported network: %s", network)
 }
-
-
 
 // ssPacketConn 封装 Shadowsocks UDP 连接
 type ssPacketConn struct {

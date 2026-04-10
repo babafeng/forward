@@ -68,13 +68,19 @@ func (r *StoreRouter) Route(ctx context.Context, network, address string) (chain
 	}
 	names := normalizeDecisionChain(decision)
 	if len(names) == 0 {
+		if isExplicitDirectDecision(decision) {
+			return chain.NewRoute(), nil
+		}
 		return r.fallback(), nil
 	}
 	if len(names) == 1 && names[0] == "REJECT" {
 		return nil, fmt.Errorf("route rejected")
 	}
 
-	if len(names) == 1 {
+	prefix := r.fallback()
+	composeWithPrefix := usesBalancerPrefix(prefix)
+
+	if len(names) == 1 && !composeWithPrefix {
 		rt, err := r.resolveProxy(names[0])
 		if err == nil {
 			return rt, nil
@@ -87,12 +93,14 @@ func (r *StoreRouter) Route(ctx context.Context, network, address string) (chain
 		version = r.store.Version()
 	}
 	cacheKey := strings.Join(names, "->")
-	r.mu.RLock()
-	if entry, ok := r.chainCache[cacheKey]; ok && entry.route != nil && entry.version == version {
+	if composeWithPrefix || len(names) > 1 {
+		r.mu.RLock()
+		if entry, ok := r.chainCache[cacheKey]; ok && entry.route != nil && entry.version == version {
+			r.mu.RUnlock()
+			return entry.route, nil
+		}
 		r.mu.RUnlock()
-		return entry.route, nil
 	}
-	r.mu.RUnlock()
 
 	nodes := make([]*chain.Node, 0, len(names))
 	for _, name := range names {
@@ -106,9 +114,14 @@ func (r *StoreRouter) Route(ctx context.Context, network, address string) (chain
 		return r.fallback(), nil
 	}
 	composed := chain.NewRoute(nodes...)
-	r.mu.Lock()
-	r.chainCache[cacheKey] = cachedChainRoute{route: composed, version: version}
-	r.mu.Unlock()
+	if composeWithPrefix {
+		composed = chain.ComposeRoute(prefix, composed)
+	}
+	if composeWithPrefix || len(names) > 1 {
+		r.mu.Lock()
+		r.chainCache[cacheKey] = cachedChainRoute{route: composed, version: version}
+		r.mu.Unlock()
+	}
 	return composed, nil
 }
 
@@ -157,11 +170,16 @@ func (r *StoreRouter) resolveProxy(name string) (chain.Route, error) {
 		return nil, fmt.Errorf("unknown proxy %s", normalized)
 	}
 
+	var oldRoute chain.Route
 	r.mu.Lock()
+	if entry, ok := r.proxies[normalized]; ok {
+		oldRoute = entry.route
+	}
 	r.proxies[normalized] = proxyRoute{route: rt, version: version}
 	r.mu.Unlock()
 	// Proxy route refresh can change multi-hop composition.
 	r.clearChainCache()
+	closeRoute(oldRoute, rt)
 	return rt, nil
 }
 
@@ -172,6 +190,18 @@ func (r *StoreRouter) clearChainCache() {
 	r.mu.Lock()
 	r.chainCache = make(map[string]cachedChainRoute)
 	r.mu.Unlock()
+}
+
+func usesBalancerPrefix(rt chain.Route) bool {
+	if rt == nil {
+		return false
+	}
+	_, ok := rt.(*chain.BalancerRoute)
+	return ok
+}
+
+func isExplicitDirectDecision(decision route.Decision) bool {
+	return decision.Matched && strings.EqualFold(strings.TrimSpace(decision.Via), "DIRECT")
 }
 
 func normalizeDecisionChain(decision route.Decision) []string {
@@ -194,5 +224,18 @@ func normalizeDecisionChain(decision route.Decision) []string {
 		return []string{"REJECT"}
 	default:
 		return []string{via}
+	}
+}
+
+func closeRoute(oldRoute, newRoute chain.Route) {
+	if oldRoute == nil || oldRoute == newRoute {
+		return
+	}
+	if closer, ok := oldRoute.(interface{ Close() }); ok {
+		closer.Close()
+		return
+	}
+	if closer, ok := oldRoute.(interface{ Close() error }); ok {
+		_ = closer.Close()
 	}
 }

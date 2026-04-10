@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 
 	"forward/base/endpoint"
@@ -28,6 +29,9 @@ const (
 	DefaultIdleTimeout      = 2 * time.Minute
 	DefaultMaxConnections   = 4096
 	DefaultMaxUDPSessions   = 1024
+
+	// DefaultSubscribeUpdate 订阅自动刷新间隔（分钟）。
+	DefaultSubscribeUpdate = 60
 
 	// HTTP upstream transport pooling defaults.
 	DefaultHTTPMaxIdleConns        = 2048
@@ -79,6 +83,7 @@ type NodeConfig struct {
 	Insecure     bool
 
 	SubscribeURL    string
+	SubscribeURLs   []string
 	SubscribeFilter string
 	SubscribeUpdate int
 }
@@ -120,6 +125,7 @@ type Config struct {
 	TProxy *TProxyConfig
 
 	SubscribeURL    string
+	SubscribeURLs   []string
 	SubscribeFilter string
 	SubscribeUpdate int
 }
@@ -138,4 +144,35 @@ type TProxyConfig struct {
 
 func (c *Config) IsMode(m RunMode) bool {
 	return c.Mode == m
+}
+
+func NormalizeSubscribeURLs(primary string, urls []string) []string {
+	seen := make(map[string]struct{})
+	normalized := make([]string, 0, len(urls)+1)
+
+	appendURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if _, ok := seen[raw]; ok {
+			return
+		}
+		seen[raw] = struct{}{}
+		normalized = append(normalized, raw)
+	}
+
+	appendURL(primary)
+	for _, raw := range urls {
+		appendURL(raw)
+	}
+	return normalized
+}
+
+func (n NodeConfig) EffectiveSubscribeURLs() []string {
+	return NormalizeSubscribeURLs(n.SubscribeURL, n.SubscribeURLs)
+}
+
+func (c Config) EffectiveSubscribeURLs() []string {
+	return NormalizeSubscribeURLs(c.SubscribeURL, c.SubscribeURLs)
 }

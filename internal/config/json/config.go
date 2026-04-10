@@ -39,28 +39,30 @@ func FindDefaultConfig() (string, error) {
 }
 
 type NodeFileConfig struct {
-	Name      string   `json:"name"`
-	Listeners []string `json:"listeners"`
-	Listen    string   `json:"listen,omitempty"`
-	Forward   string   `json:"forward,omitempty"`
-	Forwards  []string `json:"forwards,omitempty"`
+	Name            string   `json:"name"`
+	Listeners       []string `json:"listeners"`
+	Listen          string   `json:"listen,omitempty"`
+	Forward         string   `json:"forward,omitempty"`
+	Forwards        []string `json:"forwards,omitempty"`
 	Insecure        bool     `json:"insecure,omitempty"`
 	Subscribe       string   `json:"subscribe,omitempty"`
+	Subscribes      []string `json:"subscribes,omitempty"`
 	SubscribeTypo   string   `json:"subscirbe,omitempty"`
 	SubscribeFilter string   `json:"filter,omitempty"`
 	SubscribeUpdate int      `json:"update,omitempty"`
 }
 
 type FileConfig struct {
-	Nodes        []NodeFileConfig `json:"nodes,omitempty"`
-	Listeners    []string         `json:"listeners,omitempty"`
-	Listen       string           `json:"listen,omitempty"`
-	Forward      string           `json:"forward,omitempty"`
-	Forwards     []string         `json:"forwards,omitempty"`
-	Insecure     bool             `json:"insecure,omitempty"`
-	Debug        bool             `json:"debug,omitempty"`
+	Nodes           []NodeFileConfig `json:"nodes,omitempty"`
+	Listeners       []string         `json:"listeners,omitempty"`
+	Listen          string           `json:"listen,omitempty"`
+	Forward         string           `json:"forward,omitempty"`
+	Forwards        []string         `json:"forwards,omitempty"`
+	Insecure        bool             `json:"insecure,omitempty"`
+	Debug           bool             `json:"debug,omitempty"`
 	DebugVerbose    bool             `json:"debug_verbose,omitempty"`
 	Subscribe       string           `json:"subscribe,omitempty"`
+	Subscribes      []string         `json:"subscribes,omitempty"`
 	SubscribeTypo   string           `json:"subscirbe,omitempty"`
 	SubscribeFilter string           `json:"filter,omitempty"`
 	SubscribeUpdate int              `json:"update,omitempty"`
@@ -114,13 +116,14 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	}
 
 	node, err := parseNode(NodeFileConfig{
-		Name:      "default",
-		Listeners: fc.Listeners,
-		Listen:    fc.Listen,
-		Forward:   fc.Forward,
+		Name:            "default",
+		Listeners:       fc.Listeners,
+		Listen:          fc.Listen,
+		Forward:         fc.Forward,
 		Forwards:        fc.Forwards,
 		Insecure:        fc.Insecure,
 		Subscribe:       fc.Subscribe,
+		Subscribes:      fc.Subscribes,
 		SubscribeTypo:   fc.SubscribeTypo,
 		SubscribeFilter: fc.SubscribeFilter,
 		SubscribeUpdate: fc.SubscribeUpdate,
@@ -136,6 +139,7 @@ func (fc *FileConfig) ToConfig() (config.Config, error) {
 	cfg.ForwardChain = node.ForwardChain
 	cfg.Insecure = node.Insecure
 	cfg.SubscribeURL = node.SubscribeURL
+	cfg.SubscribeURLs = append([]string(nil), node.SubscribeURLs...)
 	cfg.SubscribeFilter = node.SubscribeFilter
 	cfg.SubscribeUpdate = node.SubscribeUpdate
 
@@ -147,13 +151,10 @@ func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 	node := config.NodeConfig{
 		Name:            n.Name,
 		Insecure:        n.Insecure,
-		SubscribeURL:    n.Subscribe,
 		SubscribeFilter: n.SubscribeFilter,
 		SubscribeUpdate: n.SubscribeUpdate,
 	}
-	if node.SubscribeURL == "" {
-		node.SubscribeURL = n.SubscribeTypo
-	}
+	node.SubscribeURL, node.SubscribeURLs = config.ResolvePrimarySubscribe(n.Subscribe, n.SubscribeTypo, n.Subscribes)
 	if node.Name == "" {
 		node.Name = fmt.Sprintf("node_%d", index)
 	}
@@ -170,12 +171,12 @@ func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 		node.Listeners = append(node.Listeners, ep)
 	}
 
-	for _, l := range n.Listeners {
-		ep, err := endpoint.Parse(l)
+	if len(n.Listeners) > 0 {
+		listeners, idx, err := config.ParseEndpoints(n.Listeners)
 		if err != nil {
-			return node, fmt.Errorf("node %s: parse listener %s: %w", node.Name, l, err)
+			return node, fmt.Errorf("node %s: parse listener %s: %w", node.Name, n.Listeners[idx], err)
 		}
-		node.Listeners = append(node.Listeners, ep)
+		node.Listeners = append(node.Listeners, listeners...)
 	}
 
 	if strings.TrimSpace(n.Forward) != "" && len(n.Forwards) > 0 {
@@ -183,13 +184,11 @@ func parseNode(n NodeFileConfig, index int) (config.NodeConfig, error) {
 	}
 
 	if len(n.Forwards) > 0 {
-		for _, raw := range n.Forwards {
-			ef, err := endpoint.Parse(raw)
-			if err != nil {
-				return node, fmt.Errorf("node %s: parse forward %s: %w", node.Name, raw, err)
-			}
-			node.ForwardChain = append(node.ForwardChain, ef)
+		chain, idx, err := config.ParseEndpoints(n.Forwards)
+		if err != nil {
+			return node, fmt.Errorf("node %s: parse forward %s: %w", node.Name, n.Forwards[idx], err)
 		}
+		node.ForwardChain = append(node.ForwardChain, chain...)
 		if len(node.ForwardChain) > 0 {
 			last := node.ForwardChain[len(node.ForwardChain)-1]
 			node.Forward = &last

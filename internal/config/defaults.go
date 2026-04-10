@@ -30,4 +30,13 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.DNSParameters.Timeout == 0 {
 		cfg.DNSParameters.Timeout = 5 * time.Second
 	}
+	// 当配置了订阅 URL 却没有显式设置刷新间隔时，默认 60 分钟自动刷新
+	if cfg.SubscribeUpdate == 0 && len(cfg.EffectiveSubscribeURLs()) > 0 {
+		cfg.SubscribeUpdate = DefaultSubscribeUpdate
+	}
+	for i := range cfg.Nodes {
+		if cfg.Nodes[i].SubscribeUpdate == 0 && len(cfg.Nodes[i].EffectiveSubscribeURLs()) > 0 {
+			cfg.Nodes[i].SubscribeUpdate = DefaultSubscribeUpdate
+		}
+	}
 }

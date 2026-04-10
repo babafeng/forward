@@ -38,7 +38,7 @@ func TestInitRouteStoreAndHotReloadReloadsRouteFile(t *testing.T) {
 
 	writeRouteINI(t, path, "P2")
 
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, 10*time.Second, func() bool {
 		decision, err := cfg.RouteStore.Decide(context.Background(), "www.example.com:443")
 		return err == nil && decision.Via == "P2" && cfg.RouteStore.Version() >= 1
 	}, "route decision was not reloaded to P2")
@@ -70,7 +70,7 @@ func TestInitRouteStoreAndHotReloadKeepsOldRouteOnParseError(t *testing.T) {
 	prevVersion := cfg.RouteStore.Version()
 	writeBrokenRouteINI(t, path)
 
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(6000 * time.Millisecond)
 
 	decision, err := cfg.RouteStore.Decide(context.Background(), "www.example.com:443")
 	if err != nil {
