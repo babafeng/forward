@@ -43,10 +43,10 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			return nil, fmt.Errorf("hop %d: %w", i+1, err)
 		}
 
-		// VMess: check if using WebSocket transport
-		if connectorName == "vmess" {
+		// VMess/VLESS: check if using WebSocket transport
+		if connectorName == "vmess" || connectorName == "vless" {
 			q := hop.Query
-			// vmess://...?obfs=websocket or ...?type=ws or ...?net=ws
+			// vmess/vless://...?obfs=websocket or ...?type=ws or ...?net=ws
 			if strings.EqualFold(q.Get("obfs"), "websocket") || strings.EqualFold(q.Get("type"), "ws") || strings.EqualFold(q.Get("net"), "ws") {
 				dialerName = "ws"
 			}
@@ -277,6 +277,9 @@ func buildSSConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	return metadata.New(map[string]any{
 		metadata.KeyMethod:   method,
 		metadata.KeyPassword: password,
+		"plugin":             hop.Query.Get("plugin"),
+		"plugin_mode":        hop.Query.Get("plugin_mode"),
+		"plugin_host":        hop.Query.Get("plugin_host"),
 	})
 }
 
@@ -459,6 +462,12 @@ func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 			return "socks5", "tls", nil
 		case "tcp":
 			return "tcp", "tls", nil
+		case "vless":
+			return "vless", "tls", nil
+		case "vmess":
+			return "vmess", "tls", nil
+		case "ss", "shadowsocks":
+			return "ss", "tls", nil
 		default:
 			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
 		}
