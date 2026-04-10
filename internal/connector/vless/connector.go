@@ -2,17 +2,13 @@
 package vless
 
 import (
-	"bytes"
 	"context"
-	gotls "crypto/tls"
 	"fmt"
 	"net"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -26,9 +22,6 @@ import (
 	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vless/encoding"
 	"github.com/xtls/xray-core/transport"
-	"github.com/xtls/xray-core/transport/internet/reality"
-	"github.com/xtls/xray-core/transport/internet/stat"
-	"github.com/xtls/xray-core/transport/internet/tls"
 	"github.com/xtls/xray-core/transport/pipe"
 
 	pvless "forward/base/protocol/vless"
@@ -299,7 +292,7 @@ func (c *Connector) createMuxWorker(ctx context.Context, conn net.Conn) (*vlessM
 
 	reader := encoding.DecodeBodyAddons(conn, request, responseAddons)
 	if requestAddons.Flow == xvless.XRV {
-		input, rawInput, err := visionInputBuffers(conn)
+		input, rawInput, err := pvless.VisionInputBuffers(conn)
 		if err != nil {
 			_ = conn.Close()
 			return nil, err
@@ -569,7 +562,7 @@ func (c *vlessConn) initReader() error {
 
 		// 处理 Vision 流
 		if c.addons != nil && c.addons.Flow == xvless.XRV {
-			input, rawInput, err := visionInputBuffers(c.Conn)
+			input, rawInput, err := pvless.VisionInputBuffers(c.Conn)
 			if err != nil {
 				c.initErr = err
 				return
@@ -582,70 +575,3 @@ func (c *vlessConn) initReader() error {
 	return c.initErr
 }
 
-// visionInputBuffers 获取 Vision 流所需的输入缓冲区
-func visionInputBuffers(conn net.Conn) (*bytes.Reader, *bytes.Buffer, error) {
-	if statConn, ok := conn.(*stat.CounterConnection); ok {
-		conn = statConn.Connection
-	}
-
-	switch c := conn.(type) {
-	case *tls.Conn:
-		if c.ConnectionState().Version != gotls.VersionTLS13 {
-			return nil, nil, fmt.Errorf("xtls-rprx-vision requires TLS 1.3")
-		}
-		return xtlsBuffers(c.Conn)
-	case *tls.UConn:
-		if c.ConnectionState().Version != gotls.VersionTLS13 {
-			return nil, nil, fmt.Errorf("xtls-rprx-vision requires TLS 1.3")
-		}
-		if c.UConn == nil || c.UConn.Conn == nil {
-			return nil, nil, fmt.Errorf("xtls-rprx-vision requires valid tls uconn")
-		}
-		return xtlsBuffers(c.UConn.Conn)
-	case *reality.UConn:
-		if c.UConn == nil || c.UConn.Conn == nil {
-			return nil, nil, fmt.Errorf("xtls-rprx-vision requires valid reality uconn")
-		}
-		return xtlsBuffers(c.UConn.Conn)
-	case *reality.Conn:
-		return xtlsBuffers(c)
-	default:
-		return nil, nil, fmt.Errorf("xtls-rprx-vision requires TLS or REALITY")
-	}
-}
-
-// xtlsBuffers 通过反射获取 xtls 内部缓冲区
-func xtlsBuffers(conn any) (*bytes.Reader, *bytes.Buffer, error) {
-	val := reflect.ValueOf(conn)
-	if val.Kind() != reflect.Ptr || val.IsNil() {
-		return nil, nil, fmt.Errorf("invalid xtls connection")
-	}
-
-	t := val.Type().Elem()
-	inputField, ok := t.FieldByName("input")
-	if !ok {
-		return nil, nil, fmt.Errorf("missing xtls input buffer")
-	}
-
-	rawInputField, ok := t.FieldByName("rawInput")
-	if !ok {
-		return nil, nil, fmt.Errorf("missing xtls rawInput buffer")
-	}
-
-	if inputField.Type != reflect.TypeOf(bytes.Reader{}) {
-		return nil, nil, fmt.Errorf("xtls input field type mismatch: expected bytes.Reader, got %v", inputField.Type)
-	}
-	if rawInputField.Type != reflect.TypeOf(bytes.Buffer{}) {
-		return nil, nil, fmt.Errorf("xtls rawInput field type mismatch: expected bytes.Buffer, got %v", rawInputField.Type)
-	}
-
-	p := unsafe.Pointer(val.Pointer())
-	input := (*bytes.Reader)(unsafe.Pointer(uintptr(p) + inputField.Offset))
-	rawInput := (*bytes.Buffer)(unsafe.Pointer(uintptr(p) + rawInputField.Offset))
-
-	if input == nil || rawInput == nil {
-		return nil, nil, fmt.Errorf("xtls input buffers not initialized")
-	}
-
-	return input, rawInput, nil
-}
