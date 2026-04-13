@@ -261,51 +261,49 @@ const (
 	transportH3   transportKind = "h3"
 )
 
+// schemeTransportTable 将完整 scheme 直接映射到 (base, transport) 对。
+// 维护新协议时只需在此处添加行，无需修改控制流。
+var schemeTransportTable = map[string][2]string{
+	"https":        {"http", string(transportTLS)},
+	"http2":        {"http2", string(transportNone)},
+	"http3":        {"http3", string(transportNone)},
+	"tls":          {"http", string(transportTLS)},
+	"h2":           {"http", string(transportH2)},
+	"h3":           {"http", string(transportH3)},
+	"dtls":         {"tcp", string(transportDTLS)},
+	"hysteria2":    {"hysteria2", string(transportNone)},
+	"hy2":          {"hysteria2", string(transportNone)},
+	"vless":        {"vless", string(transportNone)},
+	"vless+reality":{"vless", string(transportNone)},
+	"reality":      {"vless", string(transportNone)},
+	"vless+tls":    {"vless", string(transportTLS)},
+	"vmess":        {"vmess", string(transportNone)},
+	"vmess+tls":    {"vmess", string(transportTLS)},
+}
+
+// transportSuffixTable 将后缀映射到 transportKind，用于处理 "base+suffix" 复合 scheme。
+var transportSuffixTable = []struct {
+	suffix    string
+	transport transportKind
+}{
+	{"+tls", transportTLS},
+	{"+h2", transportH2},
+	{"+h3", transportH3},
+	{"+dtls", transportDTLS},
+	{"+reality", transportNone},
+}
+
 func splitSchemeTransport(scheme string) (base string, transport transportKind) {
 	s := strings.ToLower(strings.TrimSpace(scheme))
-	switch s {
-	case "https":
-		return "http", transportTLS
-	case "http2":
-		return "http2", transportNone
-	case "http3":
-		return "http3", transportNone
-	case "tls":
-		return "http", transportTLS
-	case "h2":
-		return "http", transportH2
-	case "h3":
-		return "http", transportH3
-	case "dtls":
-		return "tcp", transportDTLS
-	case "hysteria2", "hy2":
-		return "hysteria2", transportNone
-	// VLESS + Reality
-	case "vless", "vless+reality", "reality":
-		return "vless", transportNone
-	case "vless+tls":
-		return "vless", transportTLS
-	// VMess
-	case "vmess":
-		return "vmess", transportNone
-	case "vmess+tls":
-		return "vmess", transportTLS
+
+	if pair, ok := schemeTransportTable[s]; ok {
+		return pair[0], transportKind(pair[1])
 	}
-	if strings.HasSuffix(s, "+h2") {
-		return strings.TrimSuffix(s, "+h2"), transportH2
-	}
-	if strings.HasSuffix(s, "+h3") {
-		return strings.TrimSuffix(s, "+h3"), transportH3
-	}
-	if strings.HasSuffix(s, "+tls") {
-		return strings.TrimSuffix(s, "+tls"), transportTLS
-	}
-	if strings.HasSuffix(s, "+dtls") {
-		return strings.TrimSuffix(s, "+dtls"), transportDTLS
-	}
-	// VLESS + Reality 带后缀
-	if strings.HasSuffix(s, "+reality") {
-		return strings.TrimSuffix(s, "+reality"), transportNone
+
+	for _, entry := range transportSuffixTable {
+		if b, found := strings.CutSuffix(s, entry.suffix); found {
+			return b, entry.transport
+		}
 	}
 	return s, transportNone
 }

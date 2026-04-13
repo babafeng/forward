@@ -3,7 +3,6 @@
 package subscribe
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"forward/base/endpoint"
+	baseenc "forward/base/utils/encoding"
 
 	"gopkg.in/yaml.v3"
 )
@@ -142,22 +142,8 @@ func parseClashYAML(data []byte) ([]ClashProxy, error) {
 func tryBase64Decode(s string) ([]byte, error) {
 	// 移除可能的空白字符
 	s = strings.Join(strings.Fields(s), "")
-
-	// 尝试标准 base64
-	if decoded, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return decoded, nil
-	}
-	// 尝试标准 base64 无 padding
-	if decoded, err := base64.RawStdEncoding.DecodeString(s); err == nil {
-		return decoded, nil
-	}
-	// 尝试 URL-safe base64
-	if decoded, err := base64.URLEncoding.DecodeString(s); err == nil {
-		return decoded, nil
-	}
-	// 尝试 URL-safe base64 无 padding
-	if decoded, err := base64.RawURLEncoding.DecodeString(s); err == nil {
-		return decoded, nil
+	if v, ok := baseenc.DecodeBase64Flexible(s); ok {
+		return v, nil
 	}
 	return nil, fmt.Errorf("不是有效的 base64 编码")
 }
