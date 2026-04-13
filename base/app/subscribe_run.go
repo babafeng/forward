@@ -71,9 +71,11 @@ func dedupeSubscribeProxies(proxies []subscribe.ClashProxy) []subscribe.ClashPro
 }
 
 func subscribeProxyKey(proxy subscribe.ClashProxy) string {
-	hostHeader := ""
+	wsHostHeader := ""
+	wsPath := ""
 	if proxy.WSOpts != nil {
-		hostHeader = proxy.WSOpts.Headers["Host"]
+		wsHostHeader = proxy.WSOpts.Headers["Host"]
+		wsPath = strings.TrimSpace(proxy.WSOpts.Path)
 	}
 
 	return strings.Join([]string{
@@ -88,13 +90,8 @@ func subscribeProxyKey(proxy subscribe.ClashProxy) string {
 		strconv.FormatBool(proxy.TLS),
 		strings.TrimSpace(proxy.SNI),
 		strings.ToLower(strings.TrimSpace(proxy.Network)),
-		strings.TrimSpace(hostHeader),
-		func() string {
-			if proxy.WSOpts == nil {
-				return ""
-			}
-			return strings.TrimSpace(proxy.WSOpts.Path)
-		}(),
+		strings.TrimSpace(wsHostHeader),
+		wsPath,
 	}, "\x00")
 }
 

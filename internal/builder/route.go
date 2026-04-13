@@ -1,7 +1,6 @@
 package builder
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"forward/base/endpoint"
+	baseenc "forward/base/utils/encoding"
 	"forward/internal/chain"
 	"forward/internal/config"
 	"forward/internal/connector"
@@ -84,26 +84,18 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 		}
 		d := newDialer(dialerOpts...)
 
-		// Dialer 初始化：Reality / H2 / H3 / WS 需要 metadata
-		if dialerName == "reality" || dialerName == "h2" || dialerName == "h3" {
-			dmd := buildDialerMetadata(hop)
-			if err := d.Init(dmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
-		} else if dialerName == "hysteria2" {
-			dmd := buildHysteria2DialerMetadata(hop, cfg.Insecure)
-			if err := d.Init(dmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
-		} else if dialerName == "ws" {
-			dmd := buildWSDialerMetadata(hop)
-			if err := d.Init(dmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
-		} else {
-			if err := d.Init(nil); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
+		// Dialer 初始化：部分协议需要传入 metadata
+		var dialerMD metadata.Metadata
+		switch dialerName {
+		case "reality", "h2", "h3":
+			dialerMD = buildDialerMetadata(hop)
+		case "hysteria2":
+			dialerMD = buildHysteria2DialerMetadata(hop, cfg.Insecure)
+		case "ws":
+			dialerMD = buildWSDialerMetadata(hop)
+		}
+		if err := d.Init(dialerMD); err != nil {
+			return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
 		}
 
 		newConnector := registry.ConnectorRegistry().Get(connectorName)
@@ -116,26 +108,18 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			connector.LoggerOption(cfg.Logger),
 		)
 
-		// 为 VLESS Connector 初始化 metadata
-		if connectorName == "vless" {
-			cmd := buildVlessConnectorMetadata(hop)
-			if err := c.Init(cmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
-			}
+		// Connector 初始化：部分协议需要传入 metadata
+		var connectorMD metadata.Metadata
+		switch connectorName {
+		case "vless":
+			connectorMD = buildVlessConnectorMetadata(hop)
+		case "vmess":
+			connectorMD = buildVmessConnectorMetadata(hop)
+		case "ss":
+			connectorMD = buildSSConnectorMetadata(hop)
 		}
-
-		// 为 VMess Connector 初始化 metadata
-		if connectorName == "vmess" {
-			cmd := buildVmessConnectorMetadata(hop)
-			if err := c.Init(cmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
-			}
-		}
-
-		// 为 Shadowsocks Connector 初始化 metadata
-		if connectorName == "ss" {
-			cmd := buildSSConnectorMetadata(hop)
-			if err := c.Init(cmd); err != nil {
+		if connectorMD != nil {
+			if err := c.Init(connectorMD); err != nil {
 				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
 			}
 		}
@@ -276,7 +260,7 @@ func parseSSCredentials(user *url.Userinfo) (method, password string) {
 		return method, p
 	}
 
-	decoded, ok := decodeBase64Flexible(method)
+	decoded, ok := baseenc.DecodeBase64Flexible(method)
 	if !ok {
 		return method, ""
 	}
@@ -290,26 +274,6 @@ func parseSSCredentials(user *url.Userinfo) (method, password string) {
 		return method, ""
 	}
 	return m, p
-}
-
-func decodeBase64Flexible(s string) ([]byte, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil, false
-	}
-	if v, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	if v, err := base64.RawStdEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	if v, err := base64.URLEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	if v, err := base64.RawURLEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	return nil, false
 }
 
 func parseSSPluginOptions(hop endpoint.Endpoint) (plugin, mode, host string) {
@@ -561,144 +525,97 @@ func parseMuxConfig(q url.Values) (enabled bool, maxStreams int, idle time.Durat
 	return enabled, maxStreams, idle
 }
 
+// schemeTable 将完整 scheme 字符串映射到 [connector, dialer] 对。
+// 维护新协议时只需在此处添加一行，无需修改控制流。
+var schemeTable = map[string][2]string{
+	// HTTP 系列
+	"http":         {"http", "tcp"},
+	"https":        {"http", "tls"},
+	"http+tls":     {"http", "tls"},
+	"tls":          {"http", "tls"},
+	"http2":        {"http2", "tls"},
+	"http3":        {"http3", "http3"},
+	"h2":           {"http", "h2"},
+	"h3":           {"http", "h3"},
+	// SOCKS5
+	"socks5":       {"socks5", "tcp"},
+	"socks5h":      {"socks5", "tcp"},
+	// 裸 TCP / UDP
+	"tcp":          {"tcp", "tcp"},
+	"quic":         {"tcp", "quic"},
+	"dtls":         {"tcp", "dtls"},
+	// VLESS
+	"vless":        {"vless", "reality"},
+	"vless+reality":{"vless", "reality"},
+	"reality":      {"vless", "reality"},
+	"vless+tls":    {"vless", "tls"},
+	// VMess
+	"vmess":        {"vmess", "tcp"},
+	"vmess+tls":    {"vmess", "tls"},
+	// Shadowsocks
+	"ss":           {"ss", "tcp"},
+	"shadowsocks":  {"ss", "tcp"},
+	"ss+tls":       {"ss", "tls"},
+	"shadowsocks+tls": {"ss", "tls"},
+	// Hysteria2
+	"hysteria2":    {"hysteria2", "hysteria2"},
+	"hy2":          {"hysteria2", "hysteria2"},
+}
+
+// suffixDialerTable 将传输层后缀映射到 dialer 名。
+// 支持的 connector 集合见 suffixConnectorTable。
+var suffixDialerTable = []struct {
+	suffix string
+	dialer string
+}{
+	{"+tls", "tls"},
+	{"+h2", "h2"},
+	{"+h3", "h3"},
+	{"+dtls", "dtls"},
+	{"+quic", "quic"},
+}
+
+// suffixConnectorTable 列出允许携带传输层后缀的 connector。
+var suffixConnectorTable = map[string]string{
+	"http":        "http",
+	"socks5":      "socks5",
+	"socks5h":     "socks5",
+	"tcp":         "tcp",
+	"vless":       "vless",
+	"vmess":       "vmess",
+	"ss":          "ss",
+	"shadowsocks": "ss",
+}
+
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
 	scheme = strings.ToLower(strings.TrimSpace(scheme))
 	if scheme == "" {
 		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
 	}
-	if scheme == "https" || scheme == "http+tls" {
-		return "http", "tls", nil
-	}
-	if scheme == "http2" {
-		return "http2", "tls", nil
-	}
-	if scheme == "http3" {
-		return "http3", "http3", nil
-	}
-	if scheme == "quic" {
-		return "tcp", "quic", nil
-	}
-	if scheme == "tls" {
-		return "http", "tls", nil
-	}
-	if scheme == "h2" {
-		return "http", "h2", nil
-	}
-	if scheme == "h3" {
-		return "http", "h3", nil
-	}
-	if strings.HasSuffix(scheme, "+h2") {
-		base := strings.TrimSuffix(scheme, "+h2")
-		switch base {
-		case "http":
-			return "http", "h2", nil
-		case "socks5", "socks5h":
-			return "socks5", "h2", nil
-		case "tcp":
-			return "tcp", "h2", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+h3") {
-		base := strings.TrimSuffix(scheme, "+h3")
-		switch base {
-		case "http":
-			return "http", "h3", nil
-		case "socks5", "socks5h":
-			return "socks5", "h3", nil
-		case "tcp":
-			return "tcp", "h3", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+dtls") {
-		base := strings.TrimSuffix(scheme, "+dtls")
-		switch base {
-		case "http":
-			return "http", "dtls", nil
-		case "socks5", "socks5h":
-			return "socks5", "dtls", nil
-		case "tcp":
-			return "tcp", "dtls", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+tls") {
-		base := strings.TrimSuffix(scheme, "+tls")
-		switch base {
-		case "http":
-			return "http", "tls", nil
-		case "socks5", "socks5h":
-			return "socks5", "tls", nil
-		case "tcp":
-			return "tcp", "tls", nil
-		case "vless":
-			return "vless", "tls", nil
-		case "vmess":
-			return "vmess", "tls", nil
-		case "ss", "shadowsocks":
-			return "ss", "tls", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+quic") {
-		base := strings.TrimSuffix(scheme, "+quic")
-		switch base {
-		case "http":
-			return "http", "quic", nil
-		case "socks5", "socks5h":
-			return "socks5", "quic", nil
-		case "tcp":
-			return "tcp", "quic", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if scheme == "dtls" {
-		return "tcp", "dtls", nil
+
+	// 优先查静态表
+	if pair, ok := schemeTable[scheme]; ok {
+		return pair[0], pair[1], nil
 	}
 
-	// VLESS + Reality 支持
-	if scheme == "vless" || scheme == "vless+reality" || scheme == "reality" {
-		return "vless", "reality", nil
-	}
-	if scheme == "vless+tls" {
-		return "vless", "tls", nil
-	}
-
-	// VMess 支持
-	if scheme == "vmess" {
-		return "vmess", "tcp", nil
-	}
-	if scheme == "vmess+tls" {
-		return "vmess", "tls", nil
-	}
-
-	// Shadowsocks 支持
-	if scheme == "ss" || scheme == "shadowsocks" {
-		return "ss", "tcp", nil
-	}
-	if scheme == "ss+tls" || scheme == "shadowsocks+tls" {
-		return "ss", "tls", nil
-	}
-	if scheme == "hysteria2" || scheme == "hy2" {
-		return "hysteria2", "hysteria2", nil
+	// 处理 "base+transport" 复合 scheme
+	for _, entry := range suffixDialerTable {
+		base, found := strings.CutSuffix(scheme, entry.suffix)
+		if !found {
+			continue
+		}
+		// 先检查基础 scheme 是否在静态表（整体已匹配，不走后缀）
+		if _, ok := schemeTable[scheme]; ok {
+			break
+		}
+		conn, ok := suffixConnectorTable[base]
+		if !ok {
+			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+		}
+		return conn, entry.dialer, nil
 	}
 
-	switch scheme {
-	case "http":
-		return "http", "tcp", nil
-	case "socks5", "socks5h":
-		return "socks5", "tcp", nil
-	case "tcp":
-		return "tcp", "tcp", nil
-	default:
-		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-	}
+	return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
 }
 
 // BuildHysteria2DialerMetadata is the exported wrapper for buildHysteria2DialerMetadata.
