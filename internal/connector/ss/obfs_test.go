@@ -60,14 +60,11 @@ func TestHttpObfsConnWriteInjectsHeaderOnce(t *testing.T) {
 	if !bytes.Contains(got, []byte("\r\nHost: example.com:14103\r\n")) {
 		t.Fatalf("host header missing, payload=%q", string(got))
 	}
-	if !bytes.Contains(got, []byte("\r\nUpgrade: websocket\r\n")) {
-		t.Fatalf("upgrade header missing, payload=%q", string(got))
-	}
-	if !bytes.Contains(got, []byte("\r\nConnection: Upgrade\r\n")) {
+	if !bytes.Contains(got, []byte("\r\nConnection: keep-alive\r\n")) {
 		t.Fatalf("connection header missing, payload=%q", string(got))
 	}
-	if !bytes.Contains(got, []byte("\r\nSec-Websocket-Key: ")) {
-		t.Fatalf("websocket key header missing, payload=%q", string(got))
+	if !bytes.Contains(got, []byte("\r\nAccept: */*\r\n")) {
+		t.Fatalf("accept header missing, payload=%q", string(got))
 	}
 	if !bytes.HasSuffix(got, []byte("firstsecond")) {
 		t.Fatalf("payload suffix mismatch: got %q", string(got))
@@ -113,11 +110,11 @@ func TestHttpObfsConnReadPassThroughWhenNoHTTPHeader(t *testing.T) {
 	}()
 
 	buf := make([]byte, 16)
-	_, err := obfs.Read(buf)
-	if err == nil {
-		t.Fatalf("expected EOF when first response has no HTTP header, got nil")
+	n, err := obfs.Read(buf)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
 	}
-	if err != io.EOF {
-		t.Fatalf("expected EOF, got %v", err)
+	if string(buf[:n]) != "xyz" {
+		t.Fatalf("unexpected read payload: got %q, want %q", string(buf[:n]), "xyz")
 	}
 }

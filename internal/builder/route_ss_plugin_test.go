@@ -83,3 +83,18 @@ func TestBuildSSConnectorMetadataShadowrocketStyle(t *testing.T) {
 		t.Fatalf("plugin_host = %q, want %q", got, "foo.example")
 	}
 }
+
+func TestBuildSSConnectorMetadataShadowrocketStyleWithFragment(t *testing.T) {
+	ep, err := endpoint.Parse("ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpsRTl1TDVmUjN5Ujk@example.com:443?plugin=obfs-local;obfs%3Dhttp;obfs-host%3Dfoo.example;obfs-uri%3D/#HK03")
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+
+	md := buildSSConnectorMetadata(ep)
+	if got := md.GetString("plugin_host"); got != "foo.example" {
+		t.Fatalf("plugin_host = %q, want %q", got, "foo.example")
+	}
+	if got := md.GetString("plugin_mode"); got != "http" {
+		t.Fatalf("plugin_mode = %q, want %q", got, "http")
+	}
+}
