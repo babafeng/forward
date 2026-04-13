@@ -24,12 +24,12 @@ func loadSubscribeProxies(urls []string, logger *logging.Logger) ([]subscribe.Cl
 
 	for _, subURL := range urls {
 		if logger != nil {
-			logger.Info("Downloading subscription from %s", subURL)
+			logger.Info("加载订阅源: %s", subURL)
 		}
 		data, err := subscribeDownload(subURL)
 		if err != nil {
 			if logger != nil {
-				logger.Warn("Failed to download subscription from %s: %v", subURL, err)
+				logger.Warn("加载订阅源失败: %s: %v", subURL, err)
 			}
 			errors = append(errors, fmt.Sprintf("%s: %v", subURL, err))
 			continue
@@ -115,15 +115,15 @@ func runSubscribe(ctx context.Context, opts subscribeOptions, cfg config.Config,
 	)
 
 	for _, subURL := range config.NormalizeSubscribeURLs("", opts.URLs) {
-		logger.Info("开始下载订阅链接: %s", subURL)
+		logger.Info("开始加载订阅源: %s", subURL)
 
 		data, err := subscribeDownload(subURL)
 		if err != nil {
-			logger.Warn("下载订阅链接失败: %s: %v", subURL, err)
+			logger.Warn("加载订阅源失败: %s: %v", subURL, err)
 			errors = append(errors, fmt.Sprintf("%s: %v", subURL, err))
 			continue
 		}
-		logger.Info("订阅内容下载完成，大小: %d 字节", len(data))
+		logger.Info("订阅内容加载完成，大小: %d 字节", len(data))
 
 		savedPath, err := subscribe.SaveToFile(data, subURL)
 		if err != nil {
