@@ -383,7 +383,11 @@ func rawQueryFromEndpoint(raw string) string {
 	if idx < 0 || idx+1 >= len(raw) {
 		return ""
 	}
-	return raw[idx+1:]
+	rawQuery := raw[idx+1:]
+	if fragIdx := strings.IndexByte(rawQuery, '#'); fragIdx >= 0 {
+		return rawQuery[:fragIdx]
+	}
+	return rawQuery
 }
 
 // parseLooseQuery 兼容 `&` 和 `;` 两种分隔符。
