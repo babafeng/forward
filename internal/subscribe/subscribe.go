@@ -66,8 +66,52 @@ type WSOptions struct {
 	Headers map[string]string `yaml:"headers"`
 }
 
-// Download 从指定 URL 下载订阅内容。
+// IsLocalPath 判断给定的字符串是否为本地文件路径。
+// 支持 file:// 协议、绝对路径（/...）以及相对路径（不以 http:// 或 https:// 开头）。
+func IsLocalPath(rawURL string) bool {
+	lower := strings.ToLower(rawURL)
+	if strings.HasPrefix(lower, "file://") {
+		return true
+	}
+	// 不是 http/https 链接且不含 ://（排除其他协议），视为本地路径
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		if !strings.Contains(rawURL, "://") {
+			return true
+		}
+	}
+	return false
+}
+
+// Download 从指定 URL 或本地文件路径加载订阅内容。
+// 若 rawURL 以 file:// 开头，或不含 :// 协议（即为本地路径），则直接读取本地文件；
+// 否则通过 HTTP GET 下载。
 func Download(rawURL string) ([]byte, error) {
+	if IsLocalPath(rawURL) {
+		return loadLocalFile(rawURL)
+	}
+	return downloadHTTP(rawURL)
+}
+
+// loadLocalFile 从本地文件系统读取订阅文件。
+func loadLocalFile(rawPath string) ([]byte, error) {
+	// 去掉 file:// 前缀，并展开 ~ 为用户主目录
+	path := strings.TrimPrefix(rawPath, "file://")
+	if strings.HasPrefix(path, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("获取用户主目录失败: %w", err)
+		}
+		path = filepath.Join(homeDir, path[2:])
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取本地订阅文件失败: %w", err)
+	}
+	return data, nil
+}
+
+// downloadHTTP 通过 HTTP GET 下载订阅内容。
+func downloadHTTP(rawURL string) ([]byte, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
@@ -323,7 +367,7 @@ func parseVlessURI(uri string) (ClashProxy, error) {
 }
 
 // parseSSURI 解析 ss:// URI。
-// 格式1: ss://base64(method:password)@server:port#name
+// 格式1: ss://base64(method:password)@server:port?plugin=...#name
 // 格式2: ss://base64(method:password@server:port)#name
 func parseSSURI(uri string) (ClashProxy, error) {
 	name := ""
@@ -334,28 +378,29 @@ func parseSSURI(uri string) (ClashProxy, error) {
 
 	content := strings.TrimPrefix(uri, "ss://")
 
+	// 分离查询参数
+	queryStr := ""
+	if qIdx := strings.Index(content, "?"); qIdx >= 0 {
+		queryStr = content[qIdx+1:]
+		content = content[:qIdx]
+	}
+
 	var method, password, server string
 	var port int
 
 	if atIdx := strings.LastIndex(content, "@"); atIdx >= 0 {
-		// 格式1: base64(method:password)@server:port
+		// 格式1
 		userInfoEncoded := content[:atIdx]
 		hostPort := content[atIdx+1:]
-
-		// 尝试 base64 解码 userinfo
 		decoded, err := tryBase64Decode(userInfoEncoded)
 		if err != nil {
-			// 可能不是 base64，尝试直接解析
 			decoded = []byte(userInfoEncoded)
 		}
-
 		parts := strings.SplitN(string(decoded), ":", 2)
 		if len(parts) != 2 {
 			return ClashProxy{}, fmt.Errorf("ss URI userinfo 格式错误")
 		}
-		method = parts[0]
-		password = parts[1]
-
+		method, password = parts[0], parts[1]
 		host, portStr, err := splitHostPort(hostPort)
 		if err != nil {
 			return ClashProxy{}, fmt.Errorf("ss URI host:port 解析失败: %w", err)
@@ -363,25 +408,21 @@ func parseSSURI(uri string) (ClashProxy, error) {
 		server = host
 		port, _ = strconv.Atoi(portStr)
 	} else {
-		// 格式2: 整体 base64
+		// 格式2
 		decoded, err := tryBase64Decode(content)
 		if err != nil {
 			return ClashProxy{}, fmt.Errorf("ss URI base64 解码失败: %w", err)
 		}
 		decodedStr := string(decoded)
-
 		atIdx = strings.LastIndex(decodedStr, "@")
 		if atIdx < 0 {
 			return ClashProxy{}, fmt.Errorf("ss URI 格式错误: 缺少 @")
 		}
-
 		parts := strings.SplitN(decodedStr[:atIdx], ":", 2)
 		if len(parts) != 2 {
 			return ClashProxy{}, fmt.Errorf("ss URI userinfo 格式错误")
 		}
-		method = parts[0]
-		password = parts[1]
-
+		method, password = parts[0], parts[1]
 		host, portStr, err := splitHostPort(decodedStr[atIdx+1:])
 		if err != nil {
 			return ClashProxy{}, fmt.Errorf("ss URI host:port 解析失败: %w", err)
@@ -399,11 +440,136 @@ func parseSSURI(uri string) (ClashProxy, error) {
 		Password: password,
 	}
 
+	if queryStr != "" {
+		kv := parseLooseQuery(queryStr)
+		plugin := kv["plugin"]
+		mode := kv["plugin_mode"]
+		if mode == "" {
+			mode = kv["obfs"]
+		}
+		host := kv["plugin_host"]
+		if host == "" {
+			host = kv["obfs-host"]
+		}
+
+		// 解析 plugin 内部的值（形如 obfs-local;obfs=http）
+		basePlugin, pOpts := parseSSPlugin(plugin)
+		if basePlugin != "" {
+			plugin = basePlugin
+		}
+		if mode == "" {
+			if m, ok := pOpts["mode"].(string); ok {
+				mode = m
+			}
+		}
+		if host == "" {
+			if h, ok := pOpts["host"].(string); ok {
+				host = h
+			}
+		}
+		uriPath := kv["obfs-uri"]
+		if uriPath == "" {
+			if u, ok := pOpts["uri"].(string); ok {
+				uriPath = u
+			}
+		}
+
+		// obfs-local => obfs
+		if strings.ToLower(plugin) == "obfs-local" || strings.ToLower(plugin) == "simple-obfs" {
+			plugin = "obfs"
+		}
+
+		if plugin != "" {
+			proxy.Plugin = plugin
+			proxy.PluginOpts = make(map[string]any)
+			if mode != "" {
+				proxy.PluginOpts["mode"] = mode
+			}
+			if host != "" {
+				proxy.PluginOpts["host"] = host
+			}
+			if uriPath != "" {
+				proxy.PluginOpts["uri"] = uriPath
+			}
+		}
+	}
+
 	if proxy.Name == "" {
 		proxy.Name = fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
 	}
 
 	return proxy, nil
+}
+
+// parseLooseQuery 解析查询字符串，支持 & 和 ; 分隔，并能处理未被预先解码的 %3D。
+func parseLooseQuery(rawQuery string) map[string]string {
+	out := make(map[string]string)
+	fields := strings.FieldsFunc(rawQuery, func(r rune) bool {
+		return r == '&' || r == ';'
+	})
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		key, value, found := strings.Cut(field, "=")
+		if !found {
+			if decodedField, err := url.QueryUnescape(field); err == nil {
+				key, value, found = strings.Cut(decodedField, "=")
+			}
+		}
+		if !found {
+			key = field
+			value = ""
+		}
+		key = strings.TrimSpace(key)
+		if dk, err := url.QueryUnescape(key); err == nil {
+			key = dk
+		}
+		value = strings.TrimSpace(value)
+		if dv, err := url.QueryUnescape(value); err == nil {
+			value = dv
+		}
+		out[strings.ToLower(key)] = value
+	}
+	return out
+}
+
+// parseSSPlugin 解析 ss URI 中 plugin 查询参数的值。
+// 支持分号分隔格式: "obfs-local;obfs=http;obfs-host=example.com;obfs-uri=/"
+// 返回插件名称和选项 map（key 统一为 Clash plugin-opts 格式）。
+func parseSSPlugin(pluginParam string) (pluginName string, opts map[string]any) {
+	opts = make(map[string]any)
+	parts := strings.Split(pluginParam, ";")
+	if len(parts) == 0 {
+		return "", opts
+	}
+	pluginName = strings.TrimSpace(parts[0])
+	for _, kv := range parts[1:] {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		eqIdx := strings.IndexByte(kv, '=')
+		if eqIdx < 0 {
+			opts[kv] = true
+			continue
+		}
+		k := kv[:eqIdx]
+		v, _ := url.QueryUnescape(kv[eqIdx+1:])
+		// 统一字段名为 Clash plugin-opts 格式
+		switch k {
+		case "obfs":
+			opts["mode"] = v
+		case "obfs-host":
+			opts["host"] = v
+		case "obfs-uri":
+			opts["uri"] = v
+		default:
+			opts[k] = v
+		}
+	}
+	return pluginName, opts
 }
 
 // parseTrojanURI 解析 trojan:// URI。
@@ -517,18 +683,32 @@ func toInt(v interface{}) int {
 	}
 }
 
-// SaveToFile 将订阅内容保存到 ~/.forward/{url-host}.yaml 文件中。
+// SaveToFile 将订阅内容保存到 ~/.forward/{basename}.yaml 文件中。
+// 若来源是远程 URL，basename 取主机名；若来源是本地文件路径，basename 取文件名（去除扩展名）。
 // 如果文件已存在，会自动添加后缀 -02、-03 等。
 // 返回保存的文件路径。
 func SaveToFile(data []byte, rawURL string) (string, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("解析 URL 失败: %w", err)
-	}
+	var baseName string
 
-	host := u.Hostname()
-	if host == "" {
-		return "", fmt.Errorf("无法从 URL 中提取主机名")
+	if IsLocalPath(rawURL) {
+		// 本地文件路径：使用文件名（去除扩展名）作为 baseName
+		localPath := strings.TrimPrefix(rawURL, "file://")
+		base := filepath.Base(localPath)
+		ext := filepath.Ext(base)
+		baseName = strings.TrimSuffix(base, ext)
+		if baseName == "" || baseName == "." {
+			baseName = "local-subscribe"
+		}
+	} else {
+		// 远程 URL：使用主机名
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return "", fmt.Errorf("解析 URL 失败: %w", err)
+		}
+		baseName = u.Hostname()
+		if baseName == "" {
+			return "", fmt.Errorf("无法从 URL 中提取主机名")
+		}
 	}
 
 	homeDir, err := os.UserHomeDir()
@@ -541,7 +721,6 @@ func SaveToFile(data []byte, rawURL string) (string, error) {
 		return "", fmt.Errorf("创建目录 %s 失败: %w", dir, err)
 	}
 
-	baseName := host
 	filePath := filepath.Join(dir, baseName+".yaml")
 
 	// 如果文件已存在，添加后缀
