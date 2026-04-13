@@ -68,6 +68,19 @@ type connInfoKey struct{}
 
 var streamNoHalfCloseGrace = 3 * time.Second
 
+// hopByHopHeaders 列出 HTTP/1.1 逐跳报头，在代理转发时必须移除。
+var hopByHopHeaders = [...]string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+	"Proxy-Connection",
+}
+
 func NewHandler(opts ...corehandler.Option) corehandler.Handler {
 	options := corehandler.Options{}
 	for _, opt := range opts {
@@ -690,16 +703,9 @@ func writeSimpleHTTP(w stdhttp.ResponseWriter, status int, title string) {
 }
 
 func copyHeaders(dst, src stdhttp.Header) {
-	hopByHop := map[string]struct{}{
-		"Connection":          {},
-		"Keep-Alive":          {},
-		"Proxy-Authenticate":  {},
-		"Proxy-Authorization": {},
-		"Te":                  {},
-		"Trailer":             {},
-		"Transfer-Encoding":   {},
-		"Upgrade":             {},
-		"Proxy-Connection":    {},
+	hopByHop := make(map[string]struct{}, len(hopByHopHeaders))
+	for _, h := range hopByHopHeaders {
+		hopByHop[h] = struct{}{}
 	}
 	connectionTokens := map[string]struct{}{}
 	if c := src.Get("Connection"); c != "" {
@@ -756,17 +762,6 @@ func writeSimple(conn net.Conn, status int, title string, extraHeaders map[strin
 }
 
 func cleanProxyHeaders(r *stdhttp.Request) {
-	hopByHop := []string{
-		"Connection",
-		"Keep-Alive",
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		"Te",
-		"Trailer",
-		"Transfer-Encoding",
-		"Proxy-Connection",
-	}
-
 	if c := r.Header.Get("Connection"); c != "" {
 		for _, f := range strings.Split(c, ",") {
 			if f = strings.TrimSpace(f); f != "" {
@@ -775,24 +770,12 @@ func cleanProxyHeaders(r *stdhttp.Request) {
 		}
 	}
 
-	for _, h := range hopByHop {
+	for _, h := range hopByHopHeaders {
 		r.Header.Del(h)
 	}
 }
 
 func cleanHopHeaders(h stdhttp.Header) {
-	hopByHop := []string{
-		"Connection",
-		"Keep-Alive",
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		"Te",
-		"Trailer",
-		"Transfer-Encoding",
-		"Upgrade",
-		"Proxy-Connection",
-	}
-
 	if c := h.Get("Connection"); c != "" {
 		for _, f := range strings.Split(c, ",") {
 			if f = strings.TrimSpace(f); f != "" {
@@ -801,7 +784,7 @@ func cleanHopHeaders(h stdhttp.Header) {
 		}
 	}
 
-	for _, name := range hopByHop {
+	for _, name := range hopByHopHeaders {
 		h.Del(name)
 	}
 }

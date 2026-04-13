@@ -40,15 +40,15 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
 	isVersion := fs.Bool("version", false, "Show version information")
 
-	fmt.Printf("forward %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-	if *isVersion {
-		return config.Config{}, subscribeOptions{}, nil
-	}
-
 	fs.Usage = func() { Usage(fs) }
 
 	if err := fs.Parse(args); err != nil {
 		return config.Config{}, subscribeOptions{}, err
+	}
+
+	fmt.Printf("forward %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	if *isVersion {
+		return config.Config{}, subscribeOptions{}, nil
 	}
 
 	visited := make(map[string]bool)
