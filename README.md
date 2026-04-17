@@ -433,6 +433,7 @@ PROXY_SG = socks5://user:pass@sg.example.com:1080
 DOMAIN,ifconfig.me,PROXY_JP
 DOMAIN-SUFFIX,google.com,PROXY_SG
 DOMAIN,ipconfig.me,PROXY_SG,PROXY_JP
+DOMAIN-SUFFIX,tailscale.com,SUBSCRIBE,PROXY_SG
 IP-CIDR,1.1.1.0/24,PROXY_SG
 GEOIP,CN,DIRECT
 FINAL,DIRECT
@@ -440,6 +441,7 @@ FINAL,DIRECT
 
 * 规则自上而下匹配；命中第一条后即停止
 * `Rule` 支持转发链：`DOMAIN,ipconfig.me,PROXY_2,PROXY_1` 表示 `PROXY_1 -> PROXY_2 -> 目标`（最后一个节点作为前置加速节点）
+* 当 `[General]` 配置了 `subscribe` / `subscribes` 时，规则里的 `[Proxy]` 默认不会自动前置订阅节点；如需显式启用，请写成 `DOMAIN-SUFFIX,tailscale.com,SUBSCRIBE,PROXY_SG` 或 `FINAL,SUBSCRIBE,PROXY_JP`
 * 若希望基于域名的规则在本地 DNS 解析前生效，请在客户端使用 `socks5h://`
 * 路由器会在 INI 文件变更时自动热重载（每秒轮询一次）
 * `tproxy` 仅支持 Linux（TPROXY），需要配合 `fw4 + nftables` 设置透明转发规则

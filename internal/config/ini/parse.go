@@ -268,28 +268,42 @@ func parseAction(rawParts []string) (route.Action, error) {
 		return route.Action{}, fmt.Errorf("rule action is empty")
 	}
 
-	switch parts[0] {
+	useSubscribe := false
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "SUBSCRIBE" {
+			useSubscribe = true
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	if len(filtered) == 0 {
+		return route.Action{}, fmt.Errorf("rule action is empty")
+	}
+
+	switch filtered[0] {
 	case "DIRECT":
-		if len(parts) > 1 {
+		if useSubscribe || len(filtered) > 1 {
 			return route.Action{}, fmt.Errorf("DIRECT action cannot be chained")
 		}
 		return route.Action{Type: route.ActionDirect}, nil
 	case "REJECT":
-		if len(parts) > 1 {
+		if useSubscribe || len(filtered) > 1 {
 			return route.Action{}, fmt.Errorf("REJECT action cannot be chained")
 		}
 		return route.Action{Type: route.ActionReject}, nil
 	default:
 		// Rule chain syntax is target-first, accelerator-last.
 		// Reverse for execution order to align with `-F a -F b` semantics (a accelerates b).
-		proxyChain := make([]string, 0, len(parts))
-		for i := len(parts) - 1; i >= 0; i-- {
-			proxyChain = append(proxyChain, route.NormalizeProxyName(parts[i]))
+		proxyChain := make([]string, 0, len(filtered))
+		for i := len(filtered) - 1; i >= 0; i-- {
+			proxyChain = append(proxyChain, route.NormalizeProxyName(filtered[i]))
 		}
 		act := route.Action{
-			Type:       route.ActionProxy,
-			Proxy:      proxyChain[0],
-			ProxyChain: proxyChain,
+			Type:         route.ActionProxy,
+			Proxy:        proxyChain[0],
+			ProxyChain:   proxyChain,
+			UseSubscribe: useSubscribe,
 		}
 		return act, nil
 	}

@@ -11,6 +11,7 @@ import (
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
 	B "github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 
 	pss "forward/base/protocol/shadowsocks"
 	"forward/internal/connector"
@@ -146,7 +147,14 @@ func (c *ssPacketConn) Read(p []byte) (int, error) {
 }
 
 func (c *ssPacketConn) Write(p []byte) (int, error) {
-	buffer := B.As(p)
+	frontHeadroom := N.CalculateFrontHeadroom(c.packetConn)
+	rearHeadroom := N.CalculateRearHeadroom(c.packetConn)
+	buffer := B.NewSize(frontHeadroom + len(p) + rearHeadroom)
+	buffer.Resize(frontHeadroom, 0)
+	if _, err := buffer.Write(p); err != nil {
+		buffer.Release()
+		return 0, err
+	}
 	if err := c.packetConn.WritePacket(buffer, c.dest); err != nil {
 		return 0, err
 	}

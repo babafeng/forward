@@ -65,12 +65,44 @@ func TestParseRuleLineProxyChain(t *testing.T) {
 			t.Fatalf("proxy chain[%d] = %s, want %s", i, got[i], wantChain[i])
 		}
 	}
+	if rule.Action.UseSubscribe {
+		t.Fatal("rule.Action.UseSubscribe = true, want false")
+	}
+}
+
+func TestParseRuleLineProxyChainWithSubscribeMarker(t *testing.T) {
+	rule, err := parseRuleLine("DOMAIN,ipconfig.me,SUBSCRIBE,PROXY_2,PROXY_1")
+	if err != nil {
+		t.Fatalf("parseRuleLine returned error: %v", err)
+	}
+
+	if !rule.Action.UseSubscribe {
+		t.Fatal("rule.Action.UseSubscribe = false, want true")
+	}
+
+	wantChain := []string{"PROXY_1", "PROXY_2"}
+	got := rule.Action.ProxyNames()
+	if len(got) != len(wantChain) {
+		t.Fatalf("proxy chain length = %d, want %d", len(got), len(wantChain))
+	}
+	for i := range got {
+		if got[i] != wantChain[i] {
+			t.Fatalf("proxy chain[%d] = %s, want %s", i, got[i], wantChain[i])
+		}
+	}
 }
 
 func TestParseRuleLineDirectCannotChain(t *testing.T) {
 	_, err := parseRuleLine("DOMAIN,ipconfig.me,DIRECT,PROXY_1")
 	if err == nil {
 		t.Fatal("expected parseRuleLine error for chained DIRECT action")
+	}
+}
+
+func TestParseRuleLineDirectCannotUseSubscribeMarker(t *testing.T) {
+	_, err := parseRuleLine("DOMAIN,ipconfig.me,SUBSCRIBE,DIRECT")
+	if err == nil {
+		t.Fatal("expected parseRuleLine error for SUBSCRIBE + DIRECT action")
 	}
 }
 
