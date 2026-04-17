@@ -20,6 +20,9 @@ type Action struct {
 	Type       ActionType
 	Proxy      string
 	ProxyChain []string
+	// UseSubscribe prepends the configured subscription balancer before this
+	// proxy action when the router has subscription candidates available.
+	UseSubscribe bool
 }
 
 type RuleType string

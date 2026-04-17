@@ -78,7 +78,7 @@ func (r *StoreRouter) Route(ctx context.Context, network, address string) (chain
 	}
 
 	prefix := r.fallback()
-	composeWithPrefix := usesBalancerPrefix(prefix)
+	composeWithPrefix := decision.UseSubscribe && usesBalancerPrefix(prefix)
 
 	if len(names) == 1 && !composeWithPrefix {
 		rt, err := r.resolveProxy(names[0])

@@ -23,6 +23,9 @@ type Decision struct {
 	Via     string
 	Chain   []string
 	Matched bool
+	// UseSubscribe means the matched proxy action should be prefixed with the
+	// subscription balancer when available.
+	UseSubscribe bool
 }
 
 type Router struct {
@@ -219,10 +222,15 @@ func actionDecision(a Action) Decision {
 		if len(chain) == 0 {
 			return directDecision(true)
 		}
+		via := strings.Join(chain, " -> ")
+		if a.UseSubscribe {
+			via = "SUBSCRIBE -> " + via
+		}
 		return Decision{
-			Via:     strings.Join(chain, " -> "),
-			Chain:   chain,
-			Matched: true,
+			Via:          via,
+			Chain:        chain,
+			Matched:      true,
+			UseSubscribe: a.UseSubscribe,
 		}
 	default:
 		return directDecision(true)
