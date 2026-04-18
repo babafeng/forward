@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"forward/base/utils/encoding"
 )
 
 // Endpoint describes a network endpoint expressed as a URL-like string.
@@ -40,7 +42,8 @@ func Parse(raw string) (Endpoint, error) {
 
 	// 预处理：转义 userinfo 部分中的 / 字符（base64 密码可能包含 /）
 	// 格式: scheme://userinfo@host:port/path
-	if strings.Contains(raw, "ss://") {
+	if strings.HasPrefix(strings.ToLower(raw), "ss://") {
+		raw = preprocessSS(raw)
 		raw = escapeUserinfoSlash(raw)
 	}
 
@@ -194,3 +197,37 @@ func escapeUserinfoSlash(raw string) string {
 
 	return raw[:schemeEnd+3] + escapedUserinfo + rest
 }
+
+func preprocessSS(raw string) string {
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd == -1 {
+		return raw
+	}
+	scheme := raw[:schemeEnd+3]
+	afterScheme := raw[schemeEnd+3:]
+
+	fragmentIndex := strings.LastIndex(afterScheme, "#")
+	fragment := ""
+	if fragmentIndex != -1 {
+		fragment = afterScheme[fragmentIndex:]
+		afterScheme = afterScheme[:fragmentIndex]
+	}
+
+	queryIndex := strings.Index(afterScheme, "?")
+	query := ""
+	if queryIndex != -1 {
+		query = afterScheme[queryIndex:]
+		afterScheme = afterScheme[:queryIndex]
+	}
+
+	if !strings.Contains(afterScheme, "@") {
+		if dec, ok := encoding.DecodeBase64Flexible(afterScheme); ok {
+			if strings.Contains(string(dec), "@") {
+				afterScheme = string(dec)
+			}
+		}
+	}
+
+	return scheme + afterScheme + query + fragment
+}
+
