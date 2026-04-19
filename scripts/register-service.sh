@@ -9,6 +9,8 @@ MODE=""
 WORKDIR=""
 NO_START=0
 REMOVE=0
+TPROXY=0
+TPROXY_PORT=12345
 ARGS=()
 
 usage() {
@@ -23,6 +25,8 @@ Options:
   --working-dir <dir>   Working directory for the service
   --system              Install as system service (root required)
   --user                Install as user service
+  --tproxy              Setup iptables transparent proxy via systemd
+  --tproxy-port <port>  TProxy port (default: 12345)
   --remove              Unregister and remove the service
   --no-start            Write service files only, do not load/enable
   -h, --help            Show help
@@ -96,6 +100,14 @@ while [[ $# -gt 0 ]]; do
     --user)
         MODE="user"
         shift
+        ;;
+    --tproxy)
+        TPROXY=1
+        shift
+        ;;
+    --tproxy-port)
+        TPROXY_PORT="$2"
+        shift 2
         ;;
     --remove | --uninstall)
         REMOVE=1
@@ -181,9 +193,61 @@ install_linux() {
 
     local exec_line
     exec_line="$(systemd_quote "$BIN")"
+    if [[ "$TPROXY" -eq 1 ]]; then
+        exec_line+=" -T $(systemd_quote "$TPROXY_PORT")"
+    fi
     for arg in "${ARGS[@]}"; do
         exec_line+=" $(systemd_quote "$arg")"
     done
+
+    local tproxy_payload=""
+    if [[ "$TPROXY" -eq 1 ]]; then
+        if [[ "$MODE" == "user" ]]; then
+            die "--tproxy requires --system mode (root privileges)"
+        fi
+        if ! getent group go-proxy >/dev/null 2>&1; then
+            if [[ -n "${sudo_cmd:-}" ]]; then
+                sudo groupadd go-proxy || true
+            else
+                groupadd go-proxy || true
+            fi
+        fi
+        
+        tproxy_payload="Group=go-proxy
+ExecStartPre=+/bin/sh -c 'iptables -t mangle -D OUTPUT -j GO_MARK 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'iptables -t mangle -F GO_MARK 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'iptables -t mangle -X GO_MARK 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'iptables -t mangle -D PREROUTING -j GO_TPROXY 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'iptables -t mangle -F GO_TPROXY 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'iptables -t mangle -X GO_TPROXY 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'ip rule del fwmark 1 lookup 100 2>/dev/null || true'
+ExecStartPre=+/bin/sh -c 'ip route flush table 100 2>/dev/null || true'
+ExecStartPre=+/sbin/ip rule add fwmark 1 lookup 100
+ExecStartPre=+/sbin/ip route add local 0.0.0.0/0 dev lo table 100
+ExecStartPre=+/sbin/iptables -t mangle -N GO_MARK
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -m owner --gid-owner go-proxy -j RETURN
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -d 127.0.0.0/8 -j RETURN
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -d 255.255.255.255/32 -j RETURN
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -d 192.168.0.0/16 -j RETURN
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -d 10.0.0.0/8 -j RETURN
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -d 172.16.0.0/12 -j RETURN
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -p tcp -j MARK --set-mark 1
+ExecStartPre=+/sbin/iptables -t mangle -A GO_MARK -p udp -j MARK --set-mark 1
+ExecStartPre=+/sbin/iptables -t mangle -A OUTPUT -j GO_MARK
+ExecStartPre=+/sbin/iptables -t mangle -N GO_TPROXY
+ExecStartPre=+/sbin/iptables -t mangle -A GO_TPROXY -m mark --mark 1 -p tcp -j TPROXY --on-port ${TPROXY_PORT} --tproxy-mark 1
+ExecStartPre=+/sbin/iptables -t mangle -A GO_TPROXY -m mark --mark 1 -p udp -j TPROXY --on-port ${TPROXY_PORT} --tproxy-mark 1
+ExecStartPre=+/sbin/iptables -t mangle -A PREROUTING -j GO_TPROXY
+ExecStopPost=+/bin/sh -c 'iptables -t mangle -D OUTPUT -j GO_MARK 2>/dev/null || true'
+ExecStopPost=+/bin/sh -c 'iptables -t mangle -F GO_MARK 2>/dev/null || true'
+ExecStopPost=+/bin/sh -c 'iptables -t mangle -X GO_MARK 2>/dev/null || true'
+ExecStopPost=+/bin/sh -c 'iptables -t mangle -D PREROUTING -j GO_TPROXY 2>/dev/null || true'
+ExecStopPost=+/bin/sh -c 'iptables -t mangle -F GO_TPROXY 2>/dev/null || true'
+ExecStopPost=+/bin/sh -c 'iptables -t mangle -X GO_TPROXY 2>/dev/null || true'
+ExecStopPost=+/bin/sh -c 'ip rule del fwmark 1 lookup 100 2>/dev/null || true'
+ExecStopPost=+/bin/sh -c 'ip route flush table 100 2>/dev/null || true'
+"
+    fi
 
     if [[ -n "${sudo_cmd:-}" ]]; then
         sudo mkdir -p "$unit_dir"
@@ -194,7 +258,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$exec_line
+${tproxy_payload}ExecStart=$exec_line
 Restart=on-failure
 RestartSec=5
 EOF
@@ -207,7 +271,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$exec_line
+${tproxy_payload}ExecStart=$exec_line
 Restart=on-failure
 RestartSec=5
 EOF
