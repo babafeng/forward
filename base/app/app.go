@@ -104,6 +104,13 @@ func Main() int {
 
 	applySubscribeOptions(&cfg, subOpts)
 
+	cleanupTProxyRules, err := setupManagedTProxyRules(cfg)
+	if err != nil {
+		cfg.Logger.Error("Failed to setup managed tproxy rules: %v", err)
+		return 2
+	}
+	defer cleanupTProxyRules()
+
 	routers := newRouterCache()
 
 	if err := initRouteStoreAndHotReload(ctx, &cfg); err != nil {
