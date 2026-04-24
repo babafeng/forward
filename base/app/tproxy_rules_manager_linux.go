@@ -15,6 +15,7 @@ import (
 
 	"forward/base/logging"
 	"forward/internal/config"
+	"forward/internal/netmark"
 )
 
 const (
@@ -53,6 +54,10 @@ func (o ownerMatch) IPTablesArg() string {
 
 func (o ownerMatch) String() string {
 	return string(o.Mode) + ":" + o.Value
+}
+
+func (o ownerMatch) Enabled() bool {
+	return o.Mode == ownerMatchGID && strings.TrimSpace(o.Value) != ""
 }
 
 type osReleaseInfo struct {
@@ -249,7 +254,7 @@ func writeUnitExecs(b *strings.Builder, key string, port int, owner ownerMatch) 
 			"/sbin/ip rule add fwmark 1 lookup 100",
 			"/sbin/ip route add local 0.0.0.0/0 dev lo table 100",
 			"/sbin/iptables -t mangle -N GO_MARK",
-			"/sbin/iptables -t mangle -A GO_MARK -m owner "+owner.IPTablesArg()+" -j RETURN",
+			"/sbin/iptables -t mangle -A GO_MARK -m mark --mark "+strconv.Itoa(netmark.SelfBypassMark)+" -j RETURN",
 			"/sbin/iptables -t mangle -A GO_MARK -d 127.0.0.0/8 -j RETURN",
 			"/sbin/iptables -t mangle -A GO_MARK -d 255.255.255.255/32 -j RETURN",
 			"/sbin/iptables -t mangle -A GO_MARK -d 192.168.0.0/16 -j RETURN",
@@ -263,6 +268,9 @@ func writeUnitExecs(b *strings.Builder, key string, port int, owner ownerMatch) 
 			"/sbin/iptables -t mangle -A GO_TPROXY -m mark --mark 1 -p udp -j TPROXY --on-port "+quotedPort+" --tproxy-mark 1",
 			"/sbin/iptables -t mangle -A PREROUTING -j GO_TPROXY",
 		)
+		if owner.Enabled() {
+			lines = append(lines[:4], append([]string{"/sbin/iptables -t mangle -A GO_MARK -m owner " + owner.IPTablesArg() + " -j RETURN"}, lines[4:]...)...)
+		}
 	}
 	for _, line := range lines {
 		b.WriteString(key)

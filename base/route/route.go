@@ -16,6 +16,7 @@ import (
 
 	"forward/base/logging"
 	"forward/base/mmdb"
+	"forward/internal/netmark"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -356,6 +357,7 @@ func (r *resolver) lookupUncached(ctx context.Context, host string) ([]net.IP, e
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				d := net.Dialer{Timeout: r.timeout}
+				netmark.ConfigureDialer(&d)
 				return d.DialContext(ctx, network, serverAddr)
 			},
 		}
