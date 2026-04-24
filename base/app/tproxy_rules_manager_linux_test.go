@@ -134,6 +134,11 @@ func TestTProxyRulesManagerSetupAndCleanup(t *testing.T) {
 	if !strings.Contains(string(content), "--gid-owner go-proxy") {
 		t.Fatalf("generated unit missing gid owner rule:\n%s", string(content))
 	}
+	createChainIdx := strings.Index(string(content), "-N GO_MARK")
+	ownerRuleIdx := strings.Index(string(content), "--gid-owner go-proxy")
+	if createChainIdx < 0 || ownerRuleIdx < 0 || ownerRuleIdx < createChainIdx {
+		t.Fatalf("generated unit should append owner rule after creating GO_MARK chain:\n%s", string(content))
+	}
 	if !strings.Contains(string(content), "-m mark --mark 128 -j RETURN") {
 		t.Fatalf("generated unit missing mark bypass rule:\n%s", string(content))
 	}

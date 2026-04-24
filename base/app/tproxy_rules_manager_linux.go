@@ -84,8 +84,14 @@ type tproxyRulesManager struct {
 }
 
 func setupManagedTProxyRulesPlatform(cfg config.Config) (func(), error) {
+	netmark.EnableSelfBypassMark()
+	disableNetmark := func() {
+		netmark.DisableSelfBypassMark()
+	}
+
 	distro, info, err := detectLinuxDistro(os.ReadFile, os.Stat)
 	if err != nil {
+		disableNetmark()
 		return nil, err
 	}
 
@@ -94,10 +100,11 @@ func setupManagedTProxyRulesPlatform(cfg config.Config) (func(), error) {
 		if cfg.Logger != nil {
 			cfg.Logger.Info("Skip managed tproxy rules on OpenWrt")
 		}
-		return func() {}, nil
+		return disableNetmark, nil
 	case linuxDistroDebian:
 		owner, err := resolveOwnerMatch()
 		if err != nil {
+			disableNetmark()
 			return nil, err
 		}
 		mgr := tproxyRulesManager{
@@ -111,12 +118,14 @@ func setupManagedTProxyRulesPlatform(cfg config.Config) (func(), error) {
 			removeFile:  os.Remove,
 		}
 		if err := mgr.Setup(); err != nil {
+			disableNetmark()
 			return nil, err
 		}
 		if cfg.Logger != nil {
 			cfg.Logger.Info("Managed tproxy rules enabled via %s (distro=%s, owner=%s)", managedTProxyRulesServiceName, distroLabel(info), owner.String())
 		}
 		return func() {
+			defer disableNetmark()
 			if err := mgr.Cleanup(); err != nil && cfg.Logger != nil {
 				cfg.Logger.Warn("Managed tproxy rules cleanup failed: %v", err)
 			}
@@ -125,7 +134,7 @@ func setupManagedTProxyRulesPlatform(cfg config.Config) (func(), error) {
 		if cfg.Logger != nil {
 			cfg.Logger.Info("Skip managed tproxy rules on unsupported Linux distro: %s", distroLabel(info))
 		}
-		return func() {}, nil
+		return disableNetmark, nil
 	}
 }
 
@@ -269,7 +278,7 @@ func writeUnitExecs(b *strings.Builder, key string, port int, owner ownerMatch) 
 			"/sbin/iptables -t mangle -A PREROUTING -j GO_TPROXY",
 		)
 		if owner.Enabled() {
-			lines = append(lines[:4], append([]string{"/sbin/iptables -t mangle -A GO_MARK -m owner " + owner.IPTablesArg() + " -j RETURN"}, lines[4:]...)...)
+			lines = insertAfterGO_MARKCreate(lines, "/sbin/iptables -t mangle -A GO_MARK -m owner "+owner.IPTablesArg()+" -j RETURN")
 		}
 	}
 	for _, line := range lines {
@@ -278,6 +287,15 @@ func writeUnitExecs(b *strings.Builder, key string, port int, owner ownerMatch) 
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
+}
+
+func insertAfterGO_MARKCreate(lines []string, line string) []string {
+	for i, existing := range lines {
+		if strings.Contains(existing, "-N GO_MARK") {
+			return append(lines[:i+1], append([]string{line}, lines[i+1:]...)...)
+		}
+	}
+	return append(lines, line)
 }
 
 func detectLinuxDistro(readFile func(string) ([]byte, error), stat func(string) (os.FileInfo, error)) (linuxDistroKind, osReleaseInfo, error) {
