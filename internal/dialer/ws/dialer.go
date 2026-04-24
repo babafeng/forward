@@ -14,6 +14,7 @@ import (
 
 	"forward/internal/dialer"
 	"forward/internal/metadata"
+	"forward/internal/netmark"
 	"forward/internal/registry"
 
 	"github.com/gorilla/websocket"
@@ -37,6 +38,7 @@ func NewDialer(opts ...dialer.Option) dialer.Dialer {
 			HandshakeTimeout: 10 * time.Second,
 			NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				d := net.Dialer{Timeout: 10 * time.Second}
+				netmark.ConfigureDialer(&d)
 				return d.DialContext(ctx, network, addr)
 			},
 		},
@@ -128,4 +130,3 @@ func (w *wsConn) Close() error {
 	defer w.wmu.Unlock()
 	return w.c.Close()
 }
-

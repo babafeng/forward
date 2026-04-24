@@ -13,6 +13,7 @@ import (
 
 	"forward/internal/dialer"
 	"forward/internal/metadata"
+	"forward/internal/netmark"
 	"forward/internal/registry"
 )
 
@@ -82,6 +83,7 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 				}
 				ensureNextProtos(cfg, []string{"h2"})
 				dialer := &net.Dialer{Timeout: dialTimeout}
+				netmark.ConfigureDialer(dialer)
 				return (&tls.Dialer{NetDialer: dialer, Config: cfg}).DialContext(ctx, network, addr)
 			},
 		}

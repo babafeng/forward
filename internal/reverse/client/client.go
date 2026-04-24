@@ -13,6 +13,7 @@ import (
 	"forward/base/logging"
 	"forward/internal/chain"
 	"forward/internal/config"
+	"forward/internal/netmark"
 	rev "forward/internal/reverse"
 	rproto "forward/internal/reverse/proto"
 )
@@ -147,6 +148,7 @@ func (c *Client) handleStream(ctx context.Context, stream net.Conn, network, tar
 		dialTimeout = config.DefaultDialTimeout
 	}
 	dialer := &net.Dialer{Timeout: dialTimeout}
+	netmark.ConfigureDialer(dialer)
 	out, err := dialer.DialContext(ctx, network, target)
 	if err != nil {
 		c.log.Error("Reverse client dial local %s error: %v", target, err)
@@ -179,6 +181,7 @@ func (c *Client) dialServer(ctx context.Context) (net.Conn, error) {
 			timeout = 10 * time.Second
 		}
 		d := &net.Dialer{Timeout: timeout}
+		netmark.ConfigureDialer(d)
 		return d.DialContext(ctx, "tcp", c.forward.Address())
 	}
 	return c.route.Dial(ctx, "tcp", c.forward.Address())

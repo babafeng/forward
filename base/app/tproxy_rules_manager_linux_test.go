@@ -84,7 +84,7 @@ func TestRenderTProxyRulesUnit(t *testing.T) {
 	checks := []string{
 		"Description=forward tproxy rules service",
 		"RemainAfterExit=yes",
-		"--uid-owner 0",
+		"-m mark --mark 128 -j RETURN",
 		"TPROXY --on-port 12345 --tproxy-mark 1",
 		"ExecStop=/bin/sh -c 'ip route flush table 100 2>/dev/null || true'",
 	}
@@ -92,6 +92,9 @@ func TestRenderTProxyRulesUnit(t *testing.T) {
 		if !strings.Contains(unit, check) {
 			t.Fatalf("renderTProxyRulesUnit missing %q\n%s", check, unit)
 		}
+	}
+	if strings.Contains(unit, "--uid-owner 0") {
+		t.Fatalf("renderTProxyRulesUnit should not include uid owner bypass for root\n%s", unit)
 	}
 }
 
@@ -130,6 +133,9 @@ func TestTProxyRulesManagerSetupAndCleanup(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "--gid-owner go-proxy") {
 		t.Fatalf("generated unit missing gid owner rule:\n%s", string(content))
+	}
+	if !strings.Contains(string(content), "-m mark --mark 128 -j RETURN") {
+		t.Fatalf("generated unit missing mark bypass rule:\n%s", string(content))
 	}
 
 	wantSetupCalls := []string{
