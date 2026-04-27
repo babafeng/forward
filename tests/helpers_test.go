@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,20 +20,21 @@ import (
 	"forward/internal/metadata"
 	"forward/internal/registry"
 	"forward/internal/router"
+	schememap "forward/internal/scheme"
 	"forward/internal/service"
 
 	ctls "forward/internal/config/tls"
 )
 
-type transportKind string
+type transportKind = schememap.TransportKind
 
 const (
-	transportNone transportKind = ""
-	transportTLS  transportKind = "tls"
-	transportDTLS transportKind = "dtls"
-	transportH2   transportKind = "h2"
-	transportH3   transportKind = "h3"
-	transportQuic transportKind = "quic"
+	transportNone = schememap.TransportNone
+	transportTLS  = schememap.TransportTLS
+	transportDTLS = schememap.TransportDTLS
+	transportH2   = schememap.TransportH2
+	transportH3   = schememap.TransportH3
+	transportQuic = schememap.TransportQUIC
 )
 
 func testLogger() *logging.Logger {
@@ -132,89 +132,12 @@ func startUDPEchoServer(t *testing.T) (string, func()) {
 }
 
 func splitSchemeTransport(scheme string) (base string, transport transportKind) {
-	s := strings.ToLower(strings.TrimSpace(scheme))
-	switch s {
-	case "https":
-		return "http", transportTLS
-	case "http2":
-		return "http2", transportNone
-	case "http3":
-		return "http3", transportNone
-	case "quic":
-		return "tcp", transportQuic
-	case "tls":
-		return "http", transportTLS
-	case "h2":
-		return "http", transportH2
-	case "h3":
-		return "http", transportH3
-	case "dtls":
-		return "tcp", transportDTLS
-	case "vless", "vless+reality", "reality":
-		return "vless", transportNone
-	case "vless+tls":
-		return "vless", transportTLS
-	}
-	if strings.HasSuffix(s, "+h2") {
-		return strings.TrimSuffix(s, "+h2"), transportH2
-	}
-	if strings.HasSuffix(s, "+h3") {
-		return strings.TrimSuffix(s, "+h3"), transportH3
-	}
-	if strings.HasSuffix(s, "+tls") {
-		return strings.TrimSuffix(s, "+tls"), transportTLS
-	}
-	if strings.HasSuffix(s, "+dtls") {
-		return strings.TrimSuffix(s, "+dtls"), transportDTLS
-	}
-	if strings.HasSuffix(s, "+reality") {
-		return strings.TrimSuffix(s, "+reality"), transportNone
-	}
-	if strings.HasSuffix(s, "+quic") {
-		return strings.TrimSuffix(s, "+quic"), transportQuic
-	}
-	return s, transportNone
+	return schememap.SplitTransport(scheme)
 }
 
 func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string, transport transportKind) {
-	base, transport := splitSchemeTransport(scheme)
-	handlerScheme = base
-	listenerScheme = base
-
-	switch base {
-	case "http3":
-		handlerScheme = "http"
-		listenerScheme = "http3"
-		return handlerScheme, listenerScheme, transportNone
-	case "quic":
-		handlerScheme = "tcp"
-		listenerScheme = "quic"
-		return handlerScheme, listenerScheme, transportNone
-	case "http2":
-		handlerScheme = "http"
-		listenerScheme = "http2"
-		return handlerScheme, listenerScheme, transportNone
-	case "socks5h":
-		handlerScheme = "socks5"
-	case "vless":
-		handlerScheme = "vless"
-		listenerScheme = "reality"
-		return handlerScheme, listenerScheme, transportNone
-	}
-
-	if transport == transportDTLS {
-		listenerScheme = "dtls"
-	}
-	if transport == transportH2 {
-		listenerScheme = "h2"
-	}
-	if transport == transportH3 {
-		listenerScheme = "h3"
-	}
-	if transport == transportQuic {
-		listenerScheme = "quic"
-	}
-	return
+	types := schememap.NormalizeProxy(scheme)
+	return types.Handler, types.Listener, types.Transport
 }
 
 func buildRoute(t *testing.T, ep endpoint.Endpoint) chain.Route {
@@ -241,7 +164,7 @@ func dialWithRetry(t *testing.T, route chain.Route, network, address string) net
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		conn, err := route.Dial(ctx, network, address)
 		if err == nil {
-			return conn
+			return &cancelOnCloseConn{Conn: conn, cancel: cancel}
 		}
 		cancel()
 		lastErr = err
@@ -249,6 +172,17 @@ func dialWithRetry(t *testing.T, route chain.Route, network, address string) net
 	}
 	t.Fatalf("dial %s %s failed: %v", network, address, lastErr)
 	return nil
+}
+
+type cancelOnCloseConn struct {
+	net.Conn
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnCloseConn) Close() error {
+	err := c.Conn.Close()
+	c.cancel()
+	return err
 }
 
 func assertEcho(t *testing.T, conn net.Conn, payload []byte) {
