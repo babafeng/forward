@@ -245,7 +245,7 @@ func buildTLSOption(cfg config.Config, handlerScheme, listenerScheme string, tra
 	needTLS := true
 
 	switch {
-	case listenerScheme == "http3" || listenerScheme == "h3":
+	case listenerScheme == "http3" || listenerScheme == "h3" || listenerScheme == "quic":
 		nextProtos = []string{"h3"}
 	case listenerScheme == "http2" || listenerScheme == "h2":
 		nextProtos = []string{"h2"}

@@ -86,6 +86,7 @@ func (c *Connector) dialH2(ctx context.Context, cc *http2.ClientConn, network, a
 	if err != nil {
 		return nil, err
 	}
+	req.ContentLength = -1
 	req.Host = address
 	if isUDP(network) {
 		req.Header.Set("X-Forward-Protocol", "udp")

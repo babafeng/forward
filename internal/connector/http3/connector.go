@@ -84,6 +84,7 @@ func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address
 	if err != nil {
 		return nil, err
 	}
+	req.ContentLength = -1
 	req.Host = address
 	if isUDP(network) {
 		req.Header.Set("X-Forward-Protocol", "udp")
