@@ -2,18 +2,17 @@ package tproxy
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"net/netip"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"forward/base/logging"
 	"forward/base/pool"
 	"forward/internal/config"
 	"forward/internal/listener"
+	"forward/internal/listener/udpsession"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -43,7 +42,7 @@ type Listener struct {
 	udpLn *net.UDPConn
 
 	cqueue chan net.Conn
-	pool   *connPool
+	pool   *udpsession.Pool[udpConnKey, *udpMetaConn]
 	closed chan struct{}
 	errCh  chan error
 	laddr  net.Addr
@@ -109,7 +108,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 		if l.laddr == nil {
 			l.laddr = pc.LocalAddr()
 		}
-		l.pool = newConnPool(l.md.ttl, l.logger)
+		l.pool = udpsession.NewPool[udpConnKey, *udpMetaConn](l.md.ttl, l.logger, "TPROXY UDP")
 	}
 
 	l.cqueue = make(chan net.Conn, l.md.backlog)
@@ -268,12 +267,12 @@ func (l *Listener) getConn(raddr, dstAddr *net.UDPAddr) *udpMetaConn {
 		return c
 	}
 
-	uc := newUDPConn(l.udpLn, dstAddr, raddr, l.md.readQueueSize, l.md.keepalive)
+	uc := udpsession.NewConn(l.udpLn, dstAddr, raddr, l.md.readQueueSize, l.md.keepalive)
 	md := metadata.New(map[string]any{
 		metadata.KeyOriginalDst: dstAddr.String(),
 		metadata.KeyNetwork:     "udp",
 	})
-	tc := &udpMetaConn{udpConn: uc, md: md}
+	tc := &udpMetaConn{Conn: uc, md: md}
 
 	select {
 	case l.cqueue <- tc:
@@ -313,25 +312,25 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 	if md == nil {
 		return
 	}
-	if v := getInt(md.Get("backlog")); v > 0 {
+	if v := metadata.IntValue(md.Get("backlog")); v > 0 {
 		l.md.backlog = v
 	}
-	if v := getInt(md.Get("read_queue")); v > 0 {
+	if v := metadata.IntValue(md.Get("read_queue")); v > 0 {
 		l.md.readQueueSize = v
 	}
-	if v := getInt(md.Get("read_buffer")); v > 0 {
+	if v := metadata.IntValue(md.Get("read_buffer")); v > 0 {
 		l.md.readBufferSize = v
 	}
-	if v := getDuration(md.Get("udp_idle")); v > 0 {
+	if v := metadata.DurationValue(md.Get("udp_idle")); v > 0 {
 		l.md.ttl = v
 	}
-	if v := getDuration(md.Get("ttl")); v > 0 {
+	if v := metadata.DurationValue(md.Get("ttl")); v > 0 {
 		l.md.ttl = v
 	}
 	if v := md.Get("keepalive"); v != nil {
-		l.md.keepalive = getBool(v)
+		l.md.keepalive = metadata.BoolValue(v)
 	}
-	if v := getString(md.Get("network")); v != "" {
+	if v := metadata.StringValue(md.Get("network")); v != "" {
 		l.md.enableTCP = false
 		l.md.enableUDP = false
 		for _, s := range strings.Split(v, ",") {
@@ -397,7 +396,7 @@ func (c *tcpMetaConn) Metadata() metadata.Metadata {
 }
 
 type udpMetaConn struct {
-	*udpConn
+	*udpsession.Conn
 	md metadata.Metadata
 }
 
@@ -406,221 +405,22 @@ func (c *udpMetaConn) Metadata() metadata.Metadata {
 }
 
 func (c *udpMetaConn) isClosed() bool {
-	if c == nil || c.udpConn == nil {
+	if c == nil || c.Conn == nil {
 		return true
 	}
-	return c.udpConn.isClosed()
+	return c.Conn.IsClosed()
 }
 
 func (c *udpMetaConn) WriteQueue(b []byte) error {
-	if c == nil || c.udpConn == nil {
+	if c == nil || c.Conn == nil {
 		return errors.New("tproxy: udp conn required")
 	}
-	return c.udpConn.WriteQueue(b)
-}
-
-type connPool struct {
-	m      sync.Map
-	ttl    time.Duration
-	closed chan struct{}
-	logger *logging.Logger
+	return c.Conn.WriteQueue(b)
 }
 
 type udpConnKey struct {
 	src netip.AddrPort
 	dst netip.AddrPort
-}
-
-func newConnPool(ttl time.Duration, logger *logging.Logger) *connPool {
-	if ttl <= 0 {
-		ttl = config.DefaultUDPIdleTimeout
-	}
-	p := &connPool{
-		ttl:    ttl,
-		closed: make(chan struct{}),
-		logger: logger,
-	}
-	go p.idleCheck()
-	return p
-}
-
-func (p *connPool) Get(key udpConnKey) (*udpMetaConn, bool) {
-	if v, ok := p.m.Load(key); ok {
-		c, ok := v.(*udpMetaConn)
-		return c, ok
-	}
-	return nil, false
-}
-
-func (p *connPool) Set(key udpConnKey, c *udpMetaConn) {
-	p.m.Store(key, c)
-}
-
-func (p *connPool) Delete(key udpConnKey) {
-	p.m.Delete(key)
-}
-
-func (p *connPool) Close() {
-	select {
-	case <-p.closed:
-		return
-	default:
-		close(p.closed)
-	}
-	p.m.Range(func(_, value any) bool {
-		if c, ok := value.(*udpMetaConn); ok && c != nil {
-			_ = c.Close()
-		}
-		return true
-	})
-}
-
-func (p *connPool) idleCheck() {
-	ticker := time.NewTicker(p.ttl)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			size := 0
-			idles := 0
-			p.m.Range(func(key, value any) bool {
-				c, ok := value.(*udpMetaConn)
-				if !ok || c == nil {
-					if k, ok := key.(udpConnKey); ok {
-						p.Delete(k)
-					} else {
-						p.m.Delete(key)
-					}
-					return true
-				}
-				size++
-				if uc := c.udpConn; uc != nil && uc.IsIdle() {
-					idles++
-					if k, ok := key.(udpConnKey); ok {
-						p.Delete(k)
-					} else {
-						p.m.Delete(key)
-					}
-					_ = c.Close()
-					return true
-				}
-				return true
-			})
-			if idles > 0 && p.logger != nil {
-				p.logger.Debug("TPROXY UDP idle cleanup: size=%d idle=%d", size, idles)
-			}
-		case <-p.closed:
-			return
-		}
-	}
-}
-
-type udpConn struct {
-	net.PacketConn
-	localAddr  net.Addr
-	remoteAddr net.Addr
-	rc         chan []byte
-	idle       int32
-	closed     chan struct{}
-	closeMu    sync.Mutex
-	keepalive  bool
-}
-
-func newUDPConn(c net.PacketConn, laddr, raddr net.Addr, queueSize int, keepalive bool) *udpConn {
-	if queueSize <= 0 {
-		queueSize = defaultReadQueueSize
-	}
-	return &udpConn{
-		PacketConn: c,
-		localAddr:  laddr,
-		remoteAddr: raddr,
-		rc:         make(chan []byte, queueSize),
-		closed:     make(chan struct{}),
-		keepalive:  keepalive,
-	}
-}
-
-func (c *udpConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	select {
-	case buf := <-c.rc:
-		n := copy(b, buf)
-		c.SetIdle(false)
-		pool.Put(buf)
-		return n, c.remoteAddr, nil
-	case <-c.closed:
-		return 0, nil, net.ErrClosed
-	}
-}
-
-func (c *udpConn) Read(b []byte) (int, error) {
-	n, _, err := c.ReadFrom(b)
-	return n, err
-}
-
-func (c *udpConn) WriteTo(b []byte, addr net.Addr) (int, error) {
-	if !c.keepalive {
-		defer c.Close()
-	}
-	c.SetIdle(false)
-	return c.PacketConn.WriteTo(b, addr)
-}
-
-func (c *udpConn) Write(b []byte) (int, error) {
-	return c.WriteTo(b, c.remoteAddr)
-}
-
-func (c *udpConn) Close() error {
-	c.closeMu.Lock()
-	defer c.closeMu.Unlock()
-	select {
-	case <-c.closed:
-		return nil
-	default:
-		close(c.closed)
-	}
-	return nil
-}
-
-func (c *udpConn) isClosed() bool {
-	select {
-	case <-c.closed:
-		return true
-	default:
-		return false
-	}
-}
-
-func (c *udpConn) LocalAddr() net.Addr {
-	return c.localAddr
-}
-
-func (c *udpConn) RemoteAddr() net.Addr {
-	return c.remoteAddr
-}
-
-func (c *udpConn) IsIdle() bool {
-	return atomic.LoadInt32(&c.idle) > 0
-}
-
-func (c *udpConn) SetIdle(idle bool) {
-	var v int32
-	if idle {
-		v = 1
-	}
-	atomic.StoreInt32(&c.idle, v)
-}
-
-func (c *udpConn) WriteQueue(b []byte) error {
-	c.SetIdle(false)
-	select {
-	case c.rc <- b:
-		return nil
-	case <-c.closed:
-		return net.ErrClosed
-	default:
-		return errors.New("recv queue is full")
-	}
 }
 
 func netipAddrPort(addr *net.UDPAddr) (netip.AddrPort, bool) {
@@ -643,68 +443,6 @@ func netipAddrFromIP(ip net.IP) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	return addr.Unmap(), !addr.Unmap().IsUnspecified()
-}
-
-func getString(v any) string {
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	default:
-		return ""
-	}
-}
-
-func getInt(v any) int {
-	switch t := v.(type) {
-	case int:
-		return t
-	case int64:
-		return int(t)
-	case float64:
-		return int(t)
-	case string:
-		var n int
-		_, _ = fmt.Sscanf(strings.TrimSpace(t), "%d", &n)
-		return n
-	default:
-		return 0
-	}
-}
-
-func getBool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		t = strings.TrimSpace(strings.ToLower(t))
-		return t == "1" || t == "true" || t == "yes" || t == "on"
-	default:
-		return false
-	}
-}
-
-func getDuration(v any) time.Duration {
-	switch t := v.(type) {
-	case time.Duration:
-		return t
-	case int:
-		return time.Duration(t) * time.Second
-	case int64:
-		return time.Duration(t) * time.Second
-	case float64:
-		return time.Duration(t) * time.Second
-	case string:
-		if d, err := time.ParseDuration(strings.TrimSpace(t)); err == nil {
-			return d
-		}
-		var n int64
-		if _, err := fmt.Sscanf(strings.TrimSpace(t), "%d", &n); err == nil {
-			return time.Duration(n) * time.Second
-		}
-		return 0
-	default:
-		return 0
-	}
 }
 
 var errMissingAddr = errors.New("missing listen address")

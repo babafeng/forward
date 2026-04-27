@@ -15,6 +15,7 @@ import (
 	"forward/internal/dialer"
 	"forward/internal/metadata"
 	"forward/internal/registry"
+	schememap "forward/internal/scheme"
 
 	ctls "forward/internal/config/tls"
 )
@@ -525,97 +526,12 @@ func parseMuxConfig(q url.Values) (enabled bool, maxStreams int, idle time.Durat
 	return enabled, maxStreams, idle
 }
 
-// schemeTable 将完整 scheme 字符串映射到 [connector, dialer] 对。
-// 维护新协议时只需在此处添加一行，无需修改控制流。
-var schemeTable = map[string][2]string{
-	// HTTP 系列
-	"http":         {"http", "tcp"},
-	"https":        {"http", "tls"},
-	"http+tls":     {"http", "tls"},
-	"tls":          {"http", "tls"},
-	"http2":        {"http2", "tls"},
-	"http3":        {"http3", "http3"},
-	"h2":           {"http", "h2"},
-	"h3":           {"http", "h3"},
-	// SOCKS5
-	"socks5":       {"socks5", "tcp"},
-	"socks5h":      {"socks5", "tcp"},
-	// 裸 TCP / UDP
-	"tcp":          {"tcp", "tcp"},
-	"quic":         {"tcp", "quic"},
-	"dtls":         {"tcp", "dtls"},
-	// VLESS
-	"vless":        {"vless", "reality"},
-	"vless+reality":{"vless", "reality"},
-	"reality":      {"vless", "reality"},
-	"vless+tls":    {"vless", "tls"},
-	// VMess
-	"vmess":        {"vmess", "tcp"},
-	"vmess+tls":    {"vmess", "tls"},
-	// Shadowsocks
-	"ss":           {"ss", "tcp"},
-	"shadowsocks":  {"ss", "tcp"},
-	"ss+tls":       {"ss", "tls"},
-	"shadowsocks+tls": {"ss", "tls"},
-	// Hysteria2
-	"hysteria2":    {"hysteria2", "hysteria2"},
-	"hy2":          {"hysteria2", "hysteria2"},
-}
-
-// suffixDialerTable 将传输层后缀映射到 dialer 名。
-// 支持的 connector 集合见 suffixConnectorTable。
-var suffixDialerTable = []struct {
-	suffix string
-	dialer string
-}{
-	{"+tls", "tls"},
-	{"+h2", "h2"},
-	{"+h3", "h3"},
-	{"+dtls", "dtls"},
-	{"+quic", "quic"},
-}
-
-// suffixConnectorTable 列出允许携带传输层后缀的 connector。
-var suffixConnectorTable = map[string]string{
-	"http":        "http",
-	"socks5":      "socks5",
-	"socks5h":     "socks5",
-	"tcp":         "tcp",
-	"vless":       "vless",
-	"vmess":       "vmess",
-	"ss":          "ss",
-	"shadowsocks": "ss",
-}
-
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
-	scheme = strings.ToLower(strings.TrimSpace(scheme))
-	if scheme == "" {
-		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+	types, err := schememap.ResolveRouteTypes(scheme)
+	if err != nil {
+		return "", "", err
 	}
-
-	// 优先查静态表
-	if pair, ok := schemeTable[scheme]; ok {
-		return pair[0], pair[1], nil
-	}
-
-	// 处理 "base+transport" 复合 scheme
-	for _, entry := range suffixDialerTable {
-		base, found := strings.CutSuffix(scheme, entry.suffix)
-		if !found {
-			continue
-		}
-		// 先检查基础 scheme 是否在静态表（整体已匹配，不走后缀）
-		if _, ok := schemeTable[scheme]; ok {
-			break
-		}
-		conn, ok := suffixConnectorTable[base]
-		if !ok {
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-		return conn, entry.dialer, nil
-	}
-
-	return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+	return types.Connector, types.Dialer, nil
 }
 
 // BuildHysteria2DialerMetadata is the exported wrapper for buildHysteria2DialerMetadata.

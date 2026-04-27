@@ -15,6 +15,15 @@ func StringValue(v any) string {
 	}
 }
 
+func RawStringValue(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return ""
+	}
+}
+
 func IntValue(v any) int {
 	switch t := v.(type) {
 	case int:

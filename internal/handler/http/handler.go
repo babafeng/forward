@@ -120,13 +120,13 @@ func (h *Handler) Init(md metadata.Metadata) error {
 		return nil
 	}
 	if v := md.Get("transparent"); v != nil {
-		h.transparent = parseBool(v)
+		h.transparent = metadata.BoolValue(v)
 	}
 	if v := md.Get("insecure"); v != nil {
-		h.insecureTLS = parseBool(v)
+		h.insecureTLS = metadata.BoolValue(v)
 	}
 	if v := md.Get("udp"); v != nil {
-		h.enableUDP = parseBool(v)
+		h.enableUDP = metadata.BoolValue(v)
 	}
 	corehandler.ApplyUDPRelayMetadata(md, &h.udpIdle, &h.maxUDPSessions)
 
@@ -574,12 +574,13 @@ type flushWriter struct {
 }
 
 func newFlushWriter(w io.Writer, f stdhttp.Flusher) *flushWriter {
+	flushInterval := 100 * time.Millisecond
 	return &flushWriter{
 		w:             w,
 		f:             f,
-		lastFlush:     time.Now(),
+		lastFlush:     time.Now().Add(-flushInterval),
 		maxBufferSize: 128 * 1024,
-		flushInterval: 100 * time.Millisecond,
+		flushInterval: flushInterval,
 	}
 }
 
@@ -786,17 +787,6 @@ func cleanHopHeaders(h stdhttp.Header) {
 
 	for _, name := range hopByHopHeaders {
 		h.Del(name)
-	}
-}
-
-func parseBool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		return strings.EqualFold(t, "true") || t == "1"
-	default:
-		return false
 	}
 }
 
