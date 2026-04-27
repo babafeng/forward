@@ -3,7 +3,6 @@ package dtls
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -134,25 +133,25 @@ func (l *Listener) parseMetadata(md metadata.Metadata) {
 	if md == nil {
 		return
 	}
-	if v := getInt(md.Get("dtls_mtu")); v > 0 {
+	if v := metadata.IntValue(md.Get("dtls_mtu")); v > 0 {
 		l.md.mtu = v
 	}
-	if v := getInt(md.Get("mtu")); v > 0 {
+	if v := metadata.IntValue(md.Get("mtu")); v > 0 {
 		l.md.mtu = v
 	}
-	if v := getInt(md.Get("dtls_buffer")); v > 0 {
+	if v := metadata.IntValue(md.Get("dtls_buffer")); v > 0 {
 		l.md.bufferSize = v
 	}
-	if v := getInt(md.Get("buffer_size")); v > 0 {
+	if v := metadata.IntValue(md.Get("buffer_size")); v > 0 {
 		l.md.bufferSize = v
 	}
-	if v := getDuration(md.Get("dtls_flight_interval")); v > 0 {
+	if v := metadata.DurationValue(md.Get("dtls_flight_interval")); v > 0 {
 		l.md.flightInterval = v
 	}
-	if v := getDuration(md.Get("flight_interval")); v > 0 {
+	if v := metadata.DurationValue(md.Get("flight_interval")); v > 0 {
 		l.md.flightInterval = v
 	}
-	if v := getDuration(md.Get("handshake_timeout")); v > 0 {
+	if v := metadata.DurationValue(md.Get("handshake_timeout")); v > 0 {
 		l.md.handshakeTimout = v
 	}
 }
@@ -164,45 +163,4 @@ func isIPv4(addr string) bool {
 	}
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.To4() != nil
-}
-
-func getInt(v any) int {
-	switch t := v.(type) {
-	case int:
-		return t
-	case int64:
-		return int(t)
-	case float64:
-		return int(t)
-	case string:
-		var n int
-		_, _ = fmt.Sscanf(strings.TrimSpace(t), "%d", &n)
-		return n
-	default:
-		return 0
-	}
-}
-
-func getDuration(v any) time.Duration {
-	switch t := v.(type) {
-	case time.Duration:
-		return t
-	case int:
-		return time.Duration(t) * time.Second
-	case int64:
-		return time.Duration(t) * time.Second
-	case float64:
-		return time.Duration(t) * time.Second
-	case string:
-		if d, err := time.ParseDuration(strings.TrimSpace(t)); err == nil {
-			return d
-		}
-		var n int64
-		if _, err := fmt.Sscanf(strings.TrimSpace(t), "%d", &n); err == nil {
-			return time.Duration(n) * time.Second
-		}
-		return 0
-	default:
-		return 0
-	}
 }

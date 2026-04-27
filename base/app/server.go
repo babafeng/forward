@@ -451,6 +451,9 @@ func runPortForward(ctx context.Context, cfg config.Config, routers *routerCache
 	if transport == transportH3 {
 		listenerScheme = "h3"
 	}
+	if transport == transportQuic {
+		listenerScheme = "quic"
+	}
 	newListener := registry.ListenerRegistry().Get(listenerScheme)
 	if newListener == nil {
 		return fmt.Errorf("listener not registered for scheme %s", listenerScheme)
