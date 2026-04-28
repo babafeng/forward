@@ -197,6 +197,44 @@ func TestParseVmessURI(t *testing.T) {
 	}
 }
 
+func TestParseVmessEndpointURIList(t *testing.T) {
+	uriList := `
+vmess://auto:ce59fbec-05d1-47fc-ac1f-72ec219a7530@178.157.61.31:12529?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0
+vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMTc4LjE1Ny42MS4zMToxMjUyOQ?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0
+`
+
+	proxies, err := Parse([]byte(uriList))
+	if err != nil {
+		t.Fatalf("解析 vmess endpoint URI 列表失败: %v", err)
+	}
+	if len(proxies) != 2 {
+		t.Fatalf("期望 2 个节点，得到 %d 个", len(proxies))
+	}
+	for i, proxy := range proxies {
+		if proxy.Type != "vmess" {
+			t.Fatalf("节点 %d 类型 = %q，期望 vmess", i, proxy.Type)
+		}
+		if proxy.Name != "JMS-846412@c60s4.portablesubmarines.com:12529" {
+			t.Errorf("节点 %d 名称 = %q", i, proxy.Name)
+		}
+		if proxy.Server != "178.157.61.31" {
+			t.Errorf("节点 %d 服务器 = %q", i, proxy.Server)
+		}
+		if proxy.Port != 12529 {
+			t.Errorf("节点 %d 端口 = %d", i, proxy.Port)
+		}
+		if proxy.UUID != "ce59fbec-05d1-47fc-ac1f-72ec219a7530" {
+			t.Errorf("节点 %d UUID = %q", i, proxy.UUID)
+		}
+		if proxy.Cipher != "auto" {
+			t.Errorf("节点 %d 加密 = %q", i, proxy.Cipher)
+		}
+		if proxy.AlterID != 0 {
+			t.Errorf("节点 %d alterId = %d", i, proxy.AlterID)
+		}
+	}
+}
+
 func TestParsePlainURIList(t *testing.T) {
 	uriList := `
 trojan://password123@trojan.test.com:443?sni=trojan.test.com#Test%20Trojan
