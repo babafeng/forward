@@ -62,8 +62,8 @@ cd "$REPO_ROOT"
 echo "Building ${LOCAL_BIN} for linux/amd64..."
 GOOS=linux GOARCH=amd64 go build -o "$LOCAL_BIN" ./cmd/forward
 
-echo "Stopping service ${SERVICE_NAME} on ${TARGET}..."
-ssh "$TARGET" "systemctl stop '${SERVICE_NAME}'"
+# echo "Stopping service ${SERVICE_NAME} on ${TARGET}..."
+# ssh "$TARGET" "systemctl stop '${SERVICE_NAME}'"
 
 echo "Uploading ${LOCAL_BIN} to ${TARGET}:${TMP_REMOTE_BIN}..."
 scp "$LOCAL_BIN" "${TARGET}:${TMP_REMOTE_BIN}"
@@ -71,7 +71,7 @@ scp "$LOCAL_BIN" "${TARGET}:${TMP_REMOTE_BIN}"
 echo "Installing binary to ${REMOTE_BIN}..."
 ssh "$TARGET" "install -m 0755 '${TMP_REMOTE_BIN}' '${REMOTE_BIN}' && rm -f '${TMP_REMOTE_BIN}'"
 
-echo "Starting service ${SERVICE_NAME} on ${TARGET}..."
-ssh "$TARGET" "systemctl start '${SERVICE_NAME}'"
+# echo "Starting service ${SERVICE_NAME} on ${TARGET}..."
+# ssh "$TARGET" "systemctl start '${SERVICE_NAME}'"
 
 echo "Deployment finished."
