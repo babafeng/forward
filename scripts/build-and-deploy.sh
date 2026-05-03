@@ -30,6 +30,18 @@ require_cmd() {
     fi
 }
 
+map_goarch() {
+    local arch="$1"
+    case "$arch" in
+    x86_64) echo "amd64" ;;
+    aarch64 | arm64) echo "arm64" ;;
+    *)
+        echo "Unsupported CPU architecture: $arch" >&2
+        exit 1
+        ;;
+    esac
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
@@ -59,8 +71,12 @@ require_cmd scp
 
 cd "$REPO_ROOT"
 
-echo "Building ${LOCAL_BIN} for linux/amd64..."
-GOOS=linux GOARCH=amd64 go build -o "$LOCAL_BIN" ./cmd/forward
+echo "Detecting remote CPU architecture on ${TARGET}..."
+REMOTE_UNAME_ARCH="$(ssh "$TARGET" "uname -m")"
+REMOTE_GOARCH="$(map_goarch "$REMOTE_UNAME_ARCH")"
+
+echo "Building ${LOCAL_BIN} for linux/${REMOTE_GOARCH}..."
+GOOS=linux GOARCH="$REMOTE_GOARCH" go build -o "$LOCAL_BIN" ./cmd/forward
 
 # echo "Stopping service ${SERVICE_NAME} on ${TARGET}..."
 # ssh "$TARGET" "systemctl stop '${SERVICE_NAME}'"
