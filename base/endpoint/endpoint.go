@@ -2,6 +2,7 @@ package endpoint
 
 import (
 	"fmt"
+	"html"
 	"net"
 	"net/url"
 	"strconv"
@@ -40,6 +41,7 @@ func Parse(raw string) (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("empty endpoint")
 	}
 
+	raw = html.UnescapeString(raw)
 	raw = preprocessBase64Authority(raw)
 	raw = escapeUserinfoSlash(raw)
 
@@ -165,6 +167,16 @@ func (e Endpoint) UserPass() (user, pass string, ok bool) {
 		return "", "", false
 	}
 	return user, pass, true
+}
+
+func UserSecret(user *url.Userinfo) string {
+	if user == nil {
+		return ""
+	}
+	if pass, ok := user.Password(); ok && strings.TrimSpace(pass) != "" {
+		return strings.TrimSpace(pass)
+	}
+	return strings.TrimSpace(user.Username())
 }
 
 // escapeUserinfoSlash 转义 URL userinfo 部分中的 / 字符

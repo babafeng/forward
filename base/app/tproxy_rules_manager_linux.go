@@ -57,7 +57,7 @@ func (o ownerMatch) String() string {
 }
 
 func (o ownerMatch) Enabled() bool {
-	return o.Mode == ownerMatchGID && strings.TrimSpace(o.Value) != ""
+	return (o.Mode == ownerMatchUID || o.Mode == ownerMatchGID) && strings.TrimSpace(o.Value) != ""
 }
 
 type osReleaseInfo struct {

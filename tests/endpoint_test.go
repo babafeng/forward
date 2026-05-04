@@ -47,6 +47,19 @@ func TestParseBasic(t *testing.T) {
 	}
 }
 
+func TestParseHTMLEscapedQuery(t *testing.T) {
+	ep, err := endpoint.Parse("vless://uuid@127.0.0.1:443?encryption=none&amp;flow=xtls-rprx-vision&amp;mux=true")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if got := ep.Query.Get("flow"); got != "xtls-rprx-vision" {
+		t.Fatalf("flow = %q", got)
+	}
+	if got := ep.Query.Get("mux"); got != "true" {
+		t.Fatalf("mux = %q", got)
+	}
+}
+
 func TestParseIPv6(t *testing.T) {
 	tests := []struct {
 		name string

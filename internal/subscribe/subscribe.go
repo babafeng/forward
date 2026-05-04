@@ -49,6 +49,9 @@ type ClashProxy struct {
 	ServerName        string          `yaml:"servername,omitempty"`         // TLS/Reality SNI
 	ClientFingerprint string          `yaml:"client-fingerprint,omitempty"` // uTLS 指纹
 	RealityOpts       *RealityOptions `yaml:"reality-opts,omitempty"`       // Reality 选项
+	Mux               bool            `yaml:"mux,omitempty"`                // 是否启用 Xray Mux
+	MuxMaxStreams     int             `yaml:"mux-max-streams,omitempty"`    // Mux 最大并发流
+	MuxIdle           string          `yaml:"mux-idle,omitempty"`           // Mux 空闲超时
 
 	// WebSocket 选项
 	WSOpts *WSOptions `yaml:"ws-opts,omitempty"`
@@ -442,6 +445,7 @@ func splitVmessPayload(payload string) (string, string) {
 // parseVlessURI 解析 vless:// URI。
 // 格式: vless://uuid@server:port?type=ws&security=tls&sni=xxx&path=/xxx#name
 func parseVlessURI(uri string) (ClashProxy, error) {
+	uri = strings.TrimSpace(uri)
 	// 提取 fragment 作为节点名称
 	name := ""
 	if idx := strings.LastIndex(uri, "#"); idx >= 0 {
@@ -449,24 +453,49 @@ func parseVlessURI(uri string) (ClashProxy, error) {
 		uri = uri[:idx]
 	}
 
-	u, err := url.Parse(uri)
+	ep, err := endpoint.Parse(uri)
 	if err != nil {
 		return ClashProxy{}, fmt.Errorf("vless URI 解析失败: %w", err)
 	}
 
-	port, _ := strconv.Atoi(u.Port())
-	uuid := u.User.Username()
-	query := u.Query()
+	uuid := endpoint.UserSecret(ep.User)
+	query := ep.Query
+	security := strings.TrimSpace(query.Get("security"))
+	sni := firstNonEmpty(query.Get("sni"), query.Get("peer"))
+	flow := strings.TrimSpace(query.Get("flow"))
+	if flow == "" && query.Get("xtls") != "" {
+		flow = "xtls-rprx-vision"
+	}
+	fp := firstNonEmpty(query.Get("fp"), query.Get("client-fingerprint"))
+	mux, _ := strconv.ParseBool(strings.TrimSpace(query.Get("mux")))
+	muxMaxStreams, _ := strconv.Atoi(strings.TrimSpace(firstNonEmpty(query.Get("mux_max_streams"), query.Get("mux_concurrency"))))
+	muxIdle := firstNonEmpty(query.Get("mux_idle"), query.Get("mux_idle_timeout"))
 
 	proxy := ClashProxy{
-		Name:    name,
-		Type:    "vless",
-		Server:  u.Hostname(),
-		Port:    port,
-		UUID:    uuid,
-		TLS:     strings.EqualFold(query.Get("security"), "tls") || strings.EqualFold(query.Get("security"), "reality"),
-		SNI:     query.Get("sni"),
-		Network: query.Get("type"),
+		Name:              firstNonEmpty(name, query.Get("remarks")),
+		Type:              "vless",
+		Server:            ep.Host,
+		Port:              ep.Port,
+		UUID:              uuid,
+		TLS:               strings.EqualFold(security, "tls") || strings.EqualFold(security, "reality") || query.Get("tls") == "1" || strings.EqualFold(query.Get("tls"), "true"),
+		SNI:               sni,
+		ServerName:        sni,
+		Network:           firstNonEmpty(query.Get("type"), query.Get("net")),
+		Flow:              flow,
+		ClientFingerprint: fp,
+		Mux:               mux,
+		MuxMaxStreams:     muxMaxStreams,
+		MuxIdle:           muxIdle,
+	}
+	if proxy.Network == "" {
+		proxy.Network = "tcp"
+	}
+	if query.Get("pbk") != "" || query.Get("sid") != "" || strings.EqualFold(security, "reality") {
+		proxy.TLS = true
+		proxy.RealityOpts = &RealityOptions{
+			PublicKey: query.Get("pbk"),
+			ShortID:   query.Get("sid"),
+		}
 	}
 
 	if strings.EqualFold(proxy.Network, "ws") {
@@ -1009,6 +1038,15 @@ func vlesToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 	// 指纹
 	if p.ClientFingerprint != "" {
 		q.Set("fp", p.ClientFingerprint)
+	}
+	if p.Mux {
+		q.Set("mux", "true")
+		if p.MuxMaxStreams > 0 {
+			q.Set("mux_max_streams", strconv.Itoa(p.MuxMaxStreams))
+		}
+		if p.MuxIdle != "" {
+			q.Set("mux_idle", p.MuxIdle)
+		}
 	}
 
 	// 确定 scheme
