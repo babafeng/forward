@@ -1,14 +1,18 @@
 package route
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +21,7 @@ import (
 	"forward/base/logging"
 	"forward/base/mmdb"
 	"forward/internal/netmark"
+	"github.com/miekg/dns"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -121,10 +126,9 @@ func (r *Router) Decide(ctx context.Context, address string) (Decision, error) {
 		ips = []net.IP{ip}
 	} else if r.hasIPRule {
 		resolved, err := r.resolver.lookupIPs(ctx, host)
-		if err != nil {
-			return Decision{Via: "DIRECT"}, err
+		if err == nil {
+			ips = resolved
 		}
-		ips = resolved
 	}
 
 	if len(ips) > 0 && len(r.skipProxy) > 0 {
@@ -277,12 +281,31 @@ func matchPrefixes(ip net.IP, prefixes []netip.Prefix) bool {
 }
 
 type resolver struct {
-	servers  []string
+	servers  []dnsServer
 	timeout  time.Duration
 	cacheTTL time.Duration
 
 	cache sync.Map
 	sf    singleflight.Group
+}
+
+type dnsServerKind int
+
+const (
+	dnsServerPlain dnsServerKind = iota
+	dnsServerDoH
+	dnsServerDoT
+)
+
+type dnsServer struct {
+	raw        string
+	kind       dnsServerKind
+	network    string
+	address    string
+	url        string
+	serverName string
+	dohClient  *http.Client
+	dotClient  *dns.Client
 }
 
 type dnsCacheEntry struct {
@@ -293,13 +316,14 @@ type dnsCacheEntry struct {
 const defaultDNSCacheTTL = 30 * time.Second
 
 func newResolver(servers []string, timeout time.Duration) *resolver {
-	clean := make([]string, 0, len(servers))
+	clean := make([]dnsServer, 0, len(servers))
 	for _, s := range servers {
-		s = strings.TrimSpace(s)
-		if s == "" {
+		server, ok := parseDNSServer(s)
+		if !ok {
 			continue
 		}
-		clean = append(clean, s)
+		server = prepareDNSServer(server, timeout)
+		clean = append(clean, server)
 	}
 	return &resolver{
 		servers:  clean,
@@ -352,16 +376,7 @@ func (r *resolver) lookupUncached(ctx context.Context, host string) ([]net.IP, e
 		return cloneIPs(ips), nil
 	}
 	for _, s := range r.servers {
-		serverAddr := normalizeDNSServer(s)
-		res := &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := net.Dialer{Timeout: r.timeout}
-				netmark.ConfigureDialer(&d)
-				return d.DialContext(ctx, network, serverAddr)
-			},
-		}
-		ips, err := res.LookupIP(ctx, "ip", host)
+		ips, err := r.lookupWithServer(ctx, host, s)
 		if err == nil && len(ips) > 0 {
 			return cloneIPs(ips), nil
 		}
@@ -371,6 +386,213 @@ func (r *resolver) lookupUncached(ctx context.Context, host string) ([]net.IP, e
 		return nil, err
 	}
 	return cloneIPs(ips), nil
+}
+
+func (r *resolver) lookupWithServer(ctx context.Context, host string, server dnsServer) ([]net.IP, error) {
+	switch server.kind {
+	case dnsServerDoH:
+		return r.lookupDoH(ctx, host, server)
+	case dnsServerDoT:
+		return r.lookupDoT(ctx, host, server)
+	default:
+		return r.lookupPlainDNS(ctx, host, server)
+	}
+}
+
+func (r *resolver) lookupPlainDNS(ctx context.Context, host string, server dnsServer) ([]net.IP, error) {
+	res := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			if server.network != "" {
+				network = server.network
+			}
+			d := net.Dialer{Timeout: r.timeout}
+			netmark.ConfigureDialer(&d)
+			return d.DialContext(ctx, network, server.address)
+		},
+	}
+	ips, err := res.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	return cloneIPs(ips), nil
+}
+
+func (r *resolver) lookupDoT(ctx context.Context, host string, server dnsServer) ([]net.IP, error) {
+	client := server.dotClient
+	if client == nil {
+		client = newDoTClient(r.timeout, server.serverName)
+	}
+	return lookupDNSMessages(ctx, host, func(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
+		resp, _, err := client.ExchangeContext(ctx, msg, server.address)
+		return resp, err
+	})
+}
+
+func (r *resolver) lookupDoH(ctx context.Context, host string, server dnsServer) ([]net.IP, error) {
+	client := server.dohClient
+	if client == nil {
+		client = newDoHClient(r.timeout)
+	}
+	return lookupDNSMessages(ctx, host, func(ctx context.Context, msg *dns.Msg) (*dns.Msg, error) {
+		wire, err := msg.Pack()
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.url, bytes.NewReader(wire))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/dns-message")
+		req.Header.Set("Content-Type", "application/dns-message")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("doh status %s", resp.Status)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		answer := new(dns.Msg)
+		if err := answer.Unpack(body); err != nil {
+			return nil, err
+		}
+		return answer, nil
+	})
+}
+
+func prepareDNSServer(server dnsServer, timeout time.Duration) dnsServer {
+	switch server.kind {
+	case dnsServerDoH:
+		server.dohClient = newDoHClient(timeout)
+	case dnsServerDoT:
+		server.dotClient = newDoTClient(timeout, server.serverName)
+	}
+	return server
+}
+
+func newDoTClient(timeout time.Duration, serverName string) *dns.Client {
+	return &dns.Client{
+		Net:     "tcp-tls",
+		Timeout: timeout,
+		Dialer:  configuredNetDialer(timeout),
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: serverName,
+		},
+	}
+}
+
+func newDoHClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Timeout: timeout}
+				netmark.ConfigureDialer(&d)
+				return d.DialContext(ctx, network, address)
+			},
+			TLSHandshakeTimeout: timeout,
+		},
+	}
+}
+
+func lookupDNSMessages(ctx context.Context, host string, exchange func(context.Context, *dns.Msg) (*dns.Msg, error)) ([]net.IP, error) {
+	var out []net.IP
+	var lastErr error
+	for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA} {
+		msg := new(dns.Msg)
+		msg.SetQuestion(dns.Fqdn(host), qtype)
+		msg.RecursionDesired = true
+		resp, err := exchange(ctx, msg)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp == nil {
+			lastErr = fmt.Errorf("empty dns response")
+			continue
+		}
+		if resp.Rcode != dns.RcodeSuccess {
+			lastErr = fmt.Errorf("dns rcode %s", dns.RcodeToString[resp.Rcode])
+			continue
+		}
+		for _, rr := range resp.Answer {
+			switch v := rr.(type) {
+			case *dns.A:
+				out = append(out, v.A)
+			case *dns.AAAA:
+				out = append(out, v.AAAA)
+			}
+		}
+	}
+	if len(out) > 0 {
+		return cloneIPs(out), nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no dns answers for %s", host)
+	}
+	return nil, lastErr
+}
+
+func configuredNetDialer(timeout time.Duration) *net.Dialer {
+	d := &net.Dialer{Timeout: timeout}
+	netmark.ConfigureDialer(d)
+	return d
+}
+
+func parseDNSServer(raw string) (dnsServer, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return dnsServer{}, false
+	}
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		if _, err := url.ParseRequestURI(raw); err != nil {
+			return dnsServer{}, false
+		}
+		return dnsServer{raw: raw, kind: dnsServerDoH, url: raw}, true
+	case strings.HasPrefix(lower, "tls://"), strings.HasPrefix(lower, "dot://"):
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return dnsServer{}, false
+		}
+		return dnsServer{
+			raw:        raw,
+			kind:       dnsServerDoT,
+			address:    normalizeDNSServerPort(u.Host, "853"),
+			serverName: dnsTLSServerName(u.Host),
+		}, true
+	case strings.HasPrefix(lower, "udp://"), strings.HasPrefix(lower, "tcp://"):
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return dnsServer{}, false
+		}
+		return dnsServer{
+			raw:     raw,
+			kind:    dnsServerPlain,
+			network: strings.ToLower(u.Scheme),
+			address: normalizeDNSServer(u.Host),
+		}, true
+	default:
+		return dnsServer{raw: raw, kind: dnsServerPlain, address: normalizeDNSServer(raw)}, true
+	}
+}
+
+func dnsTLSServerName(hostport string) string {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	return host
 }
 
 func (r *resolver) loadCache(host string) ([]net.IP, bool) {
@@ -420,6 +642,10 @@ func cloneIPs(ips []net.IP) []net.IP {
 }
 
 func normalizeDNSServer(server string) string {
+	return normalizeDNSServerPort(server, "53")
+}
+
+func normalizeDNSServerPort(server, defaultPort string) string {
 	server = strings.TrimSpace(server)
 	if server == "" {
 		return ""
@@ -427,13 +653,11 @@ func normalizeDNSServer(server string) string {
 	if _, _, err := net.SplitHostPort(server); err == nil {
 		return server
 	}
-	if ip := net.ParseIP(server); ip != nil {
-		if ip.To4() != nil {
-			return net.JoinHostPort(server, "53")
-		}
-		return net.JoinHostPort("["+server+"]", "53")
+	host := strings.TrimPrefix(strings.TrimSuffix(server, "]"), "[")
+	if ip := net.ParseIP(host); ip != nil {
+		return net.JoinHostPort(host, defaultPort)
 	}
-	return net.JoinHostPort(server, "53")
+	return net.JoinHostPort(server, defaultPort)
 }
 
 func ensureMMDB(path, link string, log *logging.Logger) (string, error) {
@@ -443,7 +667,7 @@ func ensureMMDB(path, link string, log *logging.Logger) (string, error) {
 	}
 	path = os.ExpandEnv(path)
 	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
+		home, err := currentHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("expand mmdb path: %w", err)
 		}
@@ -522,4 +746,18 @@ func ensureMMDB(path, link string, log *logging.Logger) (string, error) {
 		return "", fmt.Errorf("rename mmdb file: %w", err)
 	}
 	return path, nil
+}
+
+func currentHomeDir() (string, error) {
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		return home, nil
+	}
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(u.HomeDir) == "" {
+		return "", fmt.Errorf("home directory is empty for user %s", u.Username)
+	}
+	return u.HomeDir, nil
 }

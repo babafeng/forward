@@ -93,8 +93,8 @@ func TestRenderTProxyRulesUnit(t *testing.T) {
 			t.Fatalf("renderTProxyRulesUnit missing %q\n%s", check, unit)
 		}
 	}
-	if strings.Contains(unit, "--uid-owner 0") {
-		t.Fatalf("renderTProxyRulesUnit should not include uid owner bypass for root\n%s", unit)
+	if !strings.Contains(unit, "--uid-owner 0") {
+		t.Fatalf("renderTProxyRulesUnit should include uid owner bypass for root\n%s", unit)
 	}
 }
 

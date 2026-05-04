@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"forward/base/endpoint"
+	"forward/internal/config"
 	"forward/internal/metadata"
 )
 
@@ -61,6 +62,38 @@ func TestBuildVlessConnectorMetadataMux(t *testing.T) {
 	}
 	if got, ok := md.Get(metadata.KeyMuxIdle).(time.Duration); !ok || got != 20*time.Second {
 		t.Fatalf("mux idle = %v, want 20s", md.Get(metadata.KeyMuxIdle))
+	}
+}
+
+func TestBuildVlessConnectorMetadataShadowrocketUserInfo(t *testing.T) {
+	ep, err := endpoint.Parse("vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13")
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+
+	md := buildVlessConnectorMetadata(ep)
+	if got := md.GetString(metadata.KeyUUID); got != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("uuid = %q", got)
+	}
+
+	dialerMD := buildDialerMetadata(ep)
+	if got := dialerMD.GetString(metadata.KeySNI); got != "swscan.apple.com" {
+		t.Fatalf("sni = %q", got)
+	}
+}
+
+func TestBuildRouteAcceptsShadowrocketVlessUserInfo(t *testing.T) {
+	ep, err := endpoint.Parse("vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13")
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+
+	route, err := BuildRoute(config.Config{}, []endpoint.Endpoint{ep})
+	if err != nil {
+		t.Fatalf("BuildRoute failed: %v", err)
+	}
+	if route == nil {
+		t.Fatal("route nil")
 	}
 }
 

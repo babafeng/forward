@@ -155,12 +155,16 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 // buildDialerMetadata 为 Reality Dialer 构建 metadata
 func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	q := hop.Query
+	sni := strings.TrimSpace(q.Get("sni"))
+	if sni == "" {
+		sni = strings.TrimSpace(q.Get("peer"))
+	}
 	mdMap := map[string]any{
 		metadata.KeyHost:        hop.Host,
 		metadata.KeyPort:        hop.Port,
 		metadata.KeySecurity:    q.Get("security"),
 		metadata.KeyNetwork:     q.Get("type"),
-		metadata.KeySNI:         q.Get("sni"),
+		metadata.KeySNI:         sni,
 		metadata.KeyFingerprint: q.Get("fp"),
 		metadata.KeyPublicKey:   q.Get("pbk"),
 		metadata.KeyShortID:     q.Get("sid"),
@@ -179,12 +183,8 @@ func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 // buildVlessConnectorMetadata 为 VLESS Connector 构建 metadata
 func buildVlessConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	q := hop.Query
-	uuid := ""
-	if hop.User != nil {
-		uuid = hop.User.Username()
-	}
 	mdMap := map[string]any{
-		metadata.KeyUUID:       uuid,
+		metadata.KeyUUID:       endpoint.UserSecret(hop.User),
 		metadata.KeyFlow:       q.Get("flow"),
 		metadata.KeyEncryption: q.Get("encryption"),
 	}

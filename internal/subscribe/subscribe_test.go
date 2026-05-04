@@ -289,6 +289,109 @@ hy2://hypass@hy2.test.com:443?sni=hy2.test.com#Test%20HY2
 	}
 }
 
+func TestParseVlessURIShadowrocketReality(t *testing.T) {
+	raw := "vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if p.Name != "JP-LL" {
+		t.Fatalf("name = %q", p.Name)
+	}
+	if p.UUID != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("uuid = %q", p.UUID)
+	}
+	if p.SNI != "swscan.apple.com" || p.ServerName != "swscan.apple.com" {
+		t.Fatalf("sni/servername = %q/%q", p.SNI, p.ServerName)
+	}
+	if p.Flow != "xtls-rprx-vision" {
+		t.Fatalf("flow = %q", p.Flow)
+	}
+	if p.RealityOpts == nil {
+		t.Fatal("reality opts nil")
+	}
+	if p.RealityOpts.PublicKey != "A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8" || p.RealityOpts.ShortID != "d003cb13" {
+		t.Fatalf("reality opts = %#v", p.RealityOpts)
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Scheme != "vless+reality" {
+		t.Fatalf("scheme = %q", ep.Scheme)
+	}
+	if ep.User.Username() != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("endpoint uuid = %q", ep.User.Username())
+	}
+	if ep.Query.Get("sni") != "swscan.apple.com" || ep.Query.Get("flow") != "xtls-rprx-vision" {
+		t.Fatalf("endpoint query = %v", ep.Query)
+	}
+}
+
+func TestParseVlessURIShadowrocketBase64AuthorityReality(t *testing.T) {
+	raw := "vless://bm9uZTowZTQ2N2Y1Zi0wYTVjLTQ0ZjgtODJhNS0wN2Y4MDNkMTYxZThAMS4yLjMuNDo0NDM?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if p.Server != "1.2.3.4" || p.Port != 443 {
+		t.Fatalf("server = %s:%d", p.Server, p.Port)
+	}
+	if p.UUID != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("uuid = %q", p.UUID)
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.String() == "" || ep.Port != 443 || ep.User.Username() != p.UUID {
+		t.Fatalf("endpoint = %#v", ep)
+	}
+}
+
+func TestParseVlessURIHTMLEscapedReality(t *testing.T) {
+	raw := "vless://0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?encryption=none&amp;flow=xtls-rprx-vision&amp;fp=chrome&amp;pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&amp;security=reality&amp;sid=d003cb13&amp;sni=swscan.apple.com&amp;type=tcp&amp;mux=true&amp;mux_max_streams=64&amp;mux_idle=120s#VLESS-Reality"
+
+	proxy, err := parseVlessURI(raw)
+	if err != nil {
+		t.Fatalf("parseVlessURI failed: %v", err)
+	}
+	if proxy.UUID != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("uuid = %q", proxy.UUID)
+	}
+	if proxy.Flow != "xtls-rprx-vision" || proxy.ClientFingerprint != "chrome" {
+		t.Fatalf("flow/fp = %q/%q", proxy.Flow, proxy.ClientFingerprint)
+	}
+	if proxy.RealityOpts == nil || proxy.RealityOpts.ShortID != "d003cb13" {
+		t.Fatalf("reality opts = %#v", proxy.RealityOpts)
+	}
+	if !proxy.Mux || proxy.MuxMaxStreams != 64 || proxy.MuxIdle != "120s" {
+		t.Fatalf("mux = %v/%d/%q", proxy.Mux, proxy.MuxMaxStreams, proxy.MuxIdle)
+	}
+
+	ep, err := ProxyToEndpoint(proxy)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Query.Get("mux") != "true" || ep.Query.Get("mux_max_streams") != "64" || ep.Query.Get("mux_idle") != "120s" {
+		t.Fatalf("endpoint mux query = %v", ep.Query)
+	}
+}
+
 func TestParseBase64NoPadding(t *testing.T) {
 	// 使用无 padding 的 base64 编码
 	trojanURI := "trojan://testpass@server.com:443?sni=server.com#TestNode\n"

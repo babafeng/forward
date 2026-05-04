@@ -416,7 +416,9 @@ tproxy = 12345
 debug = false
 debug-verbose = false
 skip-proxy = 192.168.0.0/16, 127.0.0.1/32
-dns-server = 8.8.8.8, 8.8.4.4
+dns-server = 192.168.31.1
+# dns-server 同时支持普通 DNS、DoH 和 DoT：
+# dns-server = 192.168.31.1, https://dns.google/dns-query, tls://1.1.1.1:853
 mmdb-path = ~/.forward/Country.mmdb
 mmdb-link = https://github.com/Loyalsoldier/geoip/releases/latest/download/Country.mmdb
 
