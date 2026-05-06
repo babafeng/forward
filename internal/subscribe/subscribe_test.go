@@ -392,6 +392,37 @@ func TestParseVlessURIHTMLEscapedReality(t *testing.T) {
 	}
 }
 
+func TestParseVlessURIShadowrocketVisionTLS(t *testing.T) {
+	raw := "vless://none:b1fb1a1c-1f12-470b-9dfb-087f3323f1fb@01-rl-hkg.c-one.us:11889?remarks=%E6%97%A5%E6%9C%AC-TYO-01-VL&tls=1&peer=vl-tyo-11.auua.us&xtls=2"
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if !p.TLS || p.RealityOpts != nil {
+		t.Fatalf("tls/reality = %v/%#v", p.TLS, p.RealityOpts)
+	}
+	if p.Flow != "xtls-rprx-vision" {
+		t.Fatalf("flow = %q", p.Flow)
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Scheme != "vless+tls" {
+		t.Fatalf("scheme = %q", ep.Scheme)
+	}
+	if ep.Query.Get("security") != "tls" || ep.Query.Get("sni") != "vl-tyo-11.auua.us" {
+		t.Fatalf("endpoint query = %v", ep.Query)
+	}
+}
+
 func TestParseBase64NoPadding(t *testing.T) {
 	// 使用无 padding 的 base64 编码
 	trojanURI := "trojan://testpass@server.com:443?sni=server.com#TestNode\n"

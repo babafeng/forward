@@ -97,6 +97,26 @@ func TestBuildRouteAcceptsShadowrocketVlessUserInfo(t *testing.T) {
 	}
 }
 
+func TestBuildRouteAcceptsVlessVisionTLS(t *testing.T) {
+	ep, err := endpoint.Parse("vless+tls://b1fb1a1c-1f12-470b-9dfb-087f3323f1fb@01-rl-hkg.c-one.us:11889?security=tls&sni=vl-tyo-11.auua.us&flow=xtls-rprx-vision")
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+
+	dialerMD := buildDialerMetadata(ep)
+	if got := dialerMD.GetString(metadata.KeySecurity); got != "tls" {
+		t.Fatalf("security = %q, want tls", got)
+	}
+
+	route, err := BuildRoute(config.Config{}, []endpoint.Endpoint{ep})
+	if err != nil {
+		t.Fatalf("BuildRoute failed: %v", err)
+	}
+	if route == nil {
+		t.Fatal("route nil")
+	}
+}
+
 func TestBuildVmessConnectorMetadataMux(t *testing.T) {
 	ep, err := endpoint.Parse("vmess://auto:id@127.0.0.1:443?alterId=0&mux=true&mux_concurrency=8&mux_idle_timeout=15")
 	if err != nil {

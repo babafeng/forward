@@ -52,6 +52,9 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			if strings.EqualFold(q.Get("obfs"), "websocket") || strings.EqualFold(q.Get("type"), "ws") || strings.EqualFold(q.Get("net"), "ws") {
 				dialerName = "ws"
 			}
+			if connectorName == "vless" && dialerName == "tls" && isVlessVisionFlow(q) {
+				dialerName = "reality"
+			}
 		}
 
 		dialerOpts := []dialer.Option{
@@ -159,10 +162,17 @@ func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	if sni == "" {
 		sni = strings.TrimSpace(q.Get("peer"))
 	}
+	security := strings.TrimSpace(q.Get("security"))
+	if security == "" && strings.EqualFold(hop.Scheme, "vless+tls") {
+		security = "tls"
+	}
+	if security == "" && isTruthy(q.Get("tls")) && q.Get("pbk") == "" && q.Get("sid") == "" {
+		security = "tls"
+	}
 	mdMap := map[string]any{
 		metadata.KeyHost:        hop.Host,
 		metadata.KeyPort:        hop.Port,
-		metadata.KeySecurity:    q.Get("security"),
+		metadata.KeySecurity:    security,
 		metadata.KeyNetwork:     q.Get("type"),
 		metadata.KeySNI:         sni,
 		metadata.KeyFingerprint: q.Get("fp"),
@@ -178,6 +188,16 @@ func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 		}
 	}
 	return metadata.New(mdMap)
+}
+
+func isVlessVisionFlow(q url.Values) bool {
+	flow := strings.TrimSpace(q.Get("flow"))
+	return strings.EqualFold(flow, "xtls-rprx-vision") || (flow == "" && strings.TrimSpace(q.Get("xtls")) != "")
+}
+
+func isTruthy(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	return raw == "1" || strings.EqualFold(raw, "true")
 }
 
 // buildVlessConnectorMetadata 为 VLESS Connector 构建 metadata

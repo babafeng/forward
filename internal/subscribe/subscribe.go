@@ -1063,6 +1063,7 @@ func vlesToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 		q.Set("security", "reality")
 	} else if p.TLS {
 		scheme = "vless+tls"
+		q.Set("security", "tls")
 	}
 
 	// WebSocket 传输
