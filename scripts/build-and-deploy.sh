@@ -76,7 +76,7 @@ REMOTE_UNAME_ARCH="$(ssh "$TARGET" "uname -m")"
 REMOTE_GOARCH="$(map_goarch "$REMOTE_UNAME_ARCH")"
 
 echo "Building ${LOCAL_BIN} for linux/${REMOTE_GOARCH}..."
-GOOS=linux GOARCH="$REMOTE_GOARCH" go build -o "$LOCAL_BIN" ./cmd/forward
+CGO_ENABLED=0  GOOS=linux GOARCH="$REMOTE_GOARCH" go build -o "$LOCAL_BIN" ./cmd/forward
 
 # echo "Stopping service ${SERVICE_NAME} on ${TARGET}..."
 # ssh "$TARGET" "systemctl stop '${SERVICE_NAME}'"
