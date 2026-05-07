@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"encoding/base64"
 	"net/url"
 	"strings"
 	"testing"
@@ -43,6 +44,19 @@ func TestParseBasic(t *testing.T) {
 				t.Errorf("Port = %v, want %v", ep.Port, tt.port)
 			}
 		})
+	}
+}
+
+func TestParseHTMLEscapedQuery(t *testing.T) {
+	ep, err := endpoint.Parse("vless://uuid@127.0.0.1:443?encryption=none&amp;flow=xtls-rprx-vision&amp;mux=true")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if got := ep.Query.Get("flow"); got != "xtls-rprx-vision" {
+		t.Fatalf("flow = %q", got)
+	}
+	if got := ep.Query.Get("mux"); got != "true" {
+		t.Fatalf("mux = %q", got)
 	}
 }
 
@@ -115,6 +129,166 @@ func TestParseWithUserPass(t *testing.T) {
 	}
 	if pass != "pass" {
 		t.Errorf("pass = %v, want pass", pass)
+	}
+}
+
+func TestParseVmessBase64Endpoint(t *testing.T) {
+	raw := "vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMTc4LjE1Ny42MS4xMjQ6MTI1Mjk?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0"
+	ep, err := endpoint.Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if ep.Scheme != "vmess" {
+		t.Errorf("Scheme = %v, want vmess", ep.Scheme)
+	}
+	if ep.Host != "178.157.61.124" {
+		t.Errorf("Host = %v, want 178.157.61.124", ep.Host)
+	}
+	if ep.Port != 12529 {
+		t.Errorf("Port = %v, want 12529", ep.Port)
+	}
+	user, pass, ok := ep.UserPass()
+	if !ok {
+		t.Fatal("UserPass() ok = false, want true")
+	}
+	if user != "auto" {
+		t.Errorf("user = %v, want auto", user)
+	}
+	if pass != "ce59fbec-05d1-47fc-ac1f-72ec219a7530" {
+		t.Errorf("pass = %v, want ce59fbec-05d1-47fc-ac1f-72ec219a7530", pass)
+	}
+	if ep.Query.Get("alterId") != "0" {
+		t.Errorf("alterId = %v, want 0", ep.Query.Get("alterId"))
+	}
+	if ep.Query.Get("remarks") != "JMS-846412@c60s4.portablesubmarines.com:12529" {
+		t.Errorf("remarks = %v", ep.Query.Get("remarks"))
+	}
+}
+
+func TestParseBase64AuthorityForAllSchemes(t *testing.T) {
+	tests := []struct {
+		name     string
+		scheme   string
+		decoded  string
+		query    string
+		wantHost string
+		wantPort int
+		wantUser string
+		wantPass string
+		wantQKey string
+		wantQVal string
+	}{
+		{
+			name:     "tcp_host_port",
+			scheme:   "tcp",
+			decoded:  "203.0.113.10:8080",
+			query:    "bind=true",
+			wantHost: "203.0.113.10",
+			wantPort: 8080,
+			wantQKey: "bind",
+			wantQVal: "true",
+		},
+		{
+			name:     "socks5_user_pass",
+			scheme:   "socks5",
+			decoded:  "user:pa/ss@127.0.0.1:1080",
+			wantHost: "127.0.0.1",
+			wantPort: 1080,
+			wantUser: "user",
+			wantPass: "pa/ss",
+		},
+		{
+			name:     "http_user_pass",
+			scheme:   "http",
+			decoded:  "user:pass@example.com:8080",
+			wantHost: "example.com",
+			wantPort: 8080,
+			wantUser: "user",
+			wantPass: "pass",
+		},
+		{
+			name:     "vless_uuid",
+			scheme:   "vless",
+			decoded:  "uuid-123@example.com:443",
+			query:    "security=tls&type=ws",
+			wantHost: "example.com",
+			wantPort: 443,
+			wantUser: "uuid-123",
+			wantQKey: "security",
+			wantQVal: "tls",
+		},
+		{
+			name:     "trojan_password",
+			scheme:   "trojan",
+			decoded:  "secret@example.net:443",
+			query:    "sni=example.net",
+			wantHost: "example.net",
+			wantPort: 443,
+			wantUser: "secret",
+			wantQKey: "sni",
+			wantQVal: "example.net",
+		},
+		{
+			name:     "hy2_password",
+			scheme:   "hy2",
+			decoded:  "token@example.org:8443",
+			wantHost: "example.org",
+			wantPort: 8443,
+			wantUser: "token",
+		},
+		{
+			name:     "vmess_security_uuid",
+			scheme:   "vmess",
+			decoded:  "auto:ce59fbec-05d1-47fc-ac1f-72ec219a7530@178.157.61.124:12529",
+			query:    "alterId=0",
+			wantHost: "178.157.61.124",
+			wantPort: 12529,
+			wantUser: "auto",
+			wantPass: "ce59fbec-05d1-47fc-ac1f-72ec219a7530",
+			wantQKey: "alterId",
+			wantQVal: "0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := tt.scheme + "://" + base64.RawURLEncoding.EncodeToString([]byte(tt.decoded))
+			if tt.query != "" {
+				raw += "?" + tt.query
+			}
+
+			ep, err := endpoint.Parse(raw)
+			if err != nil {
+				t.Fatalf("Parse(%q) error = %v", raw, err)
+			}
+			if ep.Scheme != tt.scheme {
+				t.Errorf("Scheme = %q, want %q", ep.Scheme, tt.scheme)
+			}
+			if ep.Host != tt.wantHost {
+				t.Errorf("Host = %q, want %q", ep.Host, tt.wantHost)
+			}
+			if ep.Port != tt.wantPort {
+				t.Errorf("Port = %d, want %d", ep.Port, tt.wantPort)
+			}
+			user, pass, ok := ep.UserPass()
+			if tt.wantUser == "" && ok {
+				t.Fatalf("UserPass() = (%q, %q, true), want no userinfo", user, pass)
+			}
+			if tt.wantUser != "" {
+				if !ok {
+					t.Fatal("UserPass() ok = false, want true")
+				}
+				if user != tt.wantUser {
+					t.Errorf("user = %q, want %q", user, tt.wantUser)
+				}
+				if pass != tt.wantPass {
+					t.Errorf("pass = %q, want %q", pass, tt.wantPass)
+				}
+			}
+			if tt.wantQKey != "" && ep.Query.Get(tt.wantQKey) != tt.wantQVal {
+				t.Errorf("query %s = %q, want %q", tt.wantQKey, ep.Query.Get(tt.wantQKey), tt.wantQVal)
+			}
+		})
 	}
 }
 

@@ -104,6 +104,13 @@ func Main() int {
 
 	applySubscribeOptions(&cfg, subOpts)
 
+	cleanupTProxyRules, err := setupManagedTProxyRules(cfg)
+	if err != nil {
+		cfg.Logger.Error("Failed to setup managed tproxy rules: %v", err)
+		return 2
+	}
+	defer cleanupTProxyRules()
+
 	routers := newRouterCache()
 
 	if err := initRouteStoreAndHotReload(ctx, &cfg); err != nil {
@@ -238,7 +245,7 @@ func buildTLSOption(cfg config.Config, handlerScheme, listenerScheme string, tra
 	needTLS := true
 
 	switch {
-	case listenerScheme == "http3" || listenerScheme == "h3":
+	case listenerScheme == "http3" || listenerScheme == "h3" || listenerScheme == "quic":
 		nextProtos = []string{"h3"}
 	case listenerScheme == "http2" || listenerScheme == "h2":
 		nextProtos = []string{"h2"}

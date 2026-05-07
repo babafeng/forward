@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strings"
 
 	inet "forward/base/io/net"
 	"forward/internal/chain"
@@ -38,9 +37,9 @@ func (h *Handler) Init(md metadata.Metadata) error {
 	if md == nil {
 		return nil
 	}
-	h.target = getString(md.Get("target"))
+	h.target = metadata.StringValue(md.Get("target"))
 	if h.target == "" {
-		h.target = getString(md.Get("forward"))
+		h.target = metadata.StringValue(md.Get("forward"))
 	}
 	if h.target == "" {
 		return errors.New("tcp handler: missing target")
@@ -84,15 +83,4 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	}
 	h.options.Logger.Debug("TCP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
 	return err
-}
-
-
-
-func getString(v any) string {
-	switch t := v.(type) {
-	case string:
-		return strings.TrimSpace(t)
-	default:
-		return ""
-	}
 }

@@ -13,6 +13,7 @@ import (
 
 	socks5util "forward/base/utils/socks5"
 	"forward/internal/connector"
+	"forward/internal/connector/shared"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -140,7 +141,7 @@ func (c *Connector) connectUDP(ctx context.Context, conn net.Conn, target string
 func (c *Connector) handshake(ctx context.Context, conn net.Conn) error {
 	defer conn.SetDeadline(time.Time{})
 
-	deadline := deadlineFromContext(ctx, c.timeout)
+	deadline := shared.DeadlineFromContext(ctx, c.timeout)
 	if !deadline.IsZero() {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -207,7 +208,7 @@ func (c *Connector) authUserPass(conn net.Conn) error {
 func (c *Connector) sendRequest(ctx context.Context, conn net.Conn, cmd byte, host string, port int) error {
 	defer conn.SetDeadline(time.Time{})
 
-	deadline := deadlineFromContext(ctx, c.timeout)
+	deadline := shared.DeadlineFromContext(ctx, c.timeout)
 	if !deadline.IsZero() {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -235,18 +236,6 @@ func (c *Connector) sendRequest(ctx context.Context, conn net.Conn, cmd byte, ho
 	return nil
 }
 
-func deadlineFromContext(ctx context.Context, fallback time.Duration) time.Time {
-	if ctx == nil {
-		return time.Time{}
-	}
-	if dl, ok := ctx.Deadline(); ok {
-		return dl
-	}
-	if fallback > 0 {
-		return time.Now().Add(fallback)
-	}
-	return time.Time{}
-}
 
 func splitHostPort(addr string) (string, int, error) {
 	host, portStr, err := net.SplitHostPort(addr)
@@ -395,7 +384,7 @@ func proxyRemoteIP(control net.Conn) net.IP {
 func (c *Connector) udpAssociate(ctx context.Context, control net.Conn, local *net.UDPAddr) (*net.UDPAddr, error) {
 	defer control.SetDeadline(time.Time{})
 
-	deadline := deadlineFromContext(ctx, c.timeout)
+	deadline := shared.DeadlineFromContext(ctx, c.timeout)
 	if !deadline.IsZero() {
 		_ = control.SetDeadline(deadline)
 	}

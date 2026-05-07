@@ -2,10 +2,13 @@ package endpoint
 
 import (
 	"fmt"
+	"html"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"forward/base/utils/encoding"
 )
 
 // Endpoint describes a network endpoint expressed as a URL-like string.
@@ -38,11 +41,9 @@ func Parse(raw string) (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("empty endpoint")
 	}
 
-	// 预处理：转义 userinfo 部分中的 / 字符（base64 密码可能包含 /）
-	// 格式: scheme://userinfo@host:port/path
-	if strings.Contains(raw, "ss://") {
-		raw = escapeUserinfoSlash(raw)
-	}
+	raw = html.UnescapeString(raw)
+	raw = preprocessBase64Authority(raw)
+	raw = escapeUserinfoSlash(raw)
 
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -168,6 +169,16 @@ func (e Endpoint) UserPass() (user, pass string, ok bool) {
 	return user, pass, true
 }
 
+func UserSecret(user *url.Userinfo) string {
+	if user == nil {
+		return ""
+	}
+	if pass, ok := user.Password(); ok && strings.TrimSpace(pass) != "" {
+		return strings.TrimSpace(pass)
+	}
+	return strings.TrimSpace(user.Username())
+}
+
 // escapeUserinfoSlash 转义 URL userinfo 部分中的 / 字符
 // 这对于 base64 编码的密码非常重要，因为 base64 可能包含 / 字符
 // 格式: scheme://userinfo@host:port/path
@@ -193,4 +204,64 @@ func escapeUserinfoSlash(raw string) string {
 	escapedUserinfo := strings.ReplaceAll(userinfo, "/", "%2F")
 
 	return raw[:schemeEnd+3] + escapedUserinfo + rest
+}
+
+func preprocessBase64Authority(raw string) string {
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd == -1 {
+		return raw
+	}
+	scheme := raw[:schemeEnd+3]
+	afterScheme := raw[schemeEnd+3:]
+
+	fragmentIndex := strings.LastIndex(afterScheme, "#")
+	fragment := ""
+	if fragmentIndex != -1 {
+		fragment = afterScheme[fragmentIndex:]
+		afterScheme = afterScheme[:fragmentIndex]
+	}
+
+	queryIndex := strings.Index(afterScheme, "?")
+	query := ""
+	if queryIndex != -1 {
+		query = afterScheme[queryIndex:]
+		afterScheme = afterScheme[:queryIndex]
+	}
+
+	if strings.Contains(afterScheme, "@") {
+		return raw
+	}
+
+	dec, ok := encoding.DecodeBase64Flexible(afterScheme)
+	if !ok {
+		return raw
+	}
+	decoded := strings.TrimSpace(string(dec))
+	if !isEndpointAuthority(decoded) {
+		return raw
+	}
+	if strings.Contains(strings.ToLower(decoded), "://") {
+		return decoded + query + fragment
+	}
+	return scheme + decoded + query + fragment
+}
+
+func isEndpointAuthority(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(s), "://") {
+		return canParseEndpointHost(s)
+	}
+	return canParseEndpointHost(escapeUserinfoSlash("x://" + s))
+}
+
+func canParseEndpointHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	_, _, err = net.SplitHostPort(u.Host)
+	return err == nil
 }

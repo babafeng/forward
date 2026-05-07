@@ -84,7 +84,7 @@ func (h *Handler) Init(md metadata.Metadata) error {
 		return nil
 	}
 	if v := md.Get("sniffing"); v != nil {
-		h.sniffing = parseBool(v)
+		h.sniffing = metadata.BoolValue(v)
 	}
 	if v := md.Get("dest_override"); v != nil {
 		if list := parseStringList(v); len(list) > 0 {
@@ -189,18 +189,6 @@ func handleMetadata(opts []corehandler.HandleOption) metadata.Metadata {
 		opt(&hopts)
 	}
 	return hopts.Metadata
-}
-
-func parseBool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		t = strings.TrimSpace(strings.ToLower(t))
-		return t == "1" || t == "true" || t == "yes" || t == "on"
-	default:
-		return false
-	}
 }
 
 func parseStringList(v any) []string {

@@ -197,6 +197,44 @@ func TestParseVmessURI(t *testing.T) {
 	}
 }
 
+func TestParseVmessEndpointURIList(t *testing.T) {
+	uriList := `
+vmess://auto:ce59fbec-05d1-47fc-ac1f-72ec219a7530@178.157.61.31:12529?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0
+vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMTc4LjE1Ny42MS4zMToxMjUyOQ?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0
+`
+
+	proxies, err := Parse([]byte(uriList))
+	if err != nil {
+		t.Fatalf("解析 vmess endpoint URI 列表失败: %v", err)
+	}
+	if len(proxies) != 2 {
+		t.Fatalf("期望 2 个节点，得到 %d 个", len(proxies))
+	}
+	for i, proxy := range proxies {
+		if proxy.Type != "vmess" {
+			t.Fatalf("节点 %d 类型 = %q，期望 vmess", i, proxy.Type)
+		}
+		if proxy.Name != "JMS-846412@c60s4.portablesubmarines.com:12529" {
+			t.Errorf("节点 %d 名称 = %q", i, proxy.Name)
+		}
+		if proxy.Server != "178.157.61.31" {
+			t.Errorf("节点 %d 服务器 = %q", i, proxy.Server)
+		}
+		if proxy.Port != 12529 {
+			t.Errorf("节点 %d 端口 = %d", i, proxy.Port)
+		}
+		if proxy.UUID != "ce59fbec-05d1-47fc-ac1f-72ec219a7530" {
+			t.Errorf("节点 %d UUID = %q", i, proxy.UUID)
+		}
+		if proxy.Cipher != "auto" {
+			t.Errorf("节点 %d 加密 = %q", i, proxy.Cipher)
+		}
+		if proxy.AlterID != 0 {
+			t.Errorf("节点 %d alterId = %d", i, proxy.AlterID)
+		}
+	}
+}
+
 func TestParsePlainURIList(t *testing.T) {
 	uriList := `
 trojan://password123@trojan.test.com:443?sni=trojan.test.com#Test%20Trojan
@@ -248,6 +286,140 @@ hy2://hypass@hy2.test.com:443?sni=hy2.test.com#Test%20HY2
 	}
 	if proxies[2].Password != "hypass" {
 		t.Errorf("期望密码 'hypass'，得到 '%s'", proxies[2].Password)
+	}
+}
+
+func TestParseVlessURIShadowrocketReality(t *testing.T) {
+	raw := "vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@108.187.15.24:443?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if p.Name != "JP-LL" {
+		t.Fatalf("name = %q", p.Name)
+	}
+	if p.UUID != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("uuid = %q", p.UUID)
+	}
+	if p.SNI != "swscan.apple.com" || p.ServerName != "swscan.apple.com" {
+		t.Fatalf("sni/servername = %q/%q", p.SNI, p.ServerName)
+	}
+	if p.Flow != "xtls-rprx-vision" {
+		t.Fatalf("flow = %q", p.Flow)
+	}
+	if p.RealityOpts == nil {
+		t.Fatal("reality opts nil")
+	}
+	if p.RealityOpts.PublicKey != "A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8" || p.RealityOpts.ShortID != "d003cb13" {
+		t.Fatalf("reality opts = %#v", p.RealityOpts)
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Scheme != "vless+reality" {
+		t.Fatalf("scheme = %q", ep.Scheme)
+	}
+	if ep.User.Username() != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("endpoint uuid = %q", ep.User.Username())
+	}
+	if ep.Query.Get("sni") != "swscan.apple.com" || ep.Query.Get("flow") != "xtls-rprx-vision" {
+		t.Fatalf("endpoint query = %v", ep.Query)
+	}
+}
+
+func TestParseVlessURIShadowrocketBase64AuthorityReality(t *testing.T) {
+	raw := "vless://bm9uZTowZTQ2N2Y1Zi0wYTVjLTQ0ZjgtODJhNS0wN2Y4MDNkMTYxZThAMTA4LjE4Ny4xNS4yNDo0NDM?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if p.Server != "108.187.15.24" || p.Port != 443 {
+		t.Fatalf("server = %s:%d", p.Server, p.Port)
+	}
+	if p.UUID != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("uuid = %q", p.UUID)
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.String() == "" || ep.Port != 443 || ep.User.Username() != p.UUID {
+		t.Fatalf("endpoint = %#v", ep)
+	}
+}
+
+func TestParseVlessURIHTMLEscapedReality(t *testing.T) {
+	raw := "vless://0e467f5f-0a5c-44f8-82a5-07f803d161e8@108.187.15.24:443?encryption=none&amp;flow=xtls-rprx-vision&amp;fp=chrome&amp;pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&amp;security=reality&amp;sid=d003cb13&amp;sni=swscan.apple.com&amp;type=tcp&amp;mux=true&amp;mux_max_streams=64&amp;mux_idle=120s#VLESS-Reality"
+
+	proxy, err := parseVlessURI(raw)
+	if err != nil {
+		t.Fatalf("parseVlessURI failed: %v", err)
+	}
+	if proxy.UUID != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
+		t.Fatalf("uuid = %q", proxy.UUID)
+	}
+	if proxy.Flow != "xtls-rprx-vision" || proxy.ClientFingerprint != "chrome" {
+		t.Fatalf("flow/fp = %q/%q", proxy.Flow, proxy.ClientFingerprint)
+	}
+	if proxy.RealityOpts == nil || proxy.RealityOpts.ShortID != "d003cb13" {
+		t.Fatalf("reality opts = %#v", proxy.RealityOpts)
+	}
+	if !proxy.Mux || proxy.MuxMaxStreams != 64 || proxy.MuxIdle != "120s" {
+		t.Fatalf("mux = %v/%d/%q", proxy.Mux, proxy.MuxMaxStreams, proxy.MuxIdle)
+	}
+
+	ep, err := ProxyToEndpoint(proxy)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Query.Get("mux") != "true" || ep.Query.Get("mux_max_streams") != "64" || ep.Query.Get("mux_idle") != "120s" {
+		t.Fatalf("endpoint mux query = %v", ep.Query)
+	}
+}
+
+func TestParseVlessURIShadowrocketVisionTLS(t *testing.T) {
+	raw := "vless://none:b1fb1a1c-1f12-470b-9dfb-087f3323f1fb@01-rl-hkg.c-one.us:11889?remarks=%E6%97%A5%E6%9C%AC-TYO-01-VL&tls=1&peer=vl-tyo-11.auua.us&xtls=2"
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if !p.TLS || p.RealityOpts != nil {
+		t.Fatalf("tls/reality = %v/%#v", p.TLS, p.RealityOpts)
+	}
+	if p.Flow != "xtls-rprx-vision" {
+		t.Fatalf("flow = %q", p.Flow)
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Scheme != "vless+tls" {
+		t.Fatalf("scheme = %q", ep.Scheme)
+	}
+	if ep.Query.Get("security") != "tls" || ep.Query.Get("sni") != "vl-tyo-11.auua.us" {
+		t.Fatalf("endpoint query = %v", ep.Query)
 	}
 }
 

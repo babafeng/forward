@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
 	"forward/base/endpoint"
 	"forward/base/logging"
 	"forward/internal/builder"
-	"forward/internal/config"
 	"forward/internal/chain"
+	"forward/internal/config"
 )
 
 const (
@@ -152,41 +153,21 @@ func testNodeLatency(ctx context.Context, rt chain.Route, connectURL string) (ti
 	return latency, nil
 }
 
-// extractHostFromURL 从 URL 中提取 host:port。
+// extractHostFromURL 从 URL 中提取 host:port，供 Dial 使用。
 func extractHostFromURL(rawURL string) string {
-	// 简单解析
-	// http://www.gstatic.com/generate_204 -> www.gstatic.com:80
-	// https://example.com/path -> example.com:443
-	if len(rawURL) > 8 && rawURL[:8] == "https://" {
-		rest := rawURL[8:]
-		host := rest
-		if idx := indexByte(host, '/'); idx >= 0 {
-			host = host[:idx]
-		}
-		if _, _, err := net.SplitHostPort(host); err != nil {
-			host = host + ":443"
-		}
-		return host
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
 	}
-	if len(rawURL) > 7 && rawURL[:7] == "http://" {
-		rest := rawURL[7:]
-		host := rest
-		if idx := indexByte(host, '/'); idx >= 0 {
-			host = host[:idx]
-		}
-		if _, _, err := net.SplitHostPort(host); err != nil {
-			host = host + ":80"
-		}
-		return host
-	}
-	return rawURL
-}
-
-func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		switch u.Scheme {
+		case "https":
+			port = "443"
+		default:
+			port = "80"
 		}
 	}
-	return -1
+	return net.JoinHostPort(host, port)
 }

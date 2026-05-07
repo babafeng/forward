@@ -2,15 +2,11 @@
 package vless
 
 import (
-	"bytes"
 	"context"
-	gotls "crypto/tls"
 	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/xtls/xray-core/common/buf"
 	xmux "github.com/xtls/xray-core/common/mux"
@@ -19,10 +15,8 @@ import (
 	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vless/encoding"
 	"github.com/xtls/xray-core/transport"
-	"github.com/xtls/xray-core/transport/internet/reality"
-	"github.com/xtls/xray-core/transport/internet/stat"
-	"github.com/xtls/xray-core/transport/internet/tls"
 
+	pvless "forward/base/protocol/vless"
 	"forward/internal/chain"
 	"forward/internal/handler"
 	"forward/internal/metadata"
@@ -105,7 +99,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 
 	// 处理 Vision 流
 	if requestAddons.Flow == xvless.XRV {
-		input, rawInput, err := visionInputBuffers(conn)
+		input, rawInput, err := pvless.VisionInputBuffers(conn)
 		if err != nil {
 			h.options.Logger.Error("VLESS Vision setup failed: %v", err)
 			return err
@@ -255,57 +249,4 @@ func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.
 	return first
 }
 
-// visionInputBuffers 获取 Vision 流所需的输入缓冲区
-func visionInputBuffers(conn net.Conn) (*bytes.Reader, *bytes.Buffer, error) {
-	if statConn, ok := conn.(*stat.CounterConnection); ok {
-		conn = statConn.Connection
-	}
 
-	switch c := conn.(type) {
-	case *tls.Conn:
-		if c.ConnectionState().Version != gotls.VersionTLS13 {
-			return nil, nil, fmt.Errorf("xtls-rprx-vision requires TLS 1.3")
-		}
-		return xtlsBuffers(c.Conn)
-	case *reality.Conn:
-		return xtlsBuffers(c.Conn)
-	default:
-		return nil, nil, fmt.Errorf("xtls-rprx-vision requires TLS or REALITY")
-	}
-}
-
-// xtlsBuffers 通过反射获取 xtls 内部缓冲区
-func xtlsBuffers(conn any) (*bytes.Reader, *bytes.Buffer, error) {
-	val := reflect.ValueOf(conn)
-	if val.Kind() != reflect.Ptr || val.IsNil() {
-		return nil, nil, fmt.Errorf("invalid xtls connection")
-	}
-
-	t := val.Type().Elem()
-	inputField, ok := t.FieldByName("input")
-	if !ok {
-		return nil, nil, fmt.Errorf("missing xtls input buffer")
-	}
-
-	rawInputField, ok := t.FieldByName("rawInput")
-	if !ok {
-		return nil, nil, fmt.Errorf("missing xtls rawInput buffer")
-	}
-
-	if inputField.Type != reflect.TypeOf(bytes.Reader{}) {
-		return nil, nil, fmt.Errorf("xtls input field type mismatch: expected bytes.Reader, got %v", inputField.Type)
-	}
-	if rawInputField.Type != reflect.TypeOf(bytes.Buffer{}) {
-		return nil, nil, fmt.Errorf("xtls rawInput field type mismatch: expected bytes.Buffer, got %v", rawInputField.Type)
-	}
-
-	p := unsafe.Pointer(val.Pointer())
-	input := (*bytes.Reader)(unsafe.Pointer(uintptr(p) + inputField.Offset))
-	rawInput := (*bytes.Buffer)(unsafe.Pointer(uintptr(p) + rawInputField.Offset))
-
-	if input == nil || rawInput == nil {
-		return nil, nil, fmt.Errorf("xtls buffers are nil")
-	}
-
-	return input, rawInput, nil
-}

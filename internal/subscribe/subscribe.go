@@ -3,7 +3,6 @@
 package subscribe
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"forward/base/endpoint"
+	baseenc "forward/base/utils/encoding"
 
 	"gopkg.in/yaml.v3"
 )
@@ -45,10 +45,13 @@ type ClashProxy struct {
 	PluginOpts map[string]any `yaml:"plugin-opts,omitempty"` // Shadowsocks 插件参数
 
 	// VLESS 特有字段
-	Flow              string         `yaml:"flow,omitempty"`               // VLESS flow (e.g. xtls-rprx-vision)
-	ServerName        string         `yaml:"servername,omitempty"`          // TLS/Reality SNI
-	ClientFingerprint string         `yaml:"client-fingerprint,omitempty"` // uTLS 指纹
+	Flow              string          `yaml:"flow,omitempty"`               // VLESS flow (e.g. xtls-rprx-vision)
+	ServerName        string          `yaml:"servername,omitempty"`         // TLS/Reality SNI
+	ClientFingerprint string          `yaml:"client-fingerprint,omitempty"` // uTLS 指纹
 	RealityOpts       *RealityOptions `yaml:"reality-opts,omitempty"`       // Reality 选项
+	Mux               bool            `yaml:"mux,omitempty"`                // 是否启用 Xray Mux
+	MuxMaxStreams     int             `yaml:"mux-max-streams,omitempty"`    // Mux 最大并发流
+	MuxIdle           string          `yaml:"mux-idle,omitempty"`           // Mux 空闲超时
 
 	// WebSocket 选项
 	WSOpts *WSOptions `yaml:"ws-opts,omitempty"`
@@ -66,8 +69,52 @@ type WSOptions struct {
 	Headers map[string]string `yaml:"headers"`
 }
 
-// Download 从指定 URL 下载订阅内容。
+// IsLocalPath 判断给定的字符串是否为本地文件路径。
+// 支持 file:// 协议、绝对路径（/...）以及相对路径（不以 http:// 或 https:// 开头）。
+func IsLocalPath(rawURL string) bool {
+	lower := strings.ToLower(rawURL)
+	if strings.HasPrefix(lower, "file://") {
+		return true
+	}
+	// 不是 http/https 链接且不含 ://（排除其他协议），视为本地路径
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		if !strings.Contains(rawURL, "://") {
+			return true
+		}
+	}
+	return false
+}
+
+// Download 从指定 URL 或本地文件路径加载订阅内容。
+// 若 rawURL 以 file:// 开头，或不含 :// 协议（即为本地路径），则直接读取本地文件；
+// 否则通过 HTTP GET 下载。
 func Download(rawURL string) ([]byte, error) {
+	if IsLocalPath(rawURL) {
+		return loadLocalFile(rawURL)
+	}
+	return downloadHTTP(rawURL)
+}
+
+// loadLocalFile 从本地文件系统读取订阅文件。
+func loadLocalFile(rawPath string) ([]byte, error) {
+	// 去掉 file:// 前缀，并展开 ~ 为用户主目录
+	path := strings.TrimPrefix(rawPath, "file://")
+	if strings.HasPrefix(path, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("获取用户主目录失败: %w", err)
+		}
+		path = filepath.Join(homeDir, path[2:])
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取本地订阅文件失败: %w", err)
+	}
+	return data, nil
+}
+
+// downloadHTTP 通过 HTTP GET 下载订阅内容。
+func downloadHTTP(rawURL string) ([]byte, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
@@ -118,7 +165,7 @@ func Parse(data []byte) ([]ClashProxy, error) {
 		return normalizeProxyNames(proxies), nil
 	}
 
-	return nil, fmt.Errorf("订阅内容格式无法识别（不是 Clash YAML 也不是 base64 编码的代理 URI 列表）")
+	return nil, fmt.Errorf("订阅内容格式无法识别（不是 Clash YAML 也不是代理 URI 列表）")
 }
 
 // parseClashYAML 解析 Clash YAML 格式。
@@ -142,22 +189,8 @@ func parseClashYAML(data []byte) ([]ClashProxy, error) {
 func tryBase64Decode(s string) ([]byte, error) {
 	// 移除可能的空白字符
 	s = strings.Join(strings.Fields(s), "")
-
-	// 尝试标准 base64
-	if decoded, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return decoded, nil
-	}
-	// 尝试标准 base64 无 padding
-	if decoded, err := base64.RawStdEncoding.DecodeString(s); err == nil {
-		return decoded, nil
-	}
-	// 尝试 URL-safe base64
-	if decoded, err := base64.URLEncoding.DecodeString(s); err == nil {
-		return decoded, nil
-	}
-	// 尝试 URL-safe base64 无 padding
-	if decoded, err := base64.RawURLEncoding.DecodeString(s); err == nil {
-		return decoded, nil
+	if v, ok := baseenc.DecodeBase64Flexible(s); ok {
+		return v, nil
 	}
 	return nil, fmt.Errorf("不是有效的 base64 编码")
 }
@@ -236,18 +269,36 @@ type vmessJSON struct {
 	Scy  string      `json:"scy"`  // 加密方式
 }
 
-// parseVmessURI 解析 vmess:// URI（base64 编码的 JSON）。
+// parseVmessURI 解析 vmess:// URI。
 func parseVmessURI(uri string) (ClashProxy, error) {
-	// vmess://base64EncodedJSON
-	encoded := strings.TrimPrefix(uri, "vmess://")
-	encoded = strings.TrimPrefix(encoded, "Vmess://")
-	encoded = strings.TrimPrefix(encoded, "VMESS://")
+	// 支持两类常见格式：
+	//   vmess://base64EncodedJSON
+	//   vmess://security:uuid@server:port?alterId=0
+	payload, suffix := splitVmessPayload(trimVmessScheme(uri))
 
-	decoded, err := tryBase64Decode(encoded)
-	if err != nil {
-		return ClashProxy{}, fmt.Errorf("vmess URI base64 解码失败: %w", err)
+	if strings.Contains(payload, "@") {
+		return parseVmessEndpointURI(uri)
 	}
 
+	decoded, err := tryBase64Decode(payload)
+	if err == nil {
+		if proxy, err := parseVmessJSON(decoded); err == nil {
+			return proxy, nil
+		}
+
+		decodedText := strings.TrimSpace(string(decoded))
+		if decodedText != "" && strings.Contains(decodedText, "@") {
+			endpointURI := ensureVmessScheme(decodedText) + suffix
+			if proxy, err := parseVmessEndpointURI(endpointURI); err == nil {
+				return proxy, nil
+			}
+		}
+	}
+
+	return parseVmessEndpointURI(uri)
+}
+
+func parseVmessJSON(decoded []byte) (ClashProxy, error) {
 	var v vmessJSON
 	if err := json.Unmarshal(decoded, &v); err != nil {
 		return ClashProxy{}, fmt.Errorf("vmess URI JSON 解析失败: %w", err)
@@ -290,9 +341,111 @@ func parseVmessURI(uri string) (ClashProxy, error) {
 	return proxy, nil
 }
 
+func parseVmessEndpointURI(uri string) (ClashProxy, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return ClashProxy{}, fmt.Errorf("vmess URI 解析失败: %w", err)
+	}
+	if u.Hostname() == "" || u.Port() == "" || u.User == nil {
+		return ClashProxy{}, fmt.Errorf("vmess URI endpoint 格式错误")
+	}
+
+	uuid, _ := u.User.Password()
+	if uuid == "" {
+		return ClashProxy{}, fmt.Errorf("vmess URI 缺少 UUID")
+	}
+
+	port, _ := strconv.Atoi(u.Port())
+	query := u.Query()
+	cipher := u.User.Username()
+	if cipher == "" {
+		cipher = query.Get("scy")
+	}
+	if cipher == "" {
+		cipher = query.Get("cipher")
+	}
+	if cipher == "" {
+		cipher = "auto"
+	}
+
+	name := query.Get("remarks")
+	if name == "" {
+		name = query.Get("remark")
+	}
+	if name == "" {
+		name = query.Get("name")
+	}
+	if name == "" {
+		name = query.Get("ps")
+	}
+	if name == "" && u.Fragment != "" {
+		name, _ = url.PathUnescape(u.Fragment)
+	}
+
+	network := query.Get("type")
+	if network == "" {
+		network = query.Get("net")
+	}
+
+	proxy := ClashProxy{
+		Name:    name,
+		Type:    "vmess",
+		Server:  u.Hostname(),
+		Port:    port,
+		UUID:    uuid,
+		AlterID: toInt(firstNonEmpty(query.Get("alterId"), query.Get("aid"))),
+		Cipher:  cipher,
+		TLS:     strings.EqualFold(u.Scheme, "vmess+tls") || strings.EqualFold(query.Get("security"), "tls") || strings.EqualFold(query.Get("tls"), "tls") || strings.EqualFold(query.Get("tls"), "true"),
+		SNI:     firstNonEmpty(query.Get("sni"), query.Get("servername")),
+		Network: network,
+	}
+
+	if strings.EqualFold(proxy.Network, "ws") || strings.EqualFold(proxy.Network, "websocket") {
+		proxy.Network = "ws"
+		proxy.WSOpts = &WSOptions{
+			Path: query.Get("path"),
+		}
+		if host := query.Get("host"); host != "" {
+			proxy.WSOpts.Headers = map[string]string{"Host": host}
+		}
+	}
+
+	if proxy.Name == "" {
+		proxy.Name = fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
+	}
+
+	return proxy, nil
+}
+
+func trimVmessScheme(uri string) string {
+	if strings.HasPrefix(strings.ToLower(uri), "vmess://") {
+		return uri[len("vmess://"):]
+	}
+	return uri
+}
+
+func ensureVmessScheme(s string) string {
+	if strings.Contains(strings.ToLower(s), "://") {
+		return s
+	}
+	return "vmess://" + s
+}
+
+func splitVmessPayload(payload string) (string, string) {
+	idx := len(payload)
+	if q := strings.Index(payload, "?"); q >= 0 && q < idx {
+		idx = q
+	}
+	if f := strings.Index(payload, "#"); f >= 0 && f < idx {
+		idx = f
+	}
+	return payload[:idx], payload[idx:]
+}
+
 // parseVlessURI 解析 vless:// URI。
 // 格式: vless://uuid@server:port?type=ws&security=tls&sni=xxx&path=/xxx#name
 func parseVlessURI(uri string) (ClashProxy, error) {
+	uri = strings.TrimSpace(uri)
 	// 提取 fragment 作为节点名称
 	name := ""
 	if idx := strings.LastIndex(uri, "#"); idx >= 0 {
@@ -300,24 +453,49 @@ func parseVlessURI(uri string) (ClashProxy, error) {
 		uri = uri[:idx]
 	}
 
-	u, err := url.Parse(uri)
+	ep, err := endpoint.Parse(uri)
 	if err != nil {
 		return ClashProxy{}, fmt.Errorf("vless URI 解析失败: %w", err)
 	}
 
-	port, _ := strconv.Atoi(u.Port())
-	uuid := u.User.Username()
-	query := u.Query()
+	uuid := endpoint.UserSecret(ep.User)
+	query := ep.Query
+	security := strings.TrimSpace(query.Get("security"))
+	sni := firstNonEmpty(query.Get("sni"), query.Get("peer"))
+	flow := strings.TrimSpace(query.Get("flow"))
+	if flow == "" && query.Get("xtls") != "" {
+		flow = "xtls-rprx-vision"
+	}
+	fp := firstNonEmpty(query.Get("fp"), query.Get("client-fingerprint"))
+	mux, _ := strconv.ParseBool(strings.TrimSpace(query.Get("mux")))
+	muxMaxStreams, _ := strconv.Atoi(strings.TrimSpace(firstNonEmpty(query.Get("mux_max_streams"), query.Get("mux_concurrency"))))
+	muxIdle := firstNonEmpty(query.Get("mux_idle"), query.Get("mux_idle_timeout"))
 
 	proxy := ClashProxy{
-		Name:    name,
-		Type:    "vless",
-		Server:  u.Hostname(),
-		Port:    port,
-		UUID:    uuid,
-		TLS:     strings.EqualFold(query.Get("security"), "tls") || strings.EqualFold(query.Get("security"), "reality"),
-		SNI:     query.Get("sni"),
-		Network: query.Get("type"),
+		Name:              firstNonEmpty(name, query.Get("remarks")),
+		Type:              "vless",
+		Server:            ep.Host,
+		Port:              ep.Port,
+		UUID:              uuid,
+		TLS:               strings.EqualFold(security, "tls") || strings.EqualFold(security, "reality") || query.Get("tls") == "1" || strings.EqualFold(query.Get("tls"), "true"),
+		SNI:               sni,
+		ServerName:        sni,
+		Network:           firstNonEmpty(query.Get("type"), query.Get("net")),
+		Flow:              flow,
+		ClientFingerprint: fp,
+		Mux:               mux,
+		MuxMaxStreams:     muxMaxStreams,
+		MuxIdle:           muxIdle,
+	}
+	if proxy.Network == "" {
+		proxy.Network = "tcp"
+	}
+	if query.Get("pbk") != "" || query.Get("sid") != "" || strings.EqualFold(security, "reality") {
+		proxy.TLS = true
+		proxy.RealityOpts = &RealityOptions{
+			PublicKey: query.Get("pbk"),
+			ShortID:   query.Get("sid"),
+		}
 	}
 
 	if strings.EqualFold(proxy.Network, "ws") {
@@ -337,7 +515,7 @@ func parseVlessURI(uri string) (ClashProxy, error) {
 }
 
 // parseSSURI 解析 ss:// URI。
-// 格式1: ss://base64(method:password)@server:port#name
+// 格式1: ss://base64(method:password)@server:port?plugin=...#name
 // 格式2: ss://base64(method:password@server:port)#name
 func parseSSURI(uri string) (ClashProxy, error) {
 	name := ""
@@ -348,28 +526,29 @@ func parseSSURI(uri string) (ClashProxy, error) {
 
 	content := strings.TrimPrefix(uri, "ss://")
 
+	// 分离查询参数
+	queryStr := ""
+	if qIdx := strings.Index(content, "?"); qIdx >= 0 {
+		queryStr = content[qIdx+1:]
+		content = content[:qIdx]
+	}
+
 	var method, password, server string
 	var port int
 
 	if atIdx := strings.LastIndex(content, "@"); atIdx >= 0 {
-		// 格式1: base64(method:password)@server:port
+		// 格式1
 		userInfoEncoded := content[:atIdx]
 		hostPort := content[atIdx+1:]
-
-		// 尝试 base64 解码 userinfo
 		decoded, err := tryBase64Decode(userInfoEncoded)
 		if err != nil {
-			// 可能不是 base64，尝试直接解析
 			decoded = []byte(userInfoEncoded)
 		}
-
 		parts := strings.SplitN(string(decoded), ":", 2)
 		if len(parts) != 2 {
 			return ClashProxy{}, fmt.Errorf("ss URI userinfo 格式错误")
 		}
-		method = parts[0]
-		password = parts[1]
-
+		method, password = parts[0], parts[1]
 		host, portStr, err := splitHostPort(hostPort)
 		if err != nil {
 			return ClashProxy{}, fmt.Errorf("ss URI host:port 解析失败: %w", err)
@@ -377,25 +556,21 @@ func parseSSURI(uri string) (ClashProxy, error) {
 		server = host
 		port, _ = strconv.Atoi(portStr)
 	} else {
-		// 格式2: 整体 base64
+		// 格式2
 		decoded, err := tryBase64Decode(content)
 		if err != nil {
 			return ClashProxy{}, fmt.Errorf("ss URI base64 解码失败: %w", err)
 		}
 		decodedStr := string(decoded)
-
 		atIdx = strings.LastIndex(decodedStr, "@")
 		if atIdx < 0 {
 			return ClashProxy{}, fmt.Errorf("ss URI 格式错误: 缺少 @")
 		}
-
 		parts := strings.SplitN(decodedStr[:atIdx], ":", 2)
 		if len(parts) != 2 {
 			return ClashProxy{}, fmt.Errorf("ss URI userinfo 格式错误")
 		}
-		method = parts[0]
-		password = parts[1]
-
+		method, password = parts[0], parts[1]
 		host, portStr, err := splitHostPort(decodedStr[atIdx+1:])
 		if err != nil {
 			return ClashProxy{}, fmt.Errorf("ss URI host:port 解析失败: %w", err)
@@ -413,11 +588,136 @@ func parseSSURI(uri string) (ClashProxy, error) {
 		Password: password,
 	}
 
+	if queryStr != "" {
+		kv := parseLooseQuery(queryStr)
+		plugin := kv["plugin"]
+		mode := kv["plugin_mode"]
+		if mode == "" {
+			mode = kv["obfs"]
+		}
+		host := kv["plugin_host"]
+		if host == "" {
+			host = kv["obfs-host"]
+		}
+
+		// 解析 plugin 内部的值（形如 obfs-local;obfs=http）
+		basePlugin, pOpts := parseSSPlugin(plugin)
+		if basePlugin != "" {
+			plugin = basePlugin
+		}
+		if mode == "" {
+			if m, ok := pOpts["mode"].(string); ok {
+				mode = m
+			}
+		}
+		if host == "" {
+			if h, ok := pOpts["host"].(string); ok {
+				host = h
+			}
+		}
+		uriPath := kv["obfs-uri"]
+		if uriPath == "" {
+			if u, ok := pOpts["uri"].(string); ok {
+				uriPath = u
+			}
+		}
+
+		// obfs-local => obfs
+		if strings.ToLower(plugin) == "obfs-local" || strings.ToLower(plugin) == "simple-obfs" {
+			plugin = "obfs"
+		}
+
+		if plugin != "" {
+			proxy.Plugin = plugin
+			proxy.PluginOpts = make(map[string]any)
+			if mode != "" {
+				proxy.PluginOpts["mode"] = mode
+			}
+			if host != "" {
+				proxy.PluginOpts["host"] = host
+			}
+			if uriPath != "" {
+				proxy.PluginOpts["uri"] = uriPath
+			}
+		}
+	}
+
 	if proxy.Name == "" {
 		proxy.Name = fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
 	}
 
 	return proxy, nil
+}
+
+// parseLooseQuery 解析查询字符串，支持 & 和 ; 分隔，并能处理未被预先解码的 %3D。
+func parseLooseQuery(rawQuery string) map[string]string {
+	out := make(map[string]string)
+	fields := strings.FieldsFunc(rawQuery, func(r rune) bool {
+		return r == '&' || r == ';'
+	})
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		key, value, found := strings.Cut(field, "=")
+		if !found {
+			if decodedField, err := url.QueryUnescape(field); err == nil {
+				key, value, found = strings.Cut(decodedField, "=")
+			}
+		}
+		if !found {
+			key = field
+			value = ""
+		}
+		key = strings.TrimSpace(key)
+		if dk, err := url.QueryUnescape(key); err == nil {
+			key = dk
+		}
+		value = strings.TrimSpace(value)
+		if dv, err := url.QueryUnescape(value); err == nil {
+			value = dv
+		}
+		out[strings.ToLower(key)] = value
+	}
+	return out
+}
+
+// parseSSPlugin 解析 ss URI 中 plugin 查询参数的值。
+// 支持分号分隔格式: "obfs-local;obfs=http;obfs-host=example.com;obfs-uri=/"
+// 返回插件名称和选项 map（key 统一为 Clash plugin-opts 格式）。
+func parseSSPlugin(pluginParam string) (pluginName string, opts map[string]any) {
+	opts = make(map[string]any)
+	parts := strings.Split(pluginParam, ";")
+	if len(parts) == 0 {
+		return "", opts
+	}
+	pluginName = strings.TrimSpace(parts[0])
+	for _, kv := range parts[1:] {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		eqIdx := strings.IndexByte(kv, '=')
+		if eqIdx < 0 {
+			opts[kv] = true
+			continue
+		}
+		k := kv[:eqIdx]
+		v, _ := url.QueryUnescape(kv[eqIdx+1:])
+		// 统一字段名为 Clash plugin-opts 格式
+		switch k {
+		case "obfs":
+			opts["mode"] = v
+		case "obfs-host":
+			opts["host"] = v
+		case "obfs-uri":
+			opts["uri"] = v
+		default:
+			opts[k] = v
+		}
+	}
+	return pluginName, opts
 }
 
 // parseTrojanURI 解析 trojan:// URI。
@@ -531,18 +831,41 @@ func toInt(v interface{}) int {
 	}
 }
 
-// SaveToFile 将订阅内容保存到 ~/.forward/{url-host}.yaml 文件中。
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// SaveToFile 将订阅内容保存到 ~/.forward/{basename}.yaml 文件中。
+// 若来源是远程 URL，basename 取主机名；若来源是本地文件路径，basename 取文件名（去除扩展名）。
 // 如果文件已存在，会自动添加后缀 -02、-03 等。
 // 返回保存的文件路径。
 func SaveToFile(data []byte, rawURL string) (string, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("解析 URL 失败: %w", err)
-	}
+	var baseName string
 
-	host := u.Hostname()
-	if host == "" {
-		return "", fmt.Errorf("无法从 URL 中提取主机名")
+	if IsLocalPath(rawURL) {
+		// 本地文件路径：使用文件名（去除扩展名）作为 baseName
+		localPath := strings.TrimPrefix(rawURL, "file://")
+		base := filepath.Base(localPath)
+		ext := filepath.Ext(base)
+		baseName = strings.TrimSuffix(base, ext)
+		if baseName == "" || baseName == "." {
+			baseName = "local-subscribe"
+		}
+	} else {
+		// 远程 URL：使用主机名
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return "", fmt.Errorf("解析 URL 失败: %w", err)
+		}
+		baseName = u.Hostname()
+		if baseName == "" {
+			return "", fmt.Errorf("无法从 URL 中提取主机名")
+		}
 	}
 
 	homeDir, err := os.UserHomeDir()
@@ -555,7 +878,6 @@ func SaveToFile(data []byte, rawURL string) (string, error) {
 		return "", fmt.Errorf("创建目录 %s 失败: %w", dir, err)
 	}
 
-	baseName := host
 	filePath := filepath.Join(dir, baseName+".yaml")
 
 	// 如果文件已存在，添加后缀
@@ -717,6 +1039,15 @@ func vlesToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 	if p.ClientFingerprint != "" {
 		q.Set("fp", p.ClientFingerprint)
 	}
+	if p.Mux {
+		q.Set("mux", "true")
+		if p.MuxMaxStreams > 0 {
+			q.Set("mux_max_streams", strconv.Itoa(p.MuxMaxStreams))
+		}
+		if p.MuxIdle != "" {
+			q.Set("mux_idle", p.MuxIdle)
+		}
+	}
 
 	// 确定 scheme
 	scheme := "vless"
@@ -732,6 +1063,7 @@ func vlesToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 		q.Set("security", "reality")
 	} else if p.TLS {
 		scheme = "vless+tls"
+		q.Set("security", "tls")
 	}
 
 	// WebSocket 传输

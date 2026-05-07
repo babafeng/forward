@@ -1,7 +1,6 @@
 package builder
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -9,12 +8,14 @@ import (
 	"time"
 
 	"forward/base/endpoint"
+	baseenc "forward/base/utils/encoding"
 	"forward/internal/chain"
 	"forward/internal/config"
 	"forward/internal/connector"
 	"forward/internal/dialer"
 	"forward/internal/metadata"
 	"forward/internal/registry"
+	schememap "forward/internal/scheme"
 
 	ctls "forward/internal/config/tls"
 )
@@ -51,6 +52,9 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			if strings.EqualFold(q.Get("obfs"), "websocket") || strings.EqualFold(q.Get("type"), "ws") || strings.EqualFold(q.Get("net"), "ws") {
 				dialerName = "ws"
 			}
+			if connectorName == "vless" && dialerName == "tls" && isVlessVisionFlow(q) {
+				dialerName = "reality"
+			}
 		}
 
 		dialerOpts := []dialer.Option{
@@ -60,13 +64,6 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 		if dialerName == "tls" || dialerName == "http3" || dialerName == "h3" || dialerName == "dtls" || dialerName == "h2" || dialerName == "quic" {
 			tlsOpts := ctls.ClientOptions{}
 			if dialerName == "http3" || dialerName == "h3" || dialerName == "quic" {
-				tlsOpts.NextProtos = []string{"h3"} // QUIC typically uses h3 ALPN or similar, but for raw quic maybe empty or custom?
-				// Wait, if it's raw QUIC, does it default to 'h3'?
-				// The quic listener implementation might set NextProtos.
-				// Let's check quic listener. But generally, for quic-go, ALPN is needed.
-				// Assuming 'h3' for now as it was aliased to http3 before, or maybe no ALPN?
-				// quic-go requires ALPN to match.
-				// Let's check internal/listener/quic/listener.go to see what ALPN it expects.
 				tlsOpts.NextProtos = []string{"h3"}
 			}
 			if dialerName == "h2" {
@@ -91,26 +88,18 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 		}
 		d := newDialer(dialerOpts...)
 
-		// Dialer 初始化：Reality / H2 / H3 / WS 需要 metadata
-		if dialerName == "reality" || dialerName == "h2" || dialerName == "h3" {
-			dmd := buildDialerMetadata(hop)
-			if err := d.Init(dmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
-		} else if dialerName == "hysteria2" {
-			dmd := buildHysteria2DialerMetadata(hop, cfg.Insecure)
-			if err := d.Init(dmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
-		} else if dialerName == "ws" {
-			dmd := buildWSDialerMetadata(hop)
-			if err := d.Init(dmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
-		} else {
-			if err := d.Init(nil); err != nil {
-				return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
-			}
+		// Dialer 初始化：部分协议需要传入 metadata
+		var dialerMD metadata.Metadata
+		switch dialerName {
+		case "reality", "h2", "h3":
+			dialerMD = buildDialerMetadata(hop)
+		case "hysteria2":
+			dialerMD = buildHysteria2DialerMetadata(hop, cfg.Insecure)
+		case "ws":
+			dialerMD = buildWSDialerMetadata(hop)
+		}
+		if err := d.Init(dialerMD); err != nil {
+			return nil, fmt.Errorf("hop %d: init dialer: %w", i+1, err)
 		}
 
 		newConnector := registry.ConnectorRegistry().Get(connectorName)
@@ -123,26 +112,18 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			connector.LoggerOption(cfg.Logger),
 		)
 
-		// 为 VLESS Connector 初始化 metadata
-		if connectorName == "vless" {
-			cmd := buildVlessConnectorMetadata(hop)
-			if err := c.Init(cmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
-			}
+		// Connector 初始化：部分协议需要传入 metadata
+		var connectorMD metadata.Metadata
+		switch connectorName {
+		case "vless":
+			connectorMD = buildVlessConnectorMetadata(hop)
+		case "vmess":
+			connectorMD = buildVmessConnectorMetadata(hop)
+		case "ss":
+			connectorMD = buildSSConnectorMetadata(hop)
 		}
-
-		// 为 VMess Connector 初始化 metadata
-		if connectorName == "vmess" {
-			cmd := buildVmessConnectorMetadata(hop)
-			if err := c.Init(cmd); err != nil {
-				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
-			}
-		}
-
-		// 为 Shadowsocks Connector 初始化 metadata
-		if connectorName == "ss" {
-			cmd := buildSSConnectorMetadata(hop)
-			if err := c.Init(cmd); err != nil {
+		if connectorMD != nil {
+			if err := c.Init(connectorMD); err != nil {
 				return nil, fmt.Errorf("hop %d: init connector: %w", i+1, err)
 			}
 		}
@@ -177,12 +158,23 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 // buildDialerMetadata 为 Reality Dialer 构建 metadata
 func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	q := hop.Query
+	sni := strings.TrimSpace(q.Get("sni"))
+	if sni == "" {
+		sni = strings.TrimSpace(q.Get("peer"))
+	}
+	security := strings.TrimSpace(q.Get("security"))
+	if security == "" && strings.EqualFold(hop.Scheme, "vless+tls") {
+		security = "tls"
+	}
+	if security == "" && isTruthy(q.Get("tls")) && q.Get("pbk") == "" && q.Get("sid") == "" {
+		security = "tls"
+	}
 	mdMap := map[string]any{
 		metadata.KeyHost:        hop.Host,
 		metadata.KeyPort:        hop.Port,
-		metadata.KeySecurity:    q.Get("security"),
+		metadata.KeySecurity:    security,
 		metadata.KeyNetwork:     q.Get("type"),
-		metadata.KeySNI:         q.Get("sni"),
+		metadata.KeySNI:         sni,
 		metadata.KeyFingerprint: q.Get("fp"),
 		metadata.KeyPublicKey:   q.Get("pbk"),
 		metadata.KeyShortID:     q.Get("sid"),
@@ -198,15 +190,21 @@ func buildDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	return metadata.New(mdMap)
 }
 
+func isVlessVisionFlow(q url.Values) bool {
+	flow := strings.TrimSpace(q.Get("flow"))
+	return strings.EqualFold(flow, "xtls-rprx-vision") || (flow == "" && strings.TrimSpace(q.Get("xtls")) != "")
+}
+
+func isTruthy(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	return raw == "1" || strings.EqualFold(raw, "true")
+}
+
 // buildVlessConnectorMetadata 为 VLESS Connector 构建 metadata
 func buildVlessConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
 	q := hop.Query
-	uuid := ""
-	if hop.User != nil {
-		uuid = hop.User.Username()
-	}
 	mdMap := map[string]any{
-		metadata.KeyUUID:       uuid,
+		metadata.KeyUUID:       endpoint.UserSecret(hop.User),
 		metadata.KeyFlow:       q.Get("flow"),
 		metadata.KeyEncryption: q.Get("encryption"),
 	}
@@ -257,10 +255,6 @@ func buildWSDialerMetadata(hop endpoint.Endpoint) metadata.Metadata {
 		metadata.KeySecurity: q.Get("security"), // e.g. "tls"
 		metadata.KeyInsecure: q.Get("insecure") == "true" || q.Get("insecure") == "1",
 	}
-	// Also fallback to endpoint host if "host" not in query?
-	// VMess "sni" query often used for TLS SNI, and "host" for WS Host header.
-	// If "host" query is missing, maybe default to hop.Host if they differ?
-	// Usually for VMess, hop.Host is the server IP, and SNI/Host is for obfuscation.
 	return metadata.New(mdMap)
 }
 
@@ -287,7 +281,7 @@ func parseSSCredentials(user *url.Userinfo) (method, password string) {
 		return method, p
 	}
 
-	decoded, ok := decodeBase64Flexible(method)
+	decoded, ok := baseenc.DecodeBase64Flexible(method)
 	if !ok {
 		return method, ""
 	}
@@ -301,26 +295,6 @@ func parseSSCredentials(user *url.Userinfo) (method, password string) {
 		return method, ""
 	}
 	return m, p
-}
-
-func decodeBase64Flexible(s string) ([]byte, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil, false
-	}
-	if v, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	if v, err := base64.RawStdEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	if v, err := base64.URLEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	if v, err := base64.RawURLEncoding.DecodeString(s); err == nil {
-		return v, true
-	}
-	return nil, false
 }
 
 func parseSSPluginOptions(hop endpoint.Endpoint) (plugin, mode, host string) {
@@ -383,7 +357,11 @@ func rawQueryFromEndpoint(raw string) string {
 	if idx < 0 || idx+1 >= len(raw) {
 		return ""
 	}
-	return raw[idx+1:]
+	rawQuery := raw[idx+1:]
+	if fragIdx := strings.IndexByte(rawQuery, '#'); fragIdx >= 0 {
+		return rawQuery[:fragIdx]
+	}
+	return rawQuery
 }
 
 // parseLooseQuery 兼容 `&` 和 `;` 两种分隔符。
@@ -569,143 +547,11 @@ func parseMuxConfig(q url.Values) (enabled bool, maxStreams int, idle time.Durat
 }
 
 func resolveTypes(scheme string) (connectorName, dialerName string, err error) {
-	scheme = strings.ToLower(strings.TrimSpace(scheme))
-	if scheme == "" {
-		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
+	types, err := schememap.ResolveRouteTypes(scheme)
+	if err != nil {
+		return "", "", err
 	}
-	if scheme == "https" || scheme == "http+tls" {
-		return "http", "tls", nil
-	}
-	if scheme == "http2" {
-		return "http2", "tls", nil
-	}
-	if scheme == "http3" {
-		return "http3", "http3", nil
-	}
-	if scheme == "quic" {
-		return "tcp", "quic", nil
-	}
-	if scheme == "tls" {
-		return "http", "tls", nil
-	}
-	if scheme == "h2" {
-		return "http", "h2", nil
-	}
-	if scheme == "h3" {
-		return "http", "h3", nil
-	}
-	if strings.HasSuffix(scheme, "+h2") {
-		base := strings.TrimSuffix(scheme, "+h2")
-		switch base {
-		case "http":
-			return "http", "h2", nil
-		case "socks5", "socks5h":
-			return "socks5", "h2", nil
-		case "tcp":
-			return "tcp", "h2", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+h3") {
-		base := strings.TrimSuffix(scheme, "+h3")
-		switch base {
-		case "http":
-			return "http", "h3", nil
-		case "socks5", "socks5h":
-			return "socks5", "h3", nil
-		case "tcp":
-			return "tcp", "h3", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+dtls") {
-		base := strings.TrimSuffix(scheme, "+dtls")
-		switch base {
-		case "http":
-			return "http", "dtls", nil
-		case "socks5", "socks5h":
-			return "socks5", "dtls", nil
-		case "tcp":
-			return "tcp", "dtls", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+tls") {
-		base := strings.TrimSuffix(scheme, "+tls")
-		switch base {
-		case "http":
-			return "http", "tls", nil
-		case "socks5", "socks5h":
-			return "socks5", "tls", nil
-		case "tcp":
-			return "tcp", "tls", nil
-		case "vless":
-			return "vless", "tls", nil
-		case "vmess":
-			return "vmess", "tls", nil
-		case "ss", "shadowsocks":
-			return "ss", "tls", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if strings.HasSuffix(scheme, "+quic") {
-		base := strings.TrimSuffix(scheme, "+quic")
-		switch base {
-		case "http":
-			return "http", "quic", nil
-		case "socks5", "socks5h":
-			return "socks5", "quic", nil
-		case "tcp":
-			return "tcp", "quic", nil
-		default:
-			return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-		}
-	}
-	if scheme == "dtls" {
-		return "tcp", "dtls", nil
-	}
-
-	// VLESS + Reality 支持
-	if scheme == "vless" || scheme == "vless+reality" || scheme == "reality" {
-		return "vless", "reality", nil
-	}
-	if scheme == "vless+tls" {
-		return "vless", "tls", nil
-	}
-
-	// VMess 支持
-	if scheme == "vmess" {
-		return "vmess", "tcp", nil
-	}
-	if scheme == "vmess+tls" {
-		return "vmess", "tls", nil
-	}
-
-	// Shadowsocks 支持
-	if scheme == "ss" || scheme == "shadowsocks" {
-		return "ss", "tcp", nil
-	}
-	if scheme == "ss+tls" || scheme == "shadowsocks+tls" {
-		return "ss", "tls", nil
-	}
-	if scheme == "hysteria2" || scheme == "hy2" {
-		return "hysteria2", "hysteria2", nil
-	}
-
-	switch scheme {
-	case "http":
-		return "http", "tcp", nil
-	case "socks5", "socks5h":
-		return "socks5", "tcp", nil
-	case "tcp":
-		return "tcp", "tcp", nil
-	default:
-		return "", "", fmt.Errorf("unsupported scheme: %s", scheme)
-	}
+	return types.Connector, types.Dialer, nil
 }
 
 // BuildHysteria2DialerMetadata is the exported wrapper for buildHysteria2DialerMetadata.

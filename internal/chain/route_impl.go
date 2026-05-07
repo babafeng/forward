@@ -9,6 +9,7 @@ import (
 
 	"forward/internal/config"
 	ictx "forward/internal/ctx"
+	"forward/internal/netmark"
 )
 
 type defaultRoute struct {
@@ -27,6 +28,7 @@ func SetDefaultResolver(dnsServers []string) {
 			d := net.Dialer{
 				Timeout: time.Second * 5,
 			}
+			netmark.ConfigureDialer(&d)
 			for _, server := range dnsServers {
 				// 尝试解析 DNS 服务器地址，支持 host:port
 				target := server
@@ -65,6 +67,7 @@ func (r defaultRoute) Dial(ctx context.Context, network, address string) (net.Co
 		Timeout:  timeout,
 		Resolver: defaultResolver,
 	}
+	netmark.ConfigureDialer(d)
 	conn, err := d.DialContext(ctx, network, address)
 	if tr != nil && tr.Logger != nil {
 		proto := strings.ToUpper(network)

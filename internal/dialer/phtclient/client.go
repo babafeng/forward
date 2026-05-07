@@ -1,4 +1,4 @@
-package h2
+package phtclient
 
 import (
 	"context"
@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"forward/base/logging"
-	phtshared "forward/base/transport/h2"
+	"forward/base/transport/pht"
 )
 
-type phtClient struct {
+type Client struct {
 	Host          string
-	Client        *http.Client
+	HTTPClient    *http.Client
 	AuthorizePath string
 	PushPath      string
 	PullPath      string
@@ -32,7 +32,7 @@ type phtClient struct {
 	refilling atomic.Bool
 }
 
-func (c *phtClient) Dial(ctx context.Context, addr string) (net.Conn, error) {
+func (c *Client) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	raddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		if c.Logger != nil {
@@ -59,10 +59,10 @@ func (c *phtClient) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	}
 	pushURL := fmt.Sprintf("%s://%s%s?token=%s", scheme, addr, c.PushPath, token)
 	pullURL := fmt.Sprintf("%s://%s%s?token=%s", scheme, addr, c.PullPath, token)
-	return phtshared.NewClientConn(c.Client, pushURL, pullURL, c.Secret, raddr, c.Logger), nil
+	return pht.NewClientConn(c.HTTPClient, pushURL, pullURL, c.Secret, raddr, c.Logger), nil
 }
 
-func (c *phtClient) getToken(ctx context.Context, addr string) (string, error) {
+func (c *Client) getToken(ctx context.Context, addr string) (string, error) {
 	c.tokenOnce.Do(func() {
 		c.tokenPool = make(chan string, 4)
 	})
@@ -82,7 +82,7 @@ func (c *phtClient) getToken(ctx context.Context, addr string) (string, error) {
 	return token, nil
 }
 
-func (c *phtClient) prefetchTokens(addr string) {
+func (c *Client) prefetchTokens(addr string) {
 	c.tokenOnce.Do(func() {
 		c.tokenPool = make(chan string, 4)
 	})
@@ -114,7 +114,7 @@ func (c *phtClient) prefetchTokens(addr string) {
 	}()
 }
 
-func (c *phtClient) authorize(ctx context.Context, addr string) (string, error) {
+func (c *Client) authorize(ctx context.Context, addr string) (string, error) {
 	scheme := "http"
 	if c.TLSEnabled {
 		scheme = "https"
@@ -129,7 +129,7 @@ func (c *phtClient) authorize(ctx context.Context, addr string) (string, error) 
 		req.Header.Set("X-PHT-Secret", c.Secret)
 	}
 
-	resp, err := c.Client.Do(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

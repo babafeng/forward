@@ -114,11 +114,19 @@ array_contains() {
 
 append_bypass_client_unique() {
     local item="$1"
+    if ((${#BYPASS_CLIENTS[@]} == 0)); then
+        BYPASS_CLIENTS+=("$item")
+        return 0
+    fi
     array_contains "$item" "${BYPASS_CLIENTS[@]}" || BYPASS_CLIENTS+=("$item")
 }
 
 append_bypass_dest_unique() {
     local item="$1"
+    if ((${#BYPASS_DESTS[@]} == 0)); then
+        BYPASS_DESTS+=("$item")
+        return 0
+    fi
     array_contains "$item" "${BYPASS_DESTS[@]}" || BYPASS_DESTS+=("$item")
 }
 
