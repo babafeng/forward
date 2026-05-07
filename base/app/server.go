@@ -178,6 +178,11 @@ func runProxyServer(ctx context.Context, cfg config.Config, routers *routerCache
 		md.Set(metadata.KeyPassword, password)
 	}
 
+	// Trojan Handler 需要密码；标准 URL 形态是 trojan://password@host:port。
+	if handlerScheme == "trojan" {
+		md.Set(metadata.KeyPassword, endpoint.UserSecret(cfg.Listen.User))
+	}
+
 	if err := h.Init(md); err != nil {
 		return err
 	}
