@@ -156,84 +156,9 @@ func WriteResponse(w io.Writer, version byte, addons []byte) error {
 	return err
 }
 
-// ClientHandshake 执行 VLESS 客户端握手（发送请求头）
+// ClientHandshake 执行 VLESS 客户端握手（无 addons 的简便包装）
 func ClientHandshake(w io.Writer, uuid UUID, targetAddr string, network string) error {
-	host, portStr, err := net.SplitHostPort(targetAddr)
-	if err != nil {
-		return err
-	}
-
-	var port uint16
-	_, err = fmt.Sscanf(portStr, "%d", &port)
-	if err != nil {
-		return err
-	}
-
-	// Version
-	if _, err := w.Write([]byte{Version}); err != nil {
-		return err
-	}
-
-	// UUID
-	if _, err := w.Write(uuid[:]); err != nil {
-		return err
-	}
-
-	// Addon Len (0 = no addons)
-	if _, err := w.Write([]byte{0x00}); err != nil {
-		return err
-	}
-
-	// Command
-	cmd := byte(CommandTCP)
-	if network == "udp" {
-		cmd = CommandUDP
-	}
-	if _, err := w.Write([]byte{cmd}); err != nil {
-		return err
-	}
-
-	// Port
-	portBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(portBuf, port)
-	if _, err := w.Write(portBuf); err != nil {
-		return err
-	}
-
-	// Address
-	ip := net.ParseIP(host)
-	if ip != nil {
-		if ip4 := ip.To4(); ip4 != nil {
-			// IPv4
-			if _, err := w.Write([]byte{AddrTypeIPv4}); err != nil {
-				return err
-			}
-			if _, err := w.Write(ip4); err != nil {
-				return err
-			}
-		} else {
-			// IPv6
-			if _, err := w.Write([]byte{AddrTypeIPv6}); err != nil {
-				return err
-			}
-			if _, err := w.Write(ip); err != nil {
-				return err
-			}
-		}
-	} else {
-		// Domain
-		if len(host) > 255 {
-			return fmt.Errorf("domain too long")
-		}
-		if _, err := w.Write([]byte{AddrTypeDomain, byte(len(host))}); err != nil {
-			return err
-		}
-		if _, err := w.Write([]byte(host)); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return ClientHandshakeWithAddons(w, uuid, targetAddr, network, nil)
 }
 
 // ClientHandshakeWithAddons 执行带 Addons 的 VLESS 客户端握手
@@ -289,6 +214,15 @@ func ClientHandshakeWithAddons(w io.Writer, uuid UUID, targetAddr string, networ
 	}
 
 	// Address
+	if err := writeAddress(w, host); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// writeAddress 将地址（IPv4/IPv6/域名）编码写入 w
+func writeAddress(w io.Writer, host string) error {
 	ip := net.ParseIP(host)
 	if ip != nil {
 		if ip4 := ip.To4(); ip4 != nil {
@@ -317,6 +251,5 @@ func ClientHandshakeWithAddons(w io.Writer, uuid UUID, targetAddr string, networ
 			return err
 		}
 	}
-
 	return nil
 }
