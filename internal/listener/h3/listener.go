@@ -1,37 +1,16 @@
 package h3
 
 import (
-	"errors"
-	"net"
-	"net/http"
-	"time"
-
 	"github.com/quic-go/quic-go"
 
-	"forward/base/logging"
 	"forward/internal/listener"
+	"forward/internal/listener/phtlistener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
 
-var errMissingAddr = errors.New("missing listen address")
-var errMissingTLS = errors.New("missing tls config")
-
-type listenerMetadata struct {
-	backlog          int
-	keepAlivePeriod  time.Duration
-	handshakeTimeout time.Duration
-	maxIdleTimeout   time.Duration
-	maxStreams       int
-	secret           string
-}
-
 type Listener struct {
-	addr    net.Addr
-	server  *Server
-	logger  *logging.Logger
-	md      listenerMetadata
-	options listener.Options
+	*phtlistener.Base
 }
 
 func init() {
@@ -43,21 +22,13 @@ func NewListener(opts ...listener.Option) listener.Listener {
 	for _, opt := range opts {
 		opt(&options)
 	}
-	return &Listener{
-		logger:  options.Logger,
-		options: options,
-	}
+	return &Listener{Base: phtlistener.NewBase(options, "HTTP3")}
 }
 
 func (l *Listener) Init(md metadata.Metadata) error {
-	l.parseMetadata(md)
-
-	addr := l.options.Addr
-	if addr == "" {
-		return listener.NewBindError(errMissingAddr)
-	}
-	if l.options.TLSConfig == nil {
-		return errMissingTLS
+	l.InitMetadata(md, defaultBacklog)
+	if err := l.Validate(); err != nil {
+		return err
 	}
 
 	quicCfg := &quic.Config{
@@ -65,83 +36,32 @@ func (l *Listener) Init(md metadata.Metadata) error {
 			quic.Version1,
 		},
 	}
-	if l.md.keepAlivePeriod > 0 {
-		quicCfg.KeepAlivePeriod = l.md.keepAlivePeriod
+	if l.MD.KeepAlivePeriod > 0 {
+		quicCfg.KeepAlivePeriod = l.MD.KeepAlivePeriod
 	}
-	if l.md.handshakeTimeout > 0 {
-		quicCfg.HandshakeIdleTimeout = l.md.handshakeTimeout
+	if l.MD.HandshakeTimeout > 0 {
+		quicCfg.HandshakeIdleTimeout = l.MD.HandshakeTimeout
 	}
-	if l.md.maxIdleTimeout > 0 {
-		quicCfg.MaxIdleTimeout = l.md.maxIdleTimeout
+	if l.MD.MaxIdleTimeout > 0 {
+		quicCfg.MaxIdleTimeout = l.MD.MaxIdleTimeout
 	}
-	if l.md.maxStreams > 0 {
-		quicCfg.MaxIncomingStreams = int64(l.md.maxStreams)
+	if l.MD.MaxStreams > 0 {
+		quicCfg.MaxIncomingStreams = int64(l.MD.MaxStreams)
 	}
 
 	opts := []ServerOption{
-		TLSConfigServerOption(l.options.TLSConfig),
-		BacklogServerOption(l.md.backlog),
-		LoggerServerOption(l.logger),
+		TLSConfigServerOption(l.Options.TLSConfig),
+		BacklogServerOption(l.MD.Backlog),
+		LoggerServerOption(l.Logger),
 	}
-	if l.md.secret != "" {
-		opts = append(opts, SecretServerOption(l.md.secret))
+	if l.MD.Secret != "" {
+		opts = append(opts, SecretServerOption(l.MD.Secret))
 	}
 
-	l.server = NewHTTP3Server(
-		addr,
+	l.Start(NewHTTP3Server(
+		l.Options.Addr,
 		quicCfg,
 		opts...,
-	)
-
-	go func() {
-		if err := l.server.ListenAndServe(); err != nil && l.logger != nil {
-			if !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-				l.logger.Error("HTTP3 listener error: %v", err)
-			}
-		}
-	}()
-
-	l.addr = l.server.Addr()
+	))
 	return nil
-}
-
-func (l *Listener) Accept() (net.Conn, error) {
-	if l.server == nil {
-		return nil, listener.ErrClosed
-	}
-	conn, err := l.server.Accept()
-	if err != nil {
-		return nil, listener.NewAcceptError(err)
-	}
-	return conn, nil
-}
-
-func (l *Listener) Addr() net.Addr {
-	if l.server == nil {
-		return l.addr
-	}
-	if addr := l.server.Addr(); addr != nil {
-		return addr
-	}
-	return l.addr
-}
-
-func (l *Listener) Close() error {
-	if l.server == nil {
-		return nil
-	}
-	if l.logger != nil && l.Addr() != nil {
-		l.logger.Info("Listener closed %s", l.Addr().String())
-	}
-	return l.server.Close()
-}
-
-func (l *Listener) parseMetadata(md metadata.Metadata) {
-	parsed := listener.ParsePHTTransportMetadata(md, defaultBacklog)
-	l.md.backlog = parsed.Backlog
-	l.md.keepAlivePeriod = parsed.KeepAlivePeriod
-	l.md.handshakeTimeout = parsed.HandshakeTimeout
-	l.md.maxIdleTimeout = parsed.MaxIdleTimeout
-	l.md.maxStreams = parsed.MaxStreams
-	l.md.secret = parsed.Secret
 }

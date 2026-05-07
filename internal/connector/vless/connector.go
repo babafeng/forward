@@ -7,25 +7,21 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	xmux "github.com/xtls/xray-core/common/mux"
 	xnet "github.com/xtls/xray-core/common/net"
-	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/common/protocol"
-	"github.com/xtls/xray-core/common/session"
 	xuuid "github.com/xtls/xray-core/common/uuid"
 	"github.com/xtls/xray-core/proxy"
 	xvless "github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vless/encoding"
 	"github.com/xtls/xray-core/transport"
-	"github.com/xtls/xray-core/transport/pipe"
 
 	pvless "forward/base/protocol/vless"
 	"forward/internal/connector"
+	"forward/internal/connector/muxshared"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -50,14 +46,7 @@ type Connector struct {
 	muxIdle    time.Duration
 	options    connector.Options
 
-	muxMu       sync.Mutex
-	muxWorkers  []*vlessMuxWorker
-	muxDisabled atomic.Bool
-}
-
-type vlessMuxWorker struct {
-	worker   *xmux.ClientWorker
-	lastUsed atomic.Int64
+	muxManager muxshared.Manager
 }
 
 // NewConnector 创建新的 VLESS Connector
@@ -114,17 +103,18 @@ func (c *Connector) Init(md metadata.Metadata) error {
 	if c.mux && c.options.Logger != nil {
 		c.options.Logger.Info("VLESS mux enabled: max_streams=%d idle=%s", c.muxMax, c.muxIdle)
 	}
+	c.muxManager.Idle = c.muxIdle
 
 	return nil
 }
 
 func (c *Connector) Connect(ctx context.Context, conn net.Conn, network, address string, opts ...connector.ConnectOption) (net.Conn, error) {
-	if c.mux && !c.muxDisabled.Load() {
+	if c.mux && !c.muxManager.Disabled.Load() {
 		muxConn, consumed, err := c.connectMux(ctx, conn, network, address)
 		if err == nil {
 			return muxConn, nil
 		}
-		c.disableMux(err)
+		c.muxManager.Disable(err, c.options.Logger, "VLESS")
 		if consumed {
 			return nil, err
 		}
@@ -170,98 +160,10 @@ func (c *Connector) connectDirect(ctx context.Context, conn net.Conn, network, a
 }
 
 func (c *Connector) connectMux(ctx context.Context, conn net.Conn, network, address string) (net.Conn, bool, error) {
-	for _, w := range c.snapshotMuxWorkers() {
-		streamConn, err := c.dispatchMuxStream(ctx, w.worker, network, address)
-		if err == nil {
-			w.touch()
-			_ = conn.Close()
-			return streamConn, false, nil
-		}
-	}
-
-	w, err := c.createMuxWorker(ctx, conn)
-	if err != nil {
-		return nil, true, fmt.Errorf("vless mux bootstrap failed: %w", err)
-	}
-	c.addMuxWorker(w)
-
-	streamConn, err := c.dispatchMuxStream(ctx, w.worker, network, address)
-	if err != nil {
-		_ = w.worker.Close()
-		c.removeMuxWorker(w.worker)
-		return nil, true, fmt.Errorf("vless mux dispatch failed: %w", err)
-	}
-	w.touch()
-	return streamConn, true, nil
+	return c.muxManager.Connect(ctx, conn, network, address, c.createMuxWorker, "vless", "vless")
 }
 
-func (c *Connector) disableMux(reason error) {
-	if !c.muxDisabled.CompareAndSwap(false, true) {
-		return
-	}
-	if c.options.Logger != nil {
-		c.options.Logger.Warn("VLESS mux disabled, fallback to direct forwarding: %v", reason)
-	}
-	c.muxMu.Lock()
-	workers := c.muxWorkers
-	c.muxWorkers = nil
-	c.muxMu.Unlock()
-	for _, w := range workers {
-		if w != nil && w.worker != nil {
-			_ = w.worker.Close()
-		}
-	}
-}
-
-func (c *Connector) snapshotMuxWorkers() []*vlessMuxWorker {
-	c.muxMu.Lock()
-	defer c.muxMu.Unlock()
-
-	if len(c.muxWorkers) == 0 {
-		return nil
-	}
-	alive := c.muxWorkers[:0]
-	for _, w := range c.muxWorkers {
-		if w == nil || w.worker == nil || w.worker.Closed() {
-			continue
-		}
-		alive = append(alive, w)
-	}
-	c.muxWorkers = alive
-	out := make([]*vlessMuxWorker, len(c.muxWorkers))
-	copy(out, c.muxWorkers)
-	return out
-}
-
-func (c *Connector) addMuxWorker(w *vlessMuxWorker) {
-	if w == nil || w.worker == nil {
-		return
-	}
-	c.muxMu.Lock()
-	c.muxWorkers = append(c.muxWorkers, w)
-	c.muxMu.Unlock()
-}
-
-func (c *Connector) removeMuxWorker(worker *xmux.ClientWorker) {
-	if worker == nil {
-		return
-	}
-	c.muxMu.Lock()
-	defer c.muxMu.Unlock()
-	if len(c.muxWorkers) == 0 {
-		return
-	}
-	alive := c.muxWorkers[:0]
-	for _, w := range c.muxWorkers {
-		if w == nil || w.worker == nil || w.worker == worker || w.worker.Closed() {
-			continue
-		}
-		alive = append(alive, w)
-	}
-	c.muxWorkers = alive
-}
-
-func (c *Connector) createMuxWorker(ctx context.Context, conn net.Conn) (*vlessMuxWorker, error) {
+func (c *Connector) createMuxWorker(ctx context.Context, conn net.Conn) (*muxshared.Worker, error) {
 	request, requestAddons := c.buildMuxRequest()
 	trafficState := proxy.NewTrafficState(c.userID.Bytes())
 
@@ -311,71 +213,9 @@ func (c *Connector) createMuxWorker(ctx context.Context, conn net.Conn) (*vlessM
 		return nil, err
 	}
 
-	w := &vlessMuxWorker{worker: worker}
-	w.touch()
-	go c.watchMuxWorker(w, conn)
+	w := muxshared.NewWorker(worker)
+	go c.muxManager.Watch(w, conn)
 	return w, nil
-}
-
-func (c *Connector) watchMuxWorker(w *vlessMuxWorker, conn net.Conn) {
-	if c.muxIdle <= 0 {
-		<-w.worker.WaitClosed()
-		_ = conn.Close()
-		c.removeMuxWorker(w.worker)
-		return
-	}
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-w.worker.WaitClosed():
-			_ = conn.Close()
-			c.removeMuxWorker(w.worker)
-			return
-		case <-ticker.C:
-			last := time.Unix(0, w.lastUsed.Load())
-			if w.worker.ActiveConnections() == 0 && !last.IsZero() && time.Since(last) > c.muxIdle {
-				_ = w.worker.Close()
-			}
-		}
-	}
-}
-
-func (c *Connector) dispatchMuxStream(ctx context.Context, worker *xmux.ClientWorker, network, address string) (net.Conn, error) {
-	target, err := parseDestination(network, address)
-	if err != nil {
-		return nil, err
-	}
-
-	uplinkReader, uplinkWriter := pipe.New(pipe.WithSizeLimit(64 * 1024))
-	downlinkReader, downlinkWriter := pipe.New(pipe.WithSizeLimit(64 * 1024))
-
-	link := &transport.Link{
-		Reader: downlinkReader,
-		Writer: uplinkWriter,
-	}
-	dispatchCtx := session.ContextWithOutbounds(ctx, []*session.Outbound{
-		{Target: target},
-	})
-
-	if !worker.Dispatch(dispatchCtx, link) {
-		common.Interrupt(downlinkReader)
-		common.Close(downlinkWriter)
-		common.Interrupt(uplinkReader)
-		common.Close(uplinkWriter)
-		return nil, fmt.Errorf("mux worker is full or closed")
-	}
-
-	return cnc.NewConnection(
-		cnc.ConnectionInputMulti(downlinkWriter),
-		cnc.ConnectionOutputMulti(uplinkReader),
-		cnc.ConnectionOnClose(&muxStreamCloseHook{
-			input:  downlinkWriter,
-			output: uplinkReader,
-		}),
-	), nil
 }
 
 func (c *Connector) buildMuxRequest() (*protocol.RequestHeader, *encoding.Addons) {
@@ -406,40 +246,6 @@ func (c *Connector) buildMuxRequest() (*protocol.RequestHeader, *encoding.Addons
 		}, &encoding.Addons{
 			Flow: flow,
 		}
-}
-
-func parseDestination(network, address string) (xnet.Destination, error) {
-	host, portStr, err := net.SplitHostPort(address)
-	if err != nil {
-		return xnet.Destination{}, fmt.Errorf("invalid target address %q: %w", address, err)
-	}
-	port, err := xnet.PortFromString(portStr)
-	if err != nil {
-		return xnet.Destination{}, fmt.Errorf("invalid target port %q: %w", portStr, err)
-	}
-	if strings.HasPrefix(strings.ToLower(network), "udp") {
-		return xnet.UDPDestination(xnet.ParseAddress(host), port), nil
-	}
-	return xnet.TCPDestination(xnet.ParseAddress(host), port), nil
-}
-
-func (w *vlessMuxWorker) touch() {
-	w.lastUsed.Store(time.Now().UnixNano())
-}
-
-type muxStreamCloseHook struct {
-	input  *pipe.Writer
-	output *pipe.Reader
-}
-
-func (h *muxStreamCloseHook) Close() error {
-	if h.output != nil {
-		common.Interrupt(h.output)
-	}
-	if h.input != nil {
-		return h.input.Close()
-	}
-	return nil
 }
 
 func (c *Connector) buildRequest(network, address string) (*protocol.RequestHeader, *encoding.Addons, error) {
@@ -574,4 +380,3 @@ func (c *vlessConn) initReader() error {
 	})
 	return c.initErr
 }
-
