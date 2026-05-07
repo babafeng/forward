@@ -45,8 +45,8 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			return nil, fmt.Errorf("hop %d: %w", i+1, err)
 		}
 
-		// VMess/VLESS: check if using WebSocket transport
-		if connectorName == "vmess" || connectorName == "vless" {
+		// VMess/VLESS/Trojan: check if using WebSocket transport
+		if connectorName == "vmess" || connectorName == "vless" || connectorName == "trojan" {
 			q := hop.Query
 			// vmess/vless://...?obfs=websocket or ...?type=ws or ...?net=ws
 			if strings.EqualFold(q.Get("obfs"), "websocket") || strings.EqualFold(q.Get("type"), "ws") || strings.EqualFold(q.Get("net"), "ws") {
@@ -121,6 +121,8 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			connectorMD = buildVmessConnectorMetadata(hop)
 		case "ss":
 			connectorMD = buildSSConnectorMetadata(hop)
+		case "trojan":
+			connectorMD = buildTrojanConnectorMetadata(hop)
 		}
 		if connectorMD != nil {
 			if err := c.Init(connectorMD); err != nil {
@@ -153,6 +155,14 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 	}
 
 	return chain.NewRoute(nodes...), nil
+}
+
+// buildTrojanConnectorMetadata 为 Trojan Connector 构建 metadata.
+// URL 格式: trojan://password@host:port
+func buildTrojanConnectorMetadata(hop endpoint.Endpoint) metadata.Metadata {
+	return metadata.New(map[string]any{
+		metadata.KeyPassword: endpoint.UserSecret(hop.User),
+	})
 }
 
 // buildDialerMetadata 为 Reality Dialer 构建 metadata

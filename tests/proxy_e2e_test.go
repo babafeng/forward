@@ -2,6 +2,7 @@ package tests
 
 import (
 	"net"
+	"net/url"
 	"testing"
 )
 
@@ -65,4 +66,18 @@ func TestProxyTransportTunnels(t *testing.T) {
 			assertEcho(t, conn, []byte("tunnel-"+scheme))
 		})
 	}
+}
+
+func TestProxyTrojan(t *testing.T) {
+	backendAddr, backendStop := startTCPEchoServer(t)
+	defer backendStop()
+
+	ep, stop := startProxyServer(t, "trojan", url.User("secret"), nil)
+	defer stop()
+
+	route := buildRoute(t, ep)
+	conn := dialWithRetry(t, route, "tcp", backendAddr)
+	defer conn.Close()
+
+	assertEcho(t, conn, []byte("proxy-trojan"))
 }

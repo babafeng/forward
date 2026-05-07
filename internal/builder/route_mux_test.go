@@ -133,3 +133,28 @@ func TestBuildVmessConnectorMetadataMux(t *testing.T) {
 		t.Fatalf("mux idle = %v, want 15s", md.Get(metadata.KeyMuxIdle))
 	}
 }
+
+func TestBuildTrojanConnectorMetadata(t *testing.T) {
+	ep, err := endpoint.Parse("trojan://secret@127.0.0.1:443")
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+	md := buildTrojanConnectorMetadata(ep)
+	if got := md.GetString(metadata.KeyPassword); got != "secret" {
+		t.Fatalf("password = %q, want secret", got)
+	}
+}
+
+func TestBuildRouteAcceptsTrojan(t *testing.T) {
+	ep, err := endpoint.Parse("trojan://secret@127.0.0.1:443")
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+	route, err := BuildRoute(config.Config{Insecure: true}, []endpoint.Endpoint{ep})
+	if err != nil {
+		t.Fatalf("BuildRoute failed: %v", err)
+	}
+	if route == nil {
+		t.Fatal("route nil")
+	}
+}
