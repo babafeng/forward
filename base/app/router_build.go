@@ -11,6 +11,7 @@ import (
 	"forward/internal/chain"
 	"forward/internal/config"
 	"forward/internal/router"
+	schememap "forward/internal/scheme"
 	"forward/internal/subscribe"
 )
 
@@ -251,104 +252,22 @@ func isPortForward(cfg config.Config) bool {
 	return strings.EqualFold(ls, fs)
 }
 
-type transportKind string
+type transportKind = schememap.TransportKind
 
 const (
-	transportNone transportKind = ""
-	transportTLS  transportKind = "tls"
-	transportDTLS transportKind = "dtls"
-	transportH2   transportKind = "h2"
-	transportH3   transportKind = "h3"
+	transportNone = schememap.TransportNone
+	transportTLS  = schememap.TransportTLS
+	transportDTLS = schememap.TransportDTLS
+	transportH2   = schememap.TransportH2
+	transportH3   = schememap.TransportH3
+	transportQuic = schememap.TransportQUIC
 )
 
 func splitSchemeTransport(scheme string) (base string, transport transportKind) {
-	s := strings.ToLower(strings.TrimSpace(scheme))
-	switch s {
-	case "https":
-		return "http", transportTLS
-	case "http2":
-		return "http2", transportNone
-	case "http3":
-		return "http3", transportNone
-	case "tls":
-		return "http", transportTLS
-	case "h2":
-		return "http", transportH2
-	case "h3":
-		return "http", transportH3
-	case "dtls":
-		return "tcp", transportDTLS
-	case "hysteria2", "hy2":
-		return "hysteria2", transportNone
-	// VLESS + Reality
-	case "vless", "vless+reality", "reality":
-		return "vless", transportNone
-	case "vless+tls":
-		return "vless", transportTLS
-	// VMess
-	case "vmess":
-		return "vmess", transportNone
-	case "vmess+tls":
-		return "vmess", transportTLS
-	}
-	if strings.HasSuffix(s, "+h2") {
-		return strings.TrimSuffix(s, "+h2"), transportH2
-	}
-	if strings.HasSuffix(s, "+h3") {
-		return strings.TrimSuffix(s, "+h3"), transportH3
-	}
-	if strings.HasSuffix(s, "+tls") {
-		return strings.TrimSuffix(s, "+tls"), transportTLS
-	}
-	if strings.HasSuffix(s, "+dtls") {
-		return strings.TrimSuffix(s, "+dtls"), transportDTLS
-	}
-	// VLESS + Reality 带后缀
-	if strings.HasSuffix(s, "+reality") {
-		return strings.TrimSuffix(s, "+reality"), transportNone
-	}
-	return s, transportNone
+	return schememap.SplitTransport(scheme)
 }
 
 func normalizeProxySchemes(scheme string) (handlerScheme, listenerScheme string, transport transportKind) {
-	base, transport := splitSchemeTransport(scheme)
-	handlerScheme = base
-	listenerScheme = base
-
-	switch base {
-	case "http3":
-		handlerScheme = "http"
-		listenerScheme = "http3"
-		return handlerScheme, listenerScheme, transportNone
-	case "http2":
-		handlerScheme = "http"
-		listenerScheme = "http2"
-		return handlerScheme, listenerScheme, transportNone
-	case "socks5h":
-		handlerScheme = "socks5"
-	// VLESS + Reality
-	case "vless":
-		handlerScheme = "vless"
-		listenerScheme = "reality"
-		return handlerScheme, listenerScheme, transportNone
-	// VMess
-	case "vmess":
-		handlerScheme = "vmess"
-		listenerScheme = "tcp" // VMess 使用普通 TCP 监听
-	// Shadowsocks
-	case "ss", "shadowsocks":
-		handlerScheme = "ss"
-		listenerScheme = "tcp" // SS 使用普通 TCP 监听
-	}
-
-	if transport == transportDTLS {
-		listenerScheme = "dtls"
-	}
-	if transport == transportH2 {
-		listenerScheme = "h2"
-	}
-	if transport == transportH3 {
-		listenerScheme = "h3"
-	}
-	return
+	types := schememap.NormalizeProxy(scheme)
+	return types.Handler, types.Listener, types.Transport
 }

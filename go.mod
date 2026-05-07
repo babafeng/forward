@@ -11,10 +11,12 @@ require (
 	github.com/apernet/hysteria/core/v2 v2.7.0
 	github.com/apernet/hysteria/extras/v2 v2.7.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/miekg/dns v1.1.72
 	github.com/pion/dtls/v2 v2.2.12
 	github.com/sagernet/sing v0.5.1
 	github.com/sagernet/sing-shadowsocks v0.2.7
 	golang.org/x/sync v0.19.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -26,7 +28,6 @@ require (
 	github.com/juju/ratelimit v1.0.2 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/transport/v2 v2.2.4 // indirect
 	github.com/pires/go-proxyproto v0.9.2 // indirect
@@ -47,7 +48,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251029180050-ab9386a59fda // indirect
 	google.golang.org/grpc v1.78.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20260122175437-89a5d21be8f0 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )

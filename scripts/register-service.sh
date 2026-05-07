@@ -9,6 +9,8 @@ MODE=""
 WORKDIR=""
 NO_START=0
 REMOVE=0
+TPROXY=0
+TPROXY_PORT=12345
 ARGS=()
 
 usage() {
@@ -23,6 +25,8 @@ Options:
   --working-dir <dir>   Working directory for the service
   --system              Install as system service (root required)
   --user                Install as user service
+  --tproxy              Start forward with -T; forward manages TProxy rules
+  --tproxy-port <port>  TProxy port (default: 12345)
   --remove              Unregister and remove the service
   --no-start            Write service files only, do not load/enable
   -h, --help            Show help
@@ -96,6 +100,14 @@ while [[ $# -gt 0 ]]; do
     --user)
         MODE="user"
         shift
+        ;;
+    --tproxy)
+        TPROXY=1
+        shift
+        ;;
+    --tproxy-port)
+        TPROXY_PORT="$2"
+        shift 2
         ;;
     --remove | --uninstall)
         REMOVE=1
@@ -179,8 +191,15 @@ install_linux() {
         return
     fi
 
+    if [[ "$TPROXY" -eq 1 && "$MODE" == "user" ]]; then
+        die "--tproxy requires --system mode (root privileges)"
+    fi
+
     local exec_line
     exec_line="$(systemd_quote "$BIN")"
+    if [[ "$TPROXY" -eq 1 ]]; then
+        exec_line+=" -T $(systemd_quote "$TPROXY_PORT")"
+    fi
     for arg in "${ARGS[@]}"; do
         exec_line+=" $(systemd_quote "$arg")"
     done

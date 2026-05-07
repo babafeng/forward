@@ -5,14 +5,13 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"forward/internal/dialer"
+	"forward/internal/dialer/phtdialer"
+	"forward/internal/dialer/transportutil"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -22,23 +21,7 @@ func init() {
 }
 
 type Dialer struct {
-	options dialer.Options
-	md      dialerMetadata
-
-	mu      sync.Mutex
-	clients map[string]*phtClient
-}
-
-type dialerMetadata struct {
-	authorizePath    string
-	pushPath         string
-	pullPath         string
-	host             string
-	keepAlivePeriod  time.Duration
-	handshakeTimeout time.Duration
-	maxIdleTimeout   time.Duration
-	maxStreams       int
-	secret           string
+	phtdialer.Base
 }
 
 func NewDialer(opts ...dialer.Option) dialer.Dialer {
@@ -46,45 +29,35 @@ func NewDialer(opts ...dialer.Option) dialer.Dialer {
 	for _, opt := range opts {
 		opt(&options)
 	}
-	return &Dialer{
-		options: options,
-		clients: make(map[string]*phtClient),
-	}
+	return &Dialer{Base: phtdialer.NewBase(options)}
 }
 
 func (d *Dialer) Init(md metadata.Metadata) error {
-	d.parseMetadata(md)
+	d.Base.Init(md)
 	return nil
 }
 
 func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) (net.Conn, error) {
-	d.mu.Lock()
-	client := d.clients[addr]
-	if client == nil {
-		host := d.md.host
-		if host == "" {
-			host = hostFromAddr(addr)
-		}
-
+	return d.Base.Dial(ctx, addr, func(host string) http.RoundTripper {
 		quicCfg := &quic.Config{
 			Versions: []quic.Version{
 				quic.Version1,
 			},
 		}
-		if d.md.keepAlivePeriod > 0 {
-			quicCfg.KeepAlivePeriod = d.md.keepAlivePeriod
+		if d.MD.KeepAlivePeriod > 0 {
+			quicCfg.KeepAlivePeriod = d.MD.KeepAlivePeriod
 		}
-		if d.md.handshakeTimeout > 0 {
-			quicCfg.HandshakeIdleTimeout = d.md.handshakeTimeout
+		if d.MD.HandshakeTimeout > 0 {
+			quicCfg.HandshakeIdleTimeout = d.MD.HandshakeTimeout
 		}
-		if d.md.maxIdleTimeout > 0 {
-			quicCfg.MaxIdleTimeout = d.md.maxIdleTimeout
+		if d.MD.MaxIdleTimeout > 0 {
+			quicCfg.MaxIdleTimeout = d.MD.MaxIdleTimeout
 		}
-		if d.md.maxStreams > 0 {
-			quicCfg.MaxIncomingStreams = int64(d.md.maxStreams)
+		if d.MD.MaxStreams > 0 {
+			quicCfg.MaxIncomingStreams = int64(d.MD.MaxStreams)
 		}
 
-		tlsCfg := cloneTLSConfig(d.options.TLSConfig)
+		tlsCfg := transportutil.CloneTLSConfig(d.Options.TLSConfig)
 		if tlsCfg.ServerName == "" {
 			tlsCfg.ServerName = host
 		}
@@ -97,54 +70,11 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 				return quic.DialAddrEarly(ctx, addr, tlsCfg, cfg)
 			},
 		}
-
-		client = &phtClient{
-			Host:          host,
-			Client:        &http.Client{Transport: tr},
-			AuthorizePath: d.md.authorizePath,
-			PushPath:      d.md.pushPath,
-			PullPath:      d.md.pullPath,
-			TLSEnabled:    true,
-			Logger:        d.options.Logger,
-			Secret:        d.md.secret,
-		}
-		d.clients[addr] = client
-	}
-	d.mu.Unlock()
-
-	// Dial may involve network RTT and should not be serialized under lock.
-	return client.Dial(ctx, addr)
+		return tr
+	})
 }
 
 // Multiplex implements dialer.Multiplexer.
 func (d *Dialer) Multiplex() bool {
-	return true
-}
-
-func (d *Dialer) parseMetadata(md metadata.Metadata) {
-	parsed := dialer.ParsePHTTransportMetadata(md)
-	d.md.authorizePath = parsed.AuthorizePath
-	d.md.pushPath = parsed.PushPath
-	d.md.pullPath = parsed.PullPath
-	d.md.host = parsed.Host
-	d.md.keepAlivePeriod = parsed.KeepAlivePeriod
-	d.md.handshakeTimeout = parsed.HandshakeTimeout
-	d.md.maxIdleTimeout = parsed.MaxIdleTimeout
-	d.md.maxStreams = parsed.MaxStreams
-	d.md.secret = parsed.Secret
-}
-
-func hostFromAddr(addr string) string {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return strings.Trim(addr, "[]")
-	}
-	return strings.Trim(host, "[]")
-}
-
-func cloneTLSConfig(cfg *tls.Config) *tls.Config {
-	if cfg == nil {
-		return &tls.Config{}
-	}
-	return cfg.Clone()
+	return phtdialer.Multiplex()
 }

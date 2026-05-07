@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	xnet "github.com/xtls/xray-core/common/net"
@@ -14,8 +15,10 @@ import (
 	_ "github.com/xtls/xray-core/transport/internet/tcp"
 	"github.com/xtls/xray-core/transport/internet/tls"
 
+	"forward/internal/config"
 	"forward/internal/dialer"
 	"forward/internal/metadata"
+	"forward/internal/netmark"
 	"forward/internal/registry"
 )
 
@@ -123,15 +126,22 @@ func (d *Dialer) buildStreamSettings(md metadata.Metadata) (*internet.MemoryStre
 }
 
 func (d *Dialer) Dial(ctx context.Context, addr string, opts ...dialer.DialOption) (net.Conn, error) {
-	// 对于 Reality Dialer，addr 参数被忽略，使用初始化时配置的服务器地址
-	proxyDest := xnet.TCPDestination(xnet.ParseAddress(d.proxyHost), xnet.Port(d.proxyPort))
-
-	conn, err := internet.Dial(ctx, proxyDest, d.streamSettings)
+	timeout := d.options.Timeout
+	if timeout <= 0 {
+		timeout = config.DefaultDialTimeout
+	}
+	nd := &net.Dialer{Timeout: timeout}
+	netmark.ConfigureDialer(nd)
+	conn, err := nd.DialContext(ctx, "tcp", net.JoinHostPort(d.proxyHost, strconv.Itoa(d.proxyPort)))
 	if err != nil {
 		return nil, fmt.Errorf("dial reality failed: %w", err)
 	}
-
-	return conn, nil
+	up, err := d.Handshake(ctx, conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return up, nil
 }
 
 // Handshake 执行 Reality TLS 握手（适用于已有连接的情况）

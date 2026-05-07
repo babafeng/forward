@@ -11,6 +11,7 @@ import (
 	shadowsocks "github.com/sagernet/sing-shadowsocks"
 	B "github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 
 	pss "forward/base/protocol/shadowsocks"
 	"forward/internal/connector"
@@ -146,7 +147,14 @@ func (c *ssPacketConn) Read(p []byte) (int, error) {
 }
 
 func (c *ssPacketConn) Write(p []byte) (int, error) {
-	buffer := B.As(p)
+	frontHeadroom := N.CalculateFrontHeadroom(c.packetConn)
+	rearHeadroom := N.CalculateRearHeadroom(c.packetConn)
+	buffer := B.NewSize(frontHeadroom + len(p) + rearHeadroom)
+	buffer.Resize(frontHeadroom, 0)
+	if _, err := buffer.Write(p); err != nil {
+		buffer.Release()
+		return 0, err
+	}
 	if err := c.packetConn.WritePacket(buffer, c.dest); err != nil {
 		return 0, err
 	}
@@ -155,34 +163,23 @@ func (c *ssPacketConn) Write(p []byte) (int, error) {
 
 // ReadFrom 实现 io.ReaderFrom
 func (c *ssPacketConn) ReadFrom(r io.Reader) (int64, error) {
-	var total int64
-	buf := make([]byte, 64*1024)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			wn, werr := c.Write(buf[:n])
-			total += int64(wn)
-			if werr != nil {
-				return total, werr
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return total, nil
-			}
-			return total, err
-		}
-	}
+	return pump(r.Read, c.Write)
 }
 
 // WriteTo 实现 io.WriterTo
 func (c *ssPacketConn) WriteTo(w io.Writer) (int64, error) {
+	return pump(c.Read, w.Write)
+}
+
+// pump 在 read/write 两端之间传递数据，直到遇到 EOF 或错误。
+// 每次分配 64KB 缓冲区（UDP 包尺寸上限），不使用 sync.Pool 以保证包边界安全。
+func pump(read func([]byte) (int, error), write func([]byte) (int, error)) (int64, error) {
 	var total int64
 	buf := make([]byte, 64*1024)
 	for {
-		n, err := c.Read(buf)
+		n, err := read(buf)
 		if n > 0 {
-			wn, werr := w.Write(buf[:n])
+			wn, werr := write(buf[:n])
 			total += int64(wn)
 			if werr != nil {
 				return total, werr

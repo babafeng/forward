@@ -3,7 +3,6 @@ package dtls
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -92,22 +91,22 @@ func (d *Dialer) parseMetadata(md metadata.Metadata) {
 	if md == nil {
 		return
 	}
-	if v := getInt(md.Get("dtls_mtu")); v > 0 {
+	if v := metadata.IntValue(md.Get("dtls_mtu")); v > 0 {
 		d.md.mtu = v
 	}
-	if v := getInt(md.Get("mtu")); v > 0 {
+	if v := metadata.IntValue(md.Get("mtu")); v > 0 {
 		d.md.mtu = v
 	}
-	if v := getInt(md.Get("dtls_buffer")); v > 0 {
+	if v := metadata.IntValue(md.Get("dtls_buffer")); v > 0 {
 		d.md.bufferSize = v
 	}
-	if v := getInt(md.Get("buffer_size")); v > 0 {
+	if v := metadata.IntValue(md.Get("buffer_size")); v > 0 {
 		d.md.bufferSize = v
 	}
-	if v := getDuration(md.Get("dtls_flight_interval")); v > 0 {
+	if v := metadata.DurationValue(md.Get("dtls_flight_interval")); v > 0 {
 		d.md.flightInterval = v
 	}
-	if v := getDuration(md.Get("flight_interval")); v > 0 {
+	if v := metadata.DurationValue(md.Get("flight_interval")); v > 0 {
 		d.md.flightInterval = v
 	}
 }
@@ -121,45 +120,4 @@ func hostFromAddr(addr net.Addr) string {
 		return strings.Trim(addr.String(), "[]")
 	}
 	return strings.Trim(host, "[]")
-}
-
-func getInt(v any) int {
-	switch t := v.(type) {
-	case int:
-		return t
-	case int64:
-		return int(t)
-	case float64:
-		return int(t)
-	case string:
-		var n int
-		_, _ = fmt.Sscanf(strings.TrimSpace(t), "%d", &n)
-		return n
-	default:
-		return 0
-	}
-}
-
-func getDuration(v any) time.Duration {
-	switch t := v.(type) {
-	case time.Duration:
-		return t
-	case int:
-		return time.Duration(t) * time.Second
-	case int64:
-		return time.Duration(t) * time.Second
-	case float64:
-		return time.Duration(t) * time.Second
-	case string:
-		if d, err := time.ParseDuration(strings.TrimSpace(t)); err == nil {
-			return d
-		}
-		var n int64
-		if _, err := fmt.Sscanf(strings.TrimSpace(t), "%d", &n); err == nil {
-			return time.Duration(n) * time.Second
-		}
-		return 0
-	default:
-		return 0
-	}
 }

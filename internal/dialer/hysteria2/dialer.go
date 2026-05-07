@@ -72,15 +72,15 @@ func (d *Dialer) Init(md metadata.Metadata) error {
 	}
 
 	cfg := dialerConfig{
-		address:      strings.TrimSpace(getString(md.Get(mdKeyAddress))),
-		auth:         getString(md.Get(mdKeyAuth)),
-		sni:          strings.TrimSpace(getString(md.Get(mdKeySNI))),
-		alpn:         strings.TrimSpace(getString(md.Get(mdKeyALPN))),
-		insecure:     getBool(md.Get(mdKeyInsecure)),
-		pinSHA256:    normalizeCertHash(getString(md.Get(mdKeyPinSHA256))),
-		obfs:         strings.ToLower(strings.TrimSpace(getString(md.Get(mdKeyOBFS)))),
-		obfsPassword: getString(md.Get(mdKeyOBFSPassword)),
-		caFile:       strings.TrimSpace(getString(md.Get(mdKeyCA))),
+		address:      metadata.StringValue(md.Get(mdKeyAddress)),
+		auth:         metadata.RawStringValue(md.Get(mdKeyAuth)),
+		sni:          metadata.StringValue(md.Get(mdKeySNI)),
+		alpn:         metadata.StringValue(md.Get(mdKeyALPN)),
+		insecure:     metadata.BoolValue(md.Get(mdKeyInsecure)),
+		pinSHA256:    normalizeCertHash(metadata.StringValue(md.Get(mdKeyPinSHA256))),
+		obfs:         strings.ToLower(metadata.StringValue(md.Get(mdKeyOBFS))),
+		obfsPassword: metadata.RawStringValue(md.Get(mdKeyOBFSPassword)),
+		caFile:       metadata.StringValue(md.Get(mdKeyCA)),
 	}
 	if cfg.address == "" {
 		return errors.New("hysteria2 dialer requires server address")
@@ -247,27 +247,6 @@ func (f *obfsConnFactory) New(addr net.Addr) (net.PacketConn, error) {
 		return nil, err
 	}
 	return hyobfs.WrapPacketConn(pc, f.obfs), nil
-}
-
-func getString(v any) string {
-	switch t := v.(type) {
-	case string:
-		return t
-	default:
-		return ""
-	}
-}
-
-func getBool(v any) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		t = strings.TrimSpace(strings.ToLower(t))
-		return t == "1" || t == "true" || t == "yes" || t == "on"
-	default:
-		return false
-	}
 }
 
 func normalizeCertHash(hash string) string {
