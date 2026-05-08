@@ -431,7 +431,9 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxPushBytes)
 	scanner := bufio.NewScanner(r.Body)
-	scanner.Buffer(make([]byte, 64*1024), maxPushBytes+1)
+	buf := pool.Get()
+	defer pool.Put(buf)
+	scanner.Buffer(buf, maxPushBytes+1)
 	_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	defer conn.SetWriteDeadline(time.Time{})
 

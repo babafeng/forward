@@ -16,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/proxy/vmess/encoding"
 	"github.com/xtls/xray-core/transport"
 
+	"forward/base/pool"
 	pvmess "forward/base/protocol/vmess"
 	"forward/internal/connector"
 	"forward/internal/connector/muxshared"
@@ -312,7 +313,8 @@ func (c *vmessConn) Close() error {
 // ReadFrom 实现 io.ReaderFrom
 func (c *vmessConn) ReadFrom(r io.Reader) (int64, error) {
 	var total int64
-	buf := make([]byte, 32*1024)
+	buf := pool.Get()
+	defer pool.Put(buf)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
@@ -337,7 +339,8 @@ func (c *vmessConn) WriteTo(w io.Writer) (int64, error) {
 		return 0, err
 	}
 	var total int64
-	b := make([]byte, 32*1024)
+	b := pool.Get()
+	defer pool.Put(b)
 	for {
 		n, err := c.Read(b)
 		if n > 0 {
