@@ -26,7 +26,10 @@ func NewDialer(opts ...dialer.Option) dialer.Dialer {
 		opt(&options)
 	}
 
-	base := tcpdialer.NewDialer(dialer.TimeoutOption(options.Timeout))
+	base := tcpdialer.NewDialer(
+		dialer.TimeoutOption(options.Timeout),
+		dialer.ResolverOption(options.Resolver),
+	)
 	cfg := options.TLSConfig
 	if cfg == nil {
 		cfg = &tls.Config{}

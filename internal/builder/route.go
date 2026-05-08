@@ -61,6 +61,9 @@ func buildRouteInternal(cfg config.Config, hops []endpoint.Endpoint, enablePool 
 			dialer.TimeoutOption(cfg.DialTimeout),
 			dialer.LoggerOption(cfg.Logger),
 		}
+		if resolver := dialer.NewResolver(cfg.DNSParameters.Servers, cfg.DNSParameters.Timeout); resolver != nil {
+			dialerOpts = append(dialerOpts, dialer.ResolverOption(resolver))
+		}
 		if dialerName == "tls" || dialerName == "http3" || dialerName == "h3" || dialerName == "dtls" || dialerName == "h2" || dialerName == "quic" {
 			tlsOpts := ctls.ClientOptions{}
 			if dialerName == "http3" || dialerName == "h3" || dialerName == "quic" {
