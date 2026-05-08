@@ -17,9 +17,9 @@ const (
 	DefaultReadDeadline      = 1 * time.Second
 	DefaultReadHeaderTimeout = 10 * time.Second
 
-	DefaultBufferSize = 64 * 1024  // 64KB
-	DefaultCopyBuffer = 32 * 1024  // 32KB
-	DefaultUDPBuffer  = 65535 + 28 // 最大 UDP 报文 + IP/UDP 头余量
+	DefaultBufferSize = 128 * 1024 // 128KB
+	DefaultCopyBuffer = 64 * 1024  // 64KB
+	DefaultUDPBuffer  = 64 * 1024  // 64KB
 
 	DefaultMaxHeaderBytes = 1 << 20
 

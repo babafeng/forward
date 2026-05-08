@@ -173,10 +173,11 @@ func (c *ssPacketConn) WriteTo(w io.Writer) (int64, error) {
 }
 
 // pump 在 read/write 两端之间传递数据，直到遇到 EOF 或错误。
-// 每次分配 64KB 缓冲区（UDP 包尺寸上限），不使用 sync.Pool 以保证包边界安全。
+// 使用内存池分配 64KB 缓冲区（UDP 包尺寸上限）。
 func pump(read func([]byte) (int, error), write func([]byte) (int, error)) (int64, error) {
 	var total int64
-	buf := make([]byte, 64*1024)
+	buf := pool.Get()
+	defer pool.Put(buf)
 	for {
 		n, err := read(buf)
 		if n > 0 {
