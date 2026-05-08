@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
@@ -24,14 +25,30 @@ const (
 	maxConcurrency = 10                           // 最大并发数
 )
 
+type nodeTestResult struct {
+	Name    string
+	Type    string
+	Latency time.Duration
+	Err     error
+	At      time.Time
+}
+
+type nodeTestSummary struct {
+	Successes []nodeTestResult
+	Failures  []nodeTestResult
+}
+
 // TestNodes 并发测试节点延迟，最多 10 个节点同时测试，每个节点测试 3 次取最优。
-// 输出格式: time Forward Subscribe Connect Test Node-[节点名] 协议类型 延迟 ms
+// 成功结果实时输出，失败结果在末尾集中输出，避免失败日志打断可用节点排查。
 func TestNodes(ctx context.Context, proxies []ClashProxy, connectURL string, cfg config.Config, logger *logging.Logger) {
 	if connectURL == "" {
 		connectURL = "http://www.gstatic.com/generate_204"
 	}
 
 	sem := make(chan struct{}, maxConcurrency)
+	results := make(chan nodeTestResult, len(proxies))
+	summaryCh := make(chan nodeTestSummary, 1)
+	go collectNodeTestResults(results, summaryCh)
 	var wg sync.WaitGroup
 
 loop:
@@ -44,7 +61,12 @@ loop:
 
 		ep, err := ProxyToEndpoint(proxy)
 		if err != nil {
-			logger.Warn("Node-[%s] 转换失败: %v", proxy.Name, err)
+			results <- nodeTestResult{
+				Name: proxy.Name,
+				Type: proxy.Type,
+				Err:  fmt.Errorf("转换失败: %w", err),
+				At:   time.Now(),
+			}
 			continue
 		}
 
@@ -64,36 +86,93 @@ loop:
 			hops := []endpoint.Endpoint{ep}
 			rt, err := builder.BuildRoute(cfg, hops)
 			if err != nil {
-				fmt.Printf("%s Forward Subscribe Connect Test Node-[%s] %s error: 构建路由失败: %v\n",
-					time.Now().Format("15:04:05"),
-					p.Name,
-					p.Type,
-					err,
-				)
+				results <- nodeTestResult{
+					Name: p.Name,
+					Type: p.Type,
+					Err:  fmt.Errorf("构建路由失败: %w", err),
+					At:   time.Now(),
+				}
 				return
 			}
 
 			bestLatency, err := testNodeBestLatency(ctx, rt, connectURL)
 			if err != nil {
-				fmt.Printf("%s Forward Subscribe Connect Test Node-[%s] %s timeout/error: %v\n",
-					time.Now().Format("15:04:05"),
-					p.Name,
-					p.Type,
-					err,
-				)
+				results <- nodeTestResult{
+					Name: p.Name,
+					Type: p.Type,
+					Err:  err,
+					At:   time.Now(),
+				}
 				return
 			}
 
-			fmt.Printf("%s Forward Subscribe Connect Test Node-[%s] %s %d ms\n",
-				time.Now().Format("15:04:05"),
-				p.Name,
-				p.Type,
-				bestLatency.Milliseconds(),
-			)
+			results <- nodeTestResult{
+				Name:    p.Name,
+				Type:    p.Type,
+				Latency: bestLatency,
+				At:      time.Now(),
+			}
 		}(proxy, ep)
 	}
 
 	wg.Wait()
+	close(results)
+	printNodeTestSummary(<-summaryCh)
+}
+
+func collectNodeTestResults(results <-chan nodeTestResult, summaryCh chan<- nodeTestSummary) {
+	summary := nodeTestSummary{}
+
+	for result := range results {
+		if result.Err != nil {
+			summary.Failures = append(summary.Failures, result)
+			continue
+		}
+		summary.Successes = append(summary.Successes, result)
+		fmt.Printf("%s Forward Subscribe Connect Test OK Node-[%s] %s %d ms\n",
+			result.At.Format("15:04:05"),
+			result.Name,
+			result.Type,
+			result.Latency.Milliseconds(),
+		)
+	}
+	summaryCh <- summary
+}
+
+func printNodeTestSummary(summary nodeTestSummary) {
+	sort.SliceStable(summary.Successes, func(i, j int) bool {
+		return summary.Successes[i].Latency < summary.Successes[j].Latency
+	})
+	sort.SliceStable(summary.Failures, func(i, j int) bool {
+		if summary.Failures[i].Type == summary.Failures[j].Type {
+			return summary.Failures[i].Name < summary.Failures[j].Name
+		}
+		return summary.Failures[i].Type < summary.Failures[j].Type
+	})
+
+	if len(summary.Successes) > 0 {
+		fmt.Printf("\nForward Subscribe Connect Test Success (%d, sorted by latency):\n", len(summary.Successes))
+		for i, result := range summary.Successes {
+			fmt.Printf("%2d. Node-[%s] %s %d ms\n",
+				i+1,
+				result.Name,
+				result.Type,
+				result.Latency.Milliseconds(),
+			)
+		}
+	}
+
+	if len(summary.Failures) > 0 {
+		fmt.Printf("\nForward Subscribe Connect Test Failed (%d):\n", len(summary.Failures))
+		for i, result := range summary.Failures {
+			fmt.Printf("%2d. Node-[%s] %s timeout/error: %v\n",
+				i+1,
+				result.Name,
+				result.Type,
+				result.Err,
+			)
+		}
+	}
 }
 
 func isWarmupRound(round int) bool {

@@ -13,6 +13,7 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 
+	"forward/base/pool"
 	pss "forward/base/protocol/shadowsocks"
 	"forward/internal/connector"
 	"forward/internal/metadata"
