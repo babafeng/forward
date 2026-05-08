@@ -32,12 +32,23 @@ type Dialer struct {
 }
 
 func NewDialer(opts ...dialer.Option) dialer.Dialer {
+	options := dialer.Options{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	return &Dialer{
 		path: "/",
 		dialer: &websocket.Dialer{
-			HandshakeTimeout: 10 * time.Second,
+			HandshakeTimeout: timeout,
 			NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 10 * time.Second}
+				d := net.Dialer{
+					Timeout:  timeout,
+					Resolver: options.Resolver,
+				}
 				netmark.ConfigureDialer(&d)
 				return d.DialContext(ctx, network, addr)
 			},

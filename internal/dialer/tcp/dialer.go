@@ -20,6 +20,7 @@ func init() {
 type Dialer struct {
 	timeout   time.Duration
 	keepAlive time.Duration
+	resolver  *net.Resolver
 }
 
 func NewDialer(opts ...dialer.Option) dialer.Dialer {
@@ -37,6 +38,7 @@ func NewDialer(opts ...dialer.Option) dialer.Dialer {
 	return &Dialer{
 		timeout:   timeout,
 		keepAlive: keepAlive,
+		resolver:  options.Resolver,
 	}
 }
 
@@ -61,6 +63,7 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 	nd := &net.Dialer{
 		Timeout:   d.timeout,
 		KeepAlive: d.keepAlive,
+		Resolver:  d.resolver,
 	}
 	netmark.ConfigureDialer(nd)
 	return nd.DialContext(ctx, "tcp", addr)

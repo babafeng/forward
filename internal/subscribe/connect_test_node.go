@@ -3,6 +3,7 @@ package subscribe
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,8 +18,10 @@ import (
 )
 
 const (
-	testRounds     = 3  // 每个节点测试轮次（第 1 轮作为热身，取后续最优值）
-	maxConcurrency = 10 // 最大并发数
+	warmupRounds   = 1
+	measureRounds  = 2
+	testRounds     = warmupRounds + measureRounds // 每个节点测试轮次（热身轮不计入结果，取测量轮最优值）
+	maxConcurrency = 10                           // 最大并发数
 )
 
 // TestNodes 并发测试节点延迟，最多 10 个节点同时测试，每个节点测试 3 次取最优。
@@ -70,32 +73,13 @@ loop:
 				return
 			}
 
-			var bestLatency time.Duration
-			var lastErr error
-
-			for round := 0; round < testRounds; round++ {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-
-				latency, err := testNodeLatency(ctx, rt, connectURL)
-				if err != nil {
-					lastErr = err
-					continue
-				}
-				if bestLatency == 0 || latency < bestLatency {
-					bestLatency = latency
-				}
-			}
-
-			if bestLatency == 0 {
+			bestLatency, err := testNodeBestLatency(ctx, rt, connectURL)
+			if err != nil {
 				fmt.Printf("%s Forward Subscribe Connect Test Node-[%s] %s timeout/error: %v\n",
 					time.Now().Format("15:04:05"),
 					p.Name,
 					p.Type,
-					lastErr,
+					err,
 				)
 				return
 			}
@@ -112,42 +96,80 @@ loop:
 	wg.Wait()
 }
 
-// testNodeLatency 通过已构建的路由发起请求测量单次延迟。
-func testNodeLatency(ctx context.Context, rt chain.Route, connectURL string) (time.Duration, error) {
-	testCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+func isWarmupRound(round int) bool {
+	return round < warmupRounds
+}
 
-	start := time.Now()
-
-	// 通过转发链拨号
-	conn, err := rt.Dial(testCtx, "tcp", extractHostFromURL(connectURL))
-	if err != nil {
-		return 0, fmt.Errorf("连接失败: %w", err)
-	}
-	defer conn.Close()
-
-	// 通过连接发送 HTTP 请求
+// testNodeBestLatency 复用同一条 HTTP keep-alive 连接测速。
+// 第一轮用于建立代理链路和预热目标 URL，不计入最终结果。
+func testNodeBestLatency(ctx context.Context, rt chain.Route, connectURL string) (time.Duration, error) {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := rt.Dial(ctx, "tcp", addr)
+			if err != nil {
+				return nil, fmt.Errorf("连接失败: %w", err)
+			}
 			return conn, nil
 		},
-		DisableKeepAlives: true,
+		MaxIdleConns:        1,
+		MaxIdleConnsPerHost: 1,
 	}
+	defer transport.CloseIdleConnections()
+
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   10 * time.Second,
 	}
+
+	var bestLatency time.Duration
+	var lastErr error
+	for round := 0; round < testRounds; round++ {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+
+		latency, err := testNodeLatency(ctx, client, connectURL)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if isWarmupRound(round) {
+			continue
+		}
+		if bestLatency == 0 || latency < bestLatency {
+			bestLatency = latency
+		}
+	}
+	if bestLatency == 0 {
+		if lastErr != nil {
+			return 0, lastErr
+		}
+		return 0, fmt.Errorf("no measured latency")
+	}
+	return bestLatency, nil
+}
+
+// testNodeLatency 通过已构建的 HTTP client 发起请求测量单次延迟。
+func testNodeLatency(ctx context.Context, client *http.Client, connectURL string) (time.Duration, error) {
+	testCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
 	req, err := http.NewRequestWithContext(testCtx, http.MethodGet, connectURL, nil)
 	if err != nil {
 		return 0, fmt.Errorf("创建请求失败: %w", err)
 	}
 
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("请求失败: %w", err)
 	}
 	defer resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		return 0, fmt.Errorf("读取响应失败: %w", err)
+	}
 
 	latency := time.Since(start)
 	return latency, nil
