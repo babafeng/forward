@@ -24,6 +24,14 @@ const (
 // NewClientQUICConfig 返回一个带窗口/超时基线的客户端 QUIC Config。
 //
 // 客户端主动发 PING（KeepAlivePeriod），让 NAT 不至于超时闭掉 UDP 映射。
+//
+// 注意：quic-go 原生默认 KeepAlivePeriod=0（不发 PING），本项目基线是
+// 15s；调用方的 metadata override 使用 `> 0` 门槛，因此 metadata 传
+// 0（或未设）都会保留本基线 15s——即**无法通过 metadata 显式关闭 PING**。
+// 对绝大多数跨 NAT 场景这是改进；如果未来有用户反馈需要完全关闭 PING，
+// 应通过引入 sentinel 值或专门的配置项来暴露该能力（而非把基线改回 0，
+// 那会让多数现有部署退化）。MaxIdleTimeout=30s 与 quic-go 原默认一致，
+// 不构成语义变化。
 func NewClientQUICConfig() *quic.Config {
 	return &quic.Config{
 		Versions:                       []quic.Version{quic.Version1},
