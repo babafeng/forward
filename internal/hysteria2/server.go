@@ -15,6 +15,7 @@ import (
 	hyobfs "github.com/apernet/hysteria/extras/v2/obfs"
 
 	"forward/base/logging"
+	"forward/base/pool"
 	"forward/internal/chain"
 	"forward/internal/config"
 	ctls "forward/internal/config/tls"
@@ -205,6 +206,7 @@ func (c *routeUDPConn) ReadFrom(b []byte) (int, string, error) {
 	select {
 	case pkt := <-c.recvCh:
 		n := copy(b, pkt.data)
+		pool.Put(pkt.data)
 		return n, pkt.addr, nil
 	case err := <-c.errCh:
 		return 0, "", err
@@ -246,6 +248,15 @@ func (c *routeUDPConn) Close() error {
 			err = c.conn.Close()
 		}
 		c.mu.Unlock()
+		// drain pending packets to return their buffers to the pool
+		for {
+			select {
+			case pkt := <-c.recvCh:
+				pool.Put(pkt.data)
+			default:
+				return
+			}
+		}
 	})
 	return err
 }
@@ -270,9 +281,10 @@ func (c *routeUDPConn) switchConnLocked(addr string) error {
 }
 
 func (c *routeUDPConn) readLoop(conn net.Conn, addr string, generation uint64) {
-	buf := make([]byte, 64*1024)
+	readBuf := pool.Get()
+	defer pool.Put(readBuf)
 	for {
-		n, err := conn.Read(buf)
+		n, err := conn.Read(readBuf)
 		if err != nil {
 			if c.isCurrentGeneration(generation) {
 				select {
@@ -287,10 +299,12 @@ func (c *routeUDPConn) readLoop(conn net.Conn, addr string, generation uint64) {
 			return
 		}
 
-		data := append([]byte(nil), buf[:n]...)
+		out := pool.Get()
+		nn := copy(out, readBuf[:n])
 		select {
-		case c.recvCh <- udpReadResult{data: data, addr: addr}:
+		case c.recvCh <- udpReadResult{data: out[:nn], addr: addr}:
 		case <-c.closeCh:
+			pool.Put(out)
 			return
 		}
 	}
