@@ -19,6 +19,7 @@ import (
 
 	"forward/base/endpoint"
 	"forward/internal/config"
+	"forward/internal/dialer/transportutil"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -96,6 +97,9 @@ func ClientConfig(ep endpoint.Endpoint, insecure bool, opts ClientOptions) (*tls
 	}
 	if sni := strings.TrimSpace(ep.Query.Get("sni")); sni != "" {
 		tlsCfg.ServerName = sni
+	}
+	if tlsCfg.ClientSessionCache == nil {
+		tlsCfg.ClientSessionCache = transportutil.SharedClientSessionCache
 	}
 	return tlsCfg, nil
 }
