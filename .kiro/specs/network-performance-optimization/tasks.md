@@ -69,20 +69,17 @@
 **验证方式**：
 - `go test ./base/io/net/...` 必须全绿
 - `go test -race ./base/io/net/...`
-- Bench：可选项，不作为强制要求。若落地"优先 `io.Copy`、fallback 到 buffered"的可选改动，实施阶段可跑 `go test -bench . -benchmem -run '^$' ./base/io/net/` 记录 `sync.Pool` 压力变化。
+- Bench：可选项，不作为强制要求。
 - 人工：在 Linux 上用 `strace -e splice,read,write -p $(pgrep forward)` 观察 TCP 明文转发路径确实走 `splice`（属于防回归佐证，非强制步骤）。
 
 **风险**：
-- 测试需覆盖 wrapped conn（TLS / VLESS / Reality / PHT `clientConn` 等）以确认 buffered 路径仍工作；
-- 若采纳"优先 `io.Copy`、fallback 到 buffered"的可选改动，`closeWrite` / `normalizeCopyError` / `waitSecondResult` 的语义需要在两条路径下手工比对；
-- 回退开关：`FORWARD_COPY_FORCE_BUFFERED=1`（仅在采纳可选改动时引入，作为紧急回退）。
+- 测试需覆盖 wrapped conn（TLS / VLESS / Reality / PHT `clientConn` 等）以确认 buffered 路径仍工作。
 
 **验收清单**：
 1. 新增回归测试断言 `io.CopyBuffer(wrappedTCPConn, src, buf)` 命中 `ReaderFrom`（构造一个包裹 `*net.TCPConn` 并计数 `ReadFrom` 的 wrapper，断言计数 `>= 1`）。
 2. 新增回归测试断言 `Bidirectional` 对 wrapped conn（未实现 `ReaderFrom`，例如一个纯 `io.ReadWriter` 包装）仍走 buffered 路径，字节数与错误语义与现有实现一致。
-3. 可选：在 `pipe` 内改为优先 `io.Copy`，仅在 dst 未实现 `ReaderFrom` 时 fallback 到 `io.CopyBuffer` + 池化路径；若采纳，需同步引入 `FORWARD_COPY_FORCE_BUFFERED` 环境变量作为紧急回退。
-4. `go test ./base/io/net/...` 全绿。
-5. Bench 不作为强制要求，作为 optional 记录。
+3. `go test ./base/io/net/...` 全绿。
+4. Bench 不作为强制要求，作为 optional 记录。
 
 ---
 
