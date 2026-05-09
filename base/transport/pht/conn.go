@@ -24,6 +24,12 @@ const (
 	WriteBatchWait = 0 * time.Millisecond
 )
 
+// batchBufPool reuses bytes.Buffer across postBatch calls to avoid a heap
+// allocation per write batch.
+var batchBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
 func NewClientConn(client *http.Client, pushURL, pullURL, secret string, remoteAddr net.Addr, logger *logging.Logger) net.Conn {
 	if remoteAddr == nil {
 		remoteAddr = &net.TCPAddr{}
@@ -187,7 +193,9 @@ func (c *clientConn) postBatch(batch [][]byte) error {
 	if len(batch) == 0 {
 		return nil
 	}
-	var payload bytes.Buffer
+	payload := batchBufPool.Get().(*bytes.Buffer)
+	payload.Reset()
+	defer batchBufPool.Put(payload)
 	for _, pkt := range batch {
 		if len(pkt) == 0 {
 			continue
@@ -203,7 +211,7 @@ func (c *clientConn) postBatch(batch [][]byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.pushURL, &payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.pushURL, payload)
 	if err != nil {
 		return err
 	}
