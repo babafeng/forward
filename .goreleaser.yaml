@@ -20,6 +20,8 @@ builds:
     binary: forward
     ldflags:
       - -s -w
+    flags:
+      - -trimpath
 
 archives:
   - format: tar.gz

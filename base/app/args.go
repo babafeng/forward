@@ -36,6 +36,8 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	filterExpr := fs.String("filter", "", "Filter expression for node names (e.g. \"美国|US\", \"?!日本&?!JP\")")
 	subUpdate := fs.Int("sub-update", 60, "Subscription auto-update interval in minutes (0 to disable)")
 	connectURL := fs.String("connect-url", defaultConnectURL, "URL to test node latency (used with -S)")
+	var dnsServers stringSlice
+	fs.Var(&dnsServers, "dns-server", "DNS server for resolving outbound node domains, e.g. 1.1.1.1 or 8.8.8.8:53 (can be repeated or comma-separated)")
 	isDebug := fs.Bool("debug", false, "Enable debug logging")
 	isDebugVerbose := fs.Bool("debug-verbose", false, "Enable verbose debug tracing (high-volume logs)")
 	isVersion := fs.Bool("version", false, "Show version information")
@@ -164,6 +166,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	}
 
 	cfg.Insecure = *insecure
+	cfg.DNSParameters.Servers = config.SplitCSVValues(dnsServers)
 
 	if len(cfg.Listeners) > 0 {
 		cfg.Nodes = []config.NodeConfig{{

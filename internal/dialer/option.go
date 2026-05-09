@@ -2,6 +2,7 @@ package dialer
 
 import (
 	"crypto/tls"
+	"net"
 	"time"
 
 	"forward/base/logging"
@@ -11,6 +12,7 @@ type Options struct {
 	Addr      string
 	Timeout   time.Duration
 	TLSConfig *tls.Config
+	Resolver  *net.Resolver
 	Logger    *logging.Logger
 }
 
@@ -31,6 +33,12 @@ func TimeoutOption(timeout time.Duration) Option {
 func TLSConfigOption(cfg *tls.Config) Option {
 	return func(opts *Options) {
 		opts.TLSConfig = cfg
+	}
+}
+
+func ResolverOption(resolver *net.Resolver) Option {
+	return func(opts *Options) {
+		opts.Resolver = resolver
 	}
 }
 

@@ -47,6 +47,8 @@ var directTransports = map[string]struct {
 	"vless+tls":     {"vless", TransportTLS},
 	"vmess":         {"vmess", TransportNone},
 	"vmess+tls":     {"vmess", TransportTLS},
+	"trojan":        {"trojan", TransportTLS},
+	"trojan+tls":    {"trojan", TransportTLS},
 }
 
 var transportSuffixes = []struct {
@@ -81,6 +83,8 @@ var routeTypes = map[string]RouteTypes{
 	"vless+tls":       {"vless", "tls"},
 	"vmess":           {"vmess", "tcp"},
 	"vmess+tls":       {"vmess", "tls"},
+	"trojan":          {"trojan", "tls"},
+	"trojan+tls":      {"trojan", "tls"},
 	"ss":              {"ss", "tcp"},
 	"shadowsocks":     {"ss", "tcp"},
 	"ss+tls":          {"ss", "tls"},
@@ -96,6 +100,7 @@ var suffixConnectors = map[string]string{
 	"tcp":         "tcp",
 	"vless":       "vless",
 	"vmess":       "vmess",
+	"trojan":      "trojan",
 	"ss":          "ss",
 	"shadowsocks": "ss",
 }
@@ -140,6 +145,9 @@ func NormalizeProxy(raw string) ProxyTypes {
 		return out
 	case "vmess":
 		out.Handler = "vmess"
+		out.Listener = "tcp"
+	case "trojan":
+		out.Handler = "trojan"
 		out.Listener = "tcp"
 	case "ss", "shadowsocks":
 		out.Handler = "ss"
