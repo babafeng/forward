@@ -128,24 +128,45 @@ else
     require_cmd ssh
     require_cmd scp
 
+    # 检测如何忽略 ssh 的 Post-Quantum Key Exchange 警告
+    SSH_OPT=""
+    if ssh -o WarnWeakCrypto=no-pq-kex -V >/dev/null 2>&1; then
+        SSH_OPT="-o WarnWeakCrypto=no-pq-kex"
+    fi
+
     echo "Detecting remote CPU architecture on ${TARGET}..."
-    REMOTE_UNAME_ARCH="$(ssh "$TARGET" "uname -m")"
+    REMOTE_UNAME_ARCH="$(ssh $SSH_OPT "$TARGET" "uname -m")"
     REMOTE_GOARCH="$(map_goarch "$REMOTE_UNAME_ARCH")"
 
     echo "Building ${LOCAL_BIN} for linux/${REMOTE_GOARCH}..."
     CGO_ENABLED=0 GOOS=linux GOARCH="$REMOTE_GOARCH" go build $BUILD_FLAGS -ldflags="$BUILD_LDFLAGS" -o "$LOCAL_BIN" ./cmd/forward
 
     echo "Uploading ${LOCAL_BIN} to ${TARGET}:${TMP_REMOTE_BIN}..."
-    # OpenWrt 通常使用 Dropbear，旧版本可能不支持 SFTP，强制使用 SCP 原生协议 (-O)
-    # 如果 scp 报错，尝试添加 -O 参数
-    if ! scp -O "$LOCAL_BIN" "${TARGET}:${TMP_REMOTE_BIN}" 2>/dev/null; then
-        echo "Standard scp failed, retrying without -O..."
-        scp "$LOCAL_BIN" "${TARGET}:${TMP_REMOTE_BIN}"
+    # 确保远程目录存在
+    ssh $SSH_OPT "$TARGET" "mkdir -p '$(dirname "${REMOTE_BIN}")'"
+
+    # 尝试检查 scp 是否支持 -O 选项
+    SCP_CMD="scp"
+    if scp -O 2>&1 | grep -q 'illegal option\|unknown option'; then
+        # 不支持 -O（较旧的 scp，默认使用原生协议）
+        SCP_CMD="scp"
+    elif scp 2>&1 | grep -q '\[-O\]\|\[.*O.*\]'; then
+        # 支持 -O（较新的 scp，默认可能是 sftp，需要 -O 强制使用原生协议）
+        SCP_CMD="scp -O"
+    else
+        # 兼容处理
+        SCP_CMD="scp -O"
+    fi
+
+    echo "Using command: $SCP_CMD $SSH_OPT"
+    if ! $SCP_CMD $SSH_OPT "$LOCAL_BIN" "${TARGET}:${TMP_REMOTE_BIN}"; then
+        echo "Upload failed."
+        exit 1
     fi
 
     echo "Installing binary to ${REMOTE_BIN}..."
     # OpenWrt 的 install 命令可能在不同路径或不可用，使用 cp + chmod 作为兜底
-    ssh "$TARGET" "cp '${TMP_REMOTE_BIN}' '${REMOTE_BIN}' && chmod 0755 '${REMOTE_BIN}' && rm -f '${TMP_REMOTE_BIN}'"
+    ssh $SSH_OPT "$TARGET" "cp '${TMP_REMOTE_BIN}' '${REMOTE_BIN}' && chmod 0755 '${REMOTE_BIN}' && rm -f '${TMP_REMOTE_BIN}'"
 
     echo "Deployment finished."
 fi
