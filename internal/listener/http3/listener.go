@@ -120,8 +120,11 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	l.cqueue = make(chan net.Conn, l.md.backlog)
 	l.errChan = make(chan error, 1)
 
+	// 捕获到局部变量：Close 会把 l.server 清为 nil（对称 l.pc = nil 的
+	// 幂等习惯），此时 goroutine 仍持有有效引用跑 Serve。
+	server := l.server
 	go func() {
-		if err := l.server.Serve(pc); err != nil && l.logger != nil {
+		if err := server.Serve(pc); err != nil && l.logger != nil {
 			l.logger.Error("HTTP3 listener error: %v", err)
 		}
 		l.errChan <- http.ErrServerClosed
@@ -160,6 +163,10 @@ func (l *Listener) Close() error {
 		}
 		l.pc = nil
 	}
+	// 与 internal/listener/quic/listener.go 的 l.ln = nil 对齐：
+	// 二次 Close 通过顶部 `l.server == nil` 早退，不依赖
+	// http3.Server.Close 的幂等实现。
+	l.server = nil
 	return err
 }
 
