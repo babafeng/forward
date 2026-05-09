@@ -7,13 +7,15 @@ var (
 
 	pool = sync.Pool{
 		New: func() interface{} {
-			return make([]byte, defaultSize)
+			b := make([]byte, defaultSize)
+			return &b
 		},
 	}
 )
 
 func Get() []byte {
-	b := pool.Get().([]byte)
+	bp := pool.Get().(*[]byte)
+	b := *bp
 	return b[:defaultSize]
 }
 
@@ -21,7 +23,8 @@ func Put(b []byte) {
 	if cap(b) < defaultSize {
 		return
 	}
-	pool.Put(b[:cap(b)])
+	b = b[:cap(b)]
+	pool.Put(&b)
 }
 
 func GetWithSize(size int) []byte {
