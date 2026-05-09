@@ -100,7 +100,9 @@ func (h *Handler) Validator() interface{} {
 func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.HandleOption) error {
 	defer conn.Close()
 
-	h.options.Logger.Debug("VMess Handler received connection from %s", conn.RemoteAddr())
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("VMess Handler received connection from %s", conn.RemoteAddr())
+	}
 
 	if h.validator == nil {
 		return fmt.Errorf("vmess validator not initialized")
@@ -109,7 +111,9 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 创建服务端会话
 	session := encoding.NewServerSession(h.validator, h.sessionHistory)
 
-	h.options.Logger.Debug("VMess decoding request header from %s", conn.RemoteAddr())
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("VMess decoding request header from %s", conn.RemoteAddr())
+	}
 
 	// 读取请求头 (isDrain=false 表示不丢弃无效数据)
 	request, err := session.DecodeRequestHeader(conn, false)
@@ -127,12 +131,16 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	}
 	targetAddr := net.JoinHostPort(request.Address.String(), request.Port.String())
 
-	h.options.Logger.Debug("VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	}
 
 	// 创建请求体读取器
 	bodyReader, err := session.DecodeRequestBody(request, conn)
 	if err != nil {
-		h.options.Logger.Debug("VMess decode request body failed: %v", err)
+		if h.options.Logger != nil && h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("VMess decode request body failed: %v", err)
+		}
 		return err
 	}
 
@@ -147,7 +155,9 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	// 创建响应体写入器
 	bodyWriter, err := session.EncodeResponseBody(request, conn)
 	if err != nil {
-		h.options.Logger.Debug("VMess encode response body failed: %v", err)
+		if h.options.Logger != nil && h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("VMess encode response body failed: %v", err)
+		}
 		return err
 	}
 

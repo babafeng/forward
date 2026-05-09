@@ -233,7 +233,9 @@ func (r *chainRoute) Dial(ctx context.Context, network, address string) (net.Con
 			tr.Logger.Debug("%sconnect dest ok prev=%s -> %s %s (dur=%s)", tr.Prefix(), labelNode(prev), strings.ToUpper(network), address, time.Since(finalStart))
 			tr.Logger.Debug("%sdial done %s %s via %s", tr.Prefix(), strings.ToUpper(network), address, RouteSummary(r))
 		}
-		tr.Logger.Debug("%sdial ok %s %s via %s hops=%d dur=%s", tr.Prefix(), strings.ToUpper(network), address, RouteSummary(r), len(r.nodes), time.Since(start))
+		if tr.Logger.IsDebug() {
+			tr.Logger.Debug("%sdial ok %s %s via %s hops=%d dur=%s", tr.Prefix(), strings.ToUpper(network), address, RouteSummary(r), len(r.nodes), time.Since(start))
+		}
 	}
 	return cc, nil
 }
