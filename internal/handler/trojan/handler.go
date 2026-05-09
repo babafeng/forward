@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -117,7 +116,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	}
 	defer targetConn.Close()
 
-	if err := bidirectionalCopy(ctx, conn, targetConn, clientReader, buf.NewWriter(conn)); err != nil && ctx.Err() == nil {
+	if err := xraymux.Bidirectional(ctx, conn, targetConn, clientReader, buf.NewWriter(conn), buf.NewReader(targetConn), buf.NewWriter(targetConn)); err != nil && ctx.Err() == nil {
 		return err
 	}
 	return nil
@@ -162,45 +161,6 @@ func (h *Handler) handleUDP(ctx context.Context, clientReader *xtrojan.PacketRea
 			udpServer.Dispatch(ctx, destination, payload)
 		}
 	}
-}
-
-func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.Conn, clientReader buf.Reader, clientWriter buf.Writer) error {
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = clientConn.Close()
-			_ = targetConn.Close()
-		case <-stop:
-		}
-	}()
-
-	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(clientReader, buf.NewWriter(targetConn))
-	}()
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(buf.NewReader(targetConn), clientWriter)
-	}()
-
-	wg.Wait()
-	close(stop)
-
-	_ = clientConn.Close()
-	_ = targetConn.Close()
-
-	var first error
-	for i := 0; i < 2; i++ {
-		if err := <-errCh; err != nil && err != io.EOF && first == nil {
-			first = err
-		}
-	}
-	return first
 }
 
 func destinationToTarget(dest xnet.Destination) (string, string) {
