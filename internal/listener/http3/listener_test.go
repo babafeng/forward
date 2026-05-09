@@ -7,11 +7,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
-	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,8 +48,13 @@ func TestListenerBindAddresses(t *testing.T) {
 				listener.TLSConfigOption(tlsCfg),
 			)
 			if err := ln.Init(metadata.New(map[string]any{})); err != nil {
-				// ipv6 可能在没有 ::1 的环境不可用，跳过而非失败。
-				if tc.name == "ipv6_loopback" && strings.Contains(err.Error(), "address") {
+				// ipv6 可能在没有 ::1 的环境不可用，跳过而非失败。用
+				// errors.Is(EADDRNOTAVAIL) 做 sentinel 检测，Linux 下
+				// 对应 'cannot assign requested address'，Windows 下对
+				// 应 WSAEADDRNOTAVAIL——都比 strings.Contains(err.Error(),
+				// "address") 稳定。EADDRNOTAVAIL 在 Linux/Windows 的
+				// syscall 包里都定义。
+				if tc.name == "ipv6_loopback" && errors.Is(err, syscall.EADDRNOTAVAIL) {
 					t.Skipf("ipv6 loopback bind skipped: %v", err)
 				}
 				t.Fatalf("Init(%q) failed: %v", tc.addr, err)
