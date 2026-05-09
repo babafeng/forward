@@ -263,7 +263,9 @@ func (h *Handler) handleConnect(ctx context.Context, conn net.Conn, bw *bufio.Wr
 	_ = h.writeReply(bw, 0x00, bind)
 
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
-	h.options.Logger.Debug("SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
+	if h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("SOCKS5 CONNECT closed %s -> %s bytes=%d dur=%s", conn.RemoteAddr().String(), dest, bytes, dur)
+	}
 	return err
 }
 
@@ -292,7 +294,9 @@ func (h *Handler) handleUDP(ctx context.Context, conn net.Conn, bw *bufio.Writer
 		return err
 	}
 
-	h.options.Logger.Debug("SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
+	if h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("SOCKS5 UDP relay at %s for %s", bind, conn.RemoteAddr().String())
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -462,7 +466,9 @@ func (s *udpSession) getOrCreatePeer(ctx context.Context, dest string, src *net.
 			return nil, err
 		}
 
-		s.logger.Debug("SOCKS5 UDP %s -> %s", src.String(), dest)
+		if s.logger.IsDebug() {
+			s.logger.Debug("SOCKS5 UDP %s -> %s", src.String(), dest)
+		}
 
 		p := &udpPeer{
 			conn: c,

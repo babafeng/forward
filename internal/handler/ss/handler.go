@@ -81,7 +81,9 @@ func (h *Handler) Init(md metadata.Metadata) error {
 func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.HandleOption) error {
 	defer conn.Close()
 
-	h.options.Logger.Debug("SS Handler received connection from %s", conn.RemoteAddr())
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("SS Handler received connection from %s", conn.RemoteAddr())
+	}
 
 	if h.service == nil {
 		return fmt.Errorf("shadowsocks service not initialized")

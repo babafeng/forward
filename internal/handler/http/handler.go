@@ -170,7 +170,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	remote := conn.RemoteAddr().String()
 	local := conn.LocalAddr().String()
 	ctx = context.WithValue(ctx, connInfoKey{}, connInfo{remote: remote, local: local})
-	if h.options.Logger != nil {
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
 		h.options.Logger.Debug("%sHTTP accept %s -> %s", h.tracePrefix(ctx), remote, local)
 	}
 	h.debugVerbose(ctx, "%sHTTP accept %s -> %s", h.tracePrefix(ctx), remote, local)
@@ -352,7 +352,9 @@ func (h *Handler) ServeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 	if !strings.EqualFold(r.Method, stdhttp.MethodConnect) {
 		if !r.URL.IsAbs() && !h.transparent {
-			h.options.Logger.Debug("%sHTTP reject non-absolute request from %s: %s", prefix, r.RemoteAddr, r.URL.String())
+			if h.options.Logger.IsDebug() {
+				h.options.Logger.Debug("%sHTTP reject non-absolute request from %s: %s", prefix, r.RemoteAddr, r.URL.String())
+			}
 			writeSimpleHTTP(w, stdhttp.StatusForbidden, config.CamouflagePageTitle)
 			return
 		}
@@ -377,7 +379,9 @@ func (h *Handler) authorizeHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) bo
 		h.debugVerbose(r.Context(), "%sHTTP auth success for user %s", prefix, user)
 		return true
 	}
-	h.options.Logger.Debug("%sHTTP auth failed or missing credentials from %s", prefix, r.RemoteAddr)
+	if h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("%sHTTP auth failed or missing credentials from %s", prefix, r.RemoteAddr)
+	}
 	writeAuthRequiredHTTP(w)
 	return false
 }
@@ -427,10 +431,12 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 		_ = bufrw.Flush()
 
 		bytes, dur, streamErr := inet.Bidirectional(ctx, conn, up)
-		if streamErr != nil && ctx.Err() == nil {
-			h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s err=%v", prefix, r.RemoteAddr, target, bytes, dur, streamErr)
-		} else {
-			h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s", prefix, r.RemoteAddr, target, bytes, dur)
+		if h.options.Logger.IsDebug() {
+			if streamErr != nil && ctx.Err() == nil {
+				h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s err=%v", prefix, r.RemoteAddr, target, bytes, dur, streamErr)
+			} else {
+				h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s bytes=%d dur=%s", prefix, r.RemoteAddr, target, bytes, dur)
+			}
 		}
 		return
 	}
@@ -450,7 +456,9 @@ func (h *Handler) handleConnectHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 	fl.Flush()
 
 	h.streamWithBody(ctx, w, r.Body, up, fl)
-	h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s dur=%s", prefix, r.RemoteAddr, target, time.Since(start))
+	if h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("%sHTTP CONNECT closed %s -> %s dur=%s", prefix, r.RemoteAddr, target, time.Since(start))
+	}
 }
 
 func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -492,7 +500,9 @@ func (h *Handler) handleForwardHTTP(w stdhttp.ResponseWriter, r *stdhttp.Request
 		h.options.Logger.Error("HTTP error writing response: %v", err)
 		return
 	}
-	h.options.Logger.Debug("%sHTTP %s %s -> %s status=%d dur=%s", prefix, r.Method, redactURL(r.URL), target, resp.StatusCode, time.Since(start))
+	if h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("%sHTTP %s %s -> %s status=%d dur=%s", prefix, r.Method, redactURL(r.URL), target, resp.StatusCode, time.Since(start))
+	}
 }
 
 func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, body io.ReadCloser, upstream net.Conn, fl stdhttp.Flusher) {
