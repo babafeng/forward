@@ -14,6 +14,7 @@ import (
 	"forward/internal/listener"
 	"forward/internal/listener/udpsession"
 	"forward/internal/metadata"
+	"forward/internal/netmark"
 	"forward/internal/registry"
 )
 
@@ -144,6 +145,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	if err != nil {
 		return listener.NewBindError(err)
 	}
+	netmark.TuneUDPConn(conn)
 
 	l.conn = conn
 	l.laddr = conn.LocalAddr()

@@ -17,6 +17,7 @@ import (
 	ictx "forward/internal/ctx"
 	"forward/internal/listener"
 	"forward/internal/metadata"
+	"forward/internal/netmark"
 	"forward/internal/registry"
 )
 
@@ -35,6 +36,7 @@ type listenerMetadata struct {
 
 type Listener struct {
 	addr    net.Addr
+	pc      net.PacketConn
 	server  *http3.Server
 	logger  *logging.Logger
 	md      listenerMetadata
@@ -81,6 +83,13 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	}
 	l.addr = udpAddr
 
+	pc, err := net.ListenPacket(network, addr)
+	if err != nil {
+		return listener.NewBindError(err)
+	}
+	netmark.TuneUDPConn(pc)
+	l.pc = pc
+
 	quicCfg := config.NewServerQUICConfig()
 	if l.md.keepAlivePeriod > 0 {
 		quicCfg.KeepAlivePeriod = l.md.keepAlivePeriod
@@ -110,7 +119,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	l.errChan = make(chan error, 1)
 
 	go func() {
-		if err := l.server.ListenAndServe(); err != nil && l.logger != nil {
+		if err := l.server.Serve(pc); err != nil && l.logger != nil {
 			l.logger.Error("HTTP3 listener error: %v", err)
 		}
 		l.errChan <- http.ErrServerClosed
@@ -142,7 +151,14 @@ func (l *Listener) Close() error {
 	if l.server == nil {
 		return nil
 	}
-	return l.server.Close()
+	err := l.server.Close()
+	if l.pc != nil {
+		if cerr := l.pc.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+		l.pc = nil
+	}
+	return err
 }
 
 func (l *Listener) handleFunc(w http.ResponseWriter, r *http.Request) {
