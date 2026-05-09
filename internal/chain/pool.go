@@ -115,9 +115,11 @@ func (p *DialPool) Close() {
 // warmBackground continuously fills the pool up to maxIdle.
 func (p *DialPool) warmBackground() {
 	// Initial fill with a short delay to let the server start
+	timer := time.NewTimer(500 * time.Millisecond)
 	select {
-	case <-time.After(500 * time.Millisecond):
+	case <-timer.C:
 	case <-p.stop:
+		timer.Stop()
 		return
 	}
 	p.fill()
