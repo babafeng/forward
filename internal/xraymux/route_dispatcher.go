@@ -3,9 +3,7 @@ package xraymux
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"sync"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -90,48 +88,7 @@ func (d *RouteDispatcher) dispatchLink(ctx context.Context, dest xnet.Destinatio
 	}
 	defer conn.Close()
 
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-			common.Interrupt(link.Reader)
-			common.Close(link.Writer)
-		case <-stop:
-		}
-	}()
-
-	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(link.Reader, buf.NewWriter(conn))
-	}()
-
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(buf.NewReader(conn), link.Writer)
-	}()
-
-	wg.Wait()
-	close(stop)
-	close(errCh)
-
-	common.Interrupt(link.Reader)
-	common.Close(link.Writer)
-
-	var first error
-	for err := range errCh {
-		if err == nil || err == io.EOF {
-			continue
-		}
-		if first == nil {
-			first = err
-		}
-	}
-	return first
+	return Bidirectional(ctx, nil, conn, link.Reader, link.Writer, buf.NewReader(conn), buf.NewWriter(conn))
 }
 
 func destinationToDialTarget(dest xnet.Destination) (string, string) {

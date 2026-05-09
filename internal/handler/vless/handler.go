@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -150,7 +149,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	targetWriter := buf.NewWriter(targetConn)
 
 	// 双向转发
-	if err := bidirectionalCopy(ctx, conn, targetConn, clientReader, clientWriter, targetReader, targetWriter); err != nil && ctx.Err() == nil {
+	if err := xraymux.Bidirectional(ctx, conn, targetConn, clientReader, clientWriter, targetReader, targetWriter); err != nil && ctx.Err() == nil {
 		if requestAddons.Flow == xvless.XRV {
 			h.options.Logger.Error("VLESS Vision error: %v", err)
 		} else {
@@ -206,47 +205,6 @@ func (h *Handler) readRequest(conn net.Conn) (*buf.BufferedReader, []byte, *prot
 	return reader, userSentID, request, requestAddons, nil
 }
 
-// bidirectionalCopy 双向复制数据
-func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.Conn, clientReader buf.Reader, clientWriter buf.Writer, targetReader buf.Reader, targetWriter buf.Writer) error {
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = clientConn.Close()
-			_ = targetConn.Close()
-		case <-stop:
-		}
-	}()
-
-	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// client -> target
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(clientReader, targetWriter)
-	}()
-
-	// target -> client
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(targetReader, clientWriter)
-	}()
-
-	wg.Wait()
-	close(stop)
-
-	_ = clientConn.Close()
-	_ = targetConn.Close()
-
-	var first error
-	for i := 0; i < 2; i++ {
-		if err := <-errCh; err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
-}
+// end of file
 
 

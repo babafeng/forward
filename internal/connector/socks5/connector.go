@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"forward/base/pool"
 	socks5util "forward/base/utils/socks5"
 	"forward/internal/connector"
 	"forward/internal/connector/shared"
@@ -446,7 +447,8 @@ func buildUDPPrefix(destHost string, destPort int) ([]byte, error) {
 }
 
 func (c *UDPConn) Read(p []byte) (int, error) {
-	buf := make([]byte, 64*1024)
+	buf := pool.Get()
+	defer pool.Put(buf)
 	for {
 		n, from, err := c.udp.ReadFromUDP(buf)
 		if err != nil {

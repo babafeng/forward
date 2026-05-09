@@ -4,9 +4,7 @@ package vmess
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common/buf"
@@ -180,7 +178,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.Han
 	defer targetConn.Close()
 
 	// 双向转发
-	if err := bidirectionalCopy(ctx, conn, targetConn, bodyReader, bodyWriter); err != nil && ctx.Err() == nil {
+	if err := xraymux.Bidirectional(ctx, conn, targetConn, bodyReader, bodyWriter, buf.NewReader(targetConn), buf.NewWriter(targetConn)); err != nil && ctx.Err() == nil {
 		h.options.Logger.Debug("VMess transfer error: %v", err)
 		return err
 	}
@@ -208,48 +206,7 @@ func (h *Handler) handleMuxSession(ctx context.Context, bodyReader buf.Reader, b
 	}
 }
 
-// bidirectionalCopy 双向复制数据
-func bidirectionalCopy(ctx context.Context, clientConn net.Conn, targetConn net.Conn, clientReader buf.Reader, clientWriter buf.Writer) error {
-	stop := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = clientConn.Close()
-			_ = targetConn.Close()
-		case <-stop:
-		}
-	}()
-
-	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// client -> target
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(clientReader, buf.NewWriter(targetConn))
-	}()
-
-	// target -> client
-	go func() {
-		defer wg.Done()
-		errCh <- buf.Copy(buf.NewReader(targetConn), clientWriter)
-	}()
-
-	wg.Wait()
-	close(stop)
-
-	_ = clientConn.Close()
-	_ = targetConn.Close()
-
-	var first error
-	for i := 0; i < 2; i++ {
-		if err := <-errCh; err != nil && first == nil && err != io.EOF {
-			first = err
-		}
-	}
-	return first
-}
+// end of file
 
 // Compile-time check
 var _ xnet.Address
