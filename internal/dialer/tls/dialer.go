@@ -7,6 +7,7 @@ import (
 
 	"forward/internal/dialer"
 	tcpdialer "forward/internal/dialer/tcp"
+	"forward/internal/dialer/transportutil"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -57,11 +58,8 @@ func (d *Dialer) Dial(ctx context.Context, addr string, opts ...dialer.DialOptio
 }
 
 func (d *Dialer) Handshake(ctx context.Context, conn net.Conn, _ ...dialer.HandshakeOption) (net.Conn, error) {
-	cfg := d.tlsConfig
-	if cfg == nil {
-		cfg = &tls.Config{}
-	}
-	tlsConn := tls.Client(conn, cfg.Clone())
+	cfg := transportutil.CloneTLSConfig(d.tlsConfig)
+	tlsConn := tls.Client(conn, cfg)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}

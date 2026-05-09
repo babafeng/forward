@@ -13,6 +13,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"forward/internal/dialer"
+	"forward/internal/dialer/transportutil"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -152,10 +153,7 @@ func hostFromAddr(addr string) string {
 }
 
 func cloneTLSConfig(cfg *tls.Config) *tls.Config {
-	if cfg == nil {
-		return &tls.Config{}
-	}
-	return cfg.Clone()
+	return transportutil.CloneTLSConfig(cfg)
 }
 
 func ensureNextProtos(cfg *tls.Config, protos []string) {

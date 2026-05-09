@@ -9,6 +9,7 @@ import (
 	"github.com/quic-go/quic-go"
 
 	"forward/internal/dialer"
+	"forward/internal/dialer/transportutil"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 	"forward/internal/structs"
@@ -93,10 +94,7 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 }
 
 func cloneTLSConfig(cfg *tls.Config) *tls.Config {
-	if cfg == nil {
-		return &tls.Config{}
-	}
-	return cfg.Clone()
+	return transportutil.CloneTLSConfig(cfg)
 }
 
 func ensureNextProtos(cfg *tls.Config, protos []string) {
