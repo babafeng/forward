@@ -315,7 +315,7 @@ func (l *Listener) notifyErr(err error) {
 func (l *Listener) parseMetadata(md metadata.Metadata) {
 	l.md.backlog = defaultBacklog
 	l.md.readQueueSize = defaultReadQueueSize
-	l.md.readBufferSize = config.DefaultBufferSize
+	l.md.readBufferSize = config.DefaultUDPBuffer
 	l.md.ttl = config.DefaultUDPIdleTimeout
 	l.md.keepalive = true
 
