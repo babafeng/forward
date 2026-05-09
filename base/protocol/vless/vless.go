@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 )
 
 const (
@@ -130,7 +131,7 @@ func ReadRequest(r io.Reader) (*Request, error) {
 		return nil, fmt.Errorf("unknown address type: %d", addrType)
 	}
 
-	req.Address = net.JoinHostPort(host, fmt.Sprintf("%d", req.Port))
+	req.Address = net.JoinHostPort(host, strconv.Itoa(int(req.Port)))
 	req.Host = host
 
 	switch req.Command {

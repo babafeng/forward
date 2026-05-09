@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,7 +80,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	if l.port == 0 {
 		return fmt.Errorf("reality listener requires port")
 	}
-	l.addr = net.JoinHostPort(l.host, fmt.Sprintf("%d", l.port))
+	l.addr = net.JoinHostPort(l.host, strconv.Itoa(l.port))
 
 	// 构建 Reality 配置
 	serverCfg, err := l.buildServerConfig(md)
