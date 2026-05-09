@@ -1,0 +1,53 @@
+{
+  "id": "FEAT-003",
+  "type": "perf",
+  "description": "Batch 2：热路径分配与 syscall 收敛。统一消除 UDP 读循环每包 SetReadDeadline（F-005, F-023）；PHT postBatch 复用 bytes.Buffer + 单次 context（F-006）；framing.PacketStream / SOCKS5 UDP connector / Hysteria2 routeUDPConn 去掉 per-packet 分配（F-007, F-008, F-009）；UDP listener 默认 buffer 改 64KB 走 pool（F-012）；PHT pull 复用 bufio.Writer（F-015）；http handler streamWithBody 加 pool buf（F-016）；base/pool 换用 *[]byte 池元素减少 boxing（F-019）。不引入新依赖。",
+  "status": "pending",
+  "steps": [
+    "**F-019 base/pool 改 *[]byte**：修改 `base/pool/pool.go`。内部 sync.Pool 存 `*[]byte`；`Get()` 返回 `[]byte`（长度 defaultSize）；`Put([]byte)` 按 cap 判断，合格则 `pool.Put(&b)`。`GetWithSize(size)`：`size <= defaultSize` 返 `Get()`，否则直接 make（和现状一致）。保持公共 API 不变，callers 不用改。",
+    "**F-012 UDP listener 默认 buffer**：修改 `internal/listener/udp/listener.go:parseMetadata`：把 `l.md.readBufferSize = config.DefaultBufferSize`（128KB）改成 `config.DefaultUDPBuffer`（64KB），让 pool.Get 命中池。记得对 `listenLoop` 里 `pool.GetWithSize(l.md.readBufferSize)` 的调用保持不变。",
+    "**F-007 framing.PacketStream.Read header 栈上数组**：修改 `base/io/net/framing.go:Read`。`var header [2]byte; if _, err := io.ReadFull(ps.Conn, header[:]); ...`。",
+    "**F-008 SOCKS5 UDP connector.Write 走 pool**：修改 `internal/connector/socks5/connector.go:UDPConn.Write`。用 `pool.GetWithSize(len(c.prefix)+len(p))` 拿 buffer（若 >64KB 仍 make；正常 UDP payload ≤ 64KB，命中池）。写完 `pool.Put(buf)`。",
+    "**F-009 Hysteria2 routeUDPConn.readLoop pool 化**：修改 `internal/hysteria2/server.go:readLoop`。把 `buf := make([]byte, 64*1024)` 改成 `buf := pool.Get()`；把 `data := append([]byte(nil), buf[:n]...)` 改成从 pool 再取一个短生命周期 buffer（`out := pool.Get(); copy(out, buf[:n]); out = out[:n]`），送 channel。消费端 `ReadFrom` 读完后 `pool.Put(out[:cap(out)])`。注意类型体里的 `recvCh chan udpReadResult`，把 `udpReadResult.data` 改成 `[]byte` 没问题。消费端是同 package 的 `ReadFrom`（line 195）。",
+    "**F-006 PHT postBatch 复用 Buffer + 单次 context**：修改 `base/transport/pht/conn.go`。新增 package-level `var pbPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}`。`postBatch` 里从 pool 取 buffer，写完 `buf.Reset()` 后 put。去掉每批的 `context.WithTimeout`，改用 `http.Request` 本身的 `Context()`（保持原超时 30s 的语义可以用 `ctx, cancel := context.WithTimeout(c.clientCtx, 30s)` 并在 `NewClientConn` 里建 clientCtx，但这会扩大改动面；保守方案：保留 per-batch WithTimeout，仅加 buffer 池）。优先级：buffer 池必做，context 改动可选。",
+    "**F-015 PHT pull 复用 bufio.Writer**：修改 `internal/listener/phtserver/server.go:handlePull`。loop 前创建 `bw := bufio.NewWriterSize(w, 16*1024)`；loop 内 `bw.WriteString(base64...); bw.WriteByte('\\n'); bw.Flush(); fw.Flush()`；避免每次循环 new。",
+    "**F-016 streamWithBody pool buf**：修改 `internal/handler/http/handler.go:streamWithBody`。两处 `io.Copy` 改为 `io.CopyBuffer`，从 pool 取 buffer。保留 flushWriter 语义。",
+    "**F-005 + F-023 UDP 读循环去 per-packet deadline**：修改以下 3 处：",
+    "  a) `internal/handler/socks5/handler.go:udpSession.run` 与 `readUpstream`：移除 per-packet `SetReadDeadline`；改为：在 run 启动时 `go func(){ ticker := time.NewTicker(1*time.Second); defer ticker.Stop(); for { select { case <-ctx.Done(): return; case <-ticker.C: s.cleanupIdle() } } }()`；run loop 里 `ReadFromUDP` 无 deadline。`readUpstream` 同样改为无 deadline 循环 + 每 upstream peer 单独 ticker 检查 lastSeen 超时。",
+    "  b) `internal/handler/reverse/handler.go:handleBoundUDP`：同上思路，独立 cleanup goroutine，去掉 per-packet deadline。goroutine 结构要保留 close 正确性。",
+    "  c) 保留 `internal/listener/phtserver/server.go:handlePull` 的 read deadline 不改（那是 HTTP 响应 write 节奏控制，非 UDP hot loop）。",
+    "**commit 拆分**（中文 body）：",
+    "  c1 `perf(pool): 改用 *[]byte 池元素减少 sync.Pool 值装箱` (F-019)",
+    "  c2 `perf(udp): UDP 监听默认 buffer 改为 64KB 命中全局池` (F-012)",
+    "  c3 `perf(framing): PacketStream 读长度头改栈上数组` (F-007)",
+    "  c4 `perf(connector/socks5): UDP Write 使用全局 buffer 池` (F-008)",
+    "  c5 `perf(hysteria2): UDP readLoop 复用全局 buffer 池` (F-009)",
+    "  c6 `perf(pht): postBatch 复用 bytes.Buffer 池` (F-006)",
+    "  c7 `perf(pht): pull 循环复用 bufio.Writer` (F-015)",
+    "  c8 `perf(http): streamWithBody 使用 buffer 池对拷` (F-016)",
+    "  c9 `perf(udp): 去掉 SOCKS5/反向 UDP 读循环每包 SetReadDeadline` (F-005, F-023)",
+    "每 commit 前跑 `go vet ./<修改 package>/...`，失败若属 toolchain 受限则继续。"
+  ],
+  "acceptance_criteria": [
+    "kiro 分支在本 feature 完成后比 Batch 1 末再多 9 个 perf commit",
+    "pool.go 内部存 *[]byte；Get/Put API 签名未变",
+    "framing.go 的 Read 里不再有 `make([]byte, 2)`",
+    "connector/socks5 UDPConn.Write 不再有 `make([]byte, 0, len(c.prefix)+len(p))`",
+    "hysteria2/server.go readLoop 的 `make([]byte, 64*1024)` 和 `append([]byte(nil), buf[:n]...)` 被替换",
+    "pht/conn.go postBatch 包含 `pbPool` 的 Get/Put",
+    "phtserver/server.go handlePull 在 for 外建立 bufio.Writer",
+    "http/handler.go streamWithBody 的两处 io.Copy 变为 io.CopyBuffer + pool buf",
+    "socks5/handler.go 和 reverse/handler.go UDP 热路径没有 `SetReadDeadline(time.Now().Add(` 每包调用",
+    "go.mod / go.sum 不变"
+  ],
+  "verification": [
+    "git -C /projects/sandbox/forward log --oneline main..kiro 末尾 9 条为 Batch 2 commit",
+    "grep -n 'SetReadDeadline' internal/handler/socks5 internal/handler/reverse | wc -l 减少到最少（仅 handshake 路径保留）",
+    "grep -n 'sync.Pool' base/pool/pool.go base/transport/pht/conn.go 每个文件至少一处",
+    "grep -n 'bufio.NewWriterSize' internal/listener/phtserver/server.go 存在",
+    "grep -n 'var header \\[2\\]byte' base/io/net/framing.go 存在",
+    "grep -n 'pool.GetWithSize\\|pool.Get()' internal/connector/socks5/connector.go 存在"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
