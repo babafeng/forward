@@ -73,10 +73,12 @@ func (c *Client) Run(ctx context.Context) error {
 				}
 			}
 			c.log.Error("Reverse client error: %v", err)
+			timer := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
-			case <-time.After(backoff):
+			case <-timer.C:
 			}
 			if backoff < maxBackoff {
 				backoff *= 2
