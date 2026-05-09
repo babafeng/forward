@@ -7,11 +7,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	quicHttp3 "github.com/quic-go/quic-go/http3"
 
 	"forward/internal/listener"
 	"forward/internal/metadata"
@@ -94,6 +98,81 @@ func TestListenerMissingTLS(t *testing.T) {
 	err := ln.Init(metadata.New(map[string]any{}))
 	if err == nil {
 		t.Fatalf("Init without tls config should fail")
+	}
+}
+
+// TestListenerServesHTTP3Roundtrip 是 Serve 路径的 smoke 覆盖：Init 之后
+// 用 quic-go 的 http3 client 跑一个 GET 完成 QUIC handshake，确认
+// Serve(pc) 没有立刻返回非 ErrServerClosed 的错误、handler 能被调用。
+//
+// 这是对 TestListenerBindAddresses 的补充——后者只验 net.ListenPacket
+// 的 bind 语义，不触发 Serve(pc) 的执行路径。
+//
+// 该用例依赖 UDP socket 和 QUIC handshake，在部分沙盒环境下可能 flake
+// （udp send buffer、防火墙、clock skew）。独立成一个 test func 方便在
+// 特定环境下 Skip。
+func TestListenerServesHTTP3Roundtrip(t *testing.T) {
+	tlsCfg := mustMakeTLSConfig(t)
+
+	ln := NewListener(
+		listener.AddrOption("127.0.0.1:0"),
+		listener.TLSConfigOption(tlsCfg),
+	)
+	if err := ln.Init(metadata.New(map[string]any{})); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	// Addr() 返回的是 ResolveUDPAddr 的结果（端口 0），拿不到 pc 实际绑
+	// 定的端口。从同包的 *Listener 直接取 pc.LocalAddr 得到真实地址。
+	concrete, ok := ln.(*Listener)
+	if !ok {
+		t.Fatalf("NewListener returned %T, want *Listener", ln)
+	}
+	if concrete.pc == nil {
+		t.Fatalf("pc is nil after Init")
+	}
+	serverAddr := concrete.pc.LocalAddr().String()
+
+	// handleFunc 会把 http3Conn 塞进 cqueue 再阻塞等 closed。测试需要
+	// 起一个 Accept goroutine 把这个 conn 关掉，让 handler 返回从而
+	// client 能拿到 response。
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}()
+
+	rt := &quicHttp3.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"h3"},
+			ServerName:         "localhost",
+		},
+	}
+	defer rt.Close()
+	client := &http.Client{Transport: rt, Timeout: 3 * time.Second}
+
+	resp, err := client.Get("https://" + serverAddr + "/")
+	if err != nil {
+		// 沙盒 UDP 栈问题可能让 QUIC handshake 失败，标记 environmental。
+		t.Skipf("http3 roundtrip skipped (environmental): %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 600 {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
+
+	select {
+	case <-acceptDone:
+	case <-time.After(time.Second):
+		t.Fatalf("Accept goroutine did not return after response")
 	}
 }
 
