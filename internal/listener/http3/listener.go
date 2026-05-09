@@ -17,7 +17,6 @@ import (
 	ictx "forward/internal/ctx"
 	"forward/internal/listener"
 	"forward/internal/metadata"
-	"forward/internal/netmark"
 	"forward/internal/registry"
 )
 
@@ -87,7 +86,10 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	if err != nil {
 		return listener.NewBindError(err)
 	}
-	netmark.TuneUDPConn(pc)
+	// 不在此处调 netmark.TuneUDPConn：quic-go 自己会把 UDP 接收缓冲区
+	// 尝试拉到 7MB，netmark 的 4MB 基线反而会在 rmem_max 较紧的系统上
+	// 触发 quic-go 的 "UDP-Buffer-Sizes" 警告。详见 QUIC listener 同
+	// 位置注释。
 	l.pc = pc
 
 	quicCfg := config.NewServerQUICConfig()

@@ -13,7 +13,6 @@ import (
 	"forward/internal/config"
 	"forward/internal/listener"
 	"forward/internal/metadata"
-	"forward/internal/netmark"
 	"forward/internal/registry"
 	"forward/internal/structs"
 )
@@ -66,7 +65,10 @@ func (l *Listener) Init(_ metadata.Metadata) error {
 	if err != nil {
 		return listener.NewBindError(err)
 	}
-	netmark.TuneUDPConn(pc)
+	// 不在此处调 netmark.TuneUDPConn：quic-go 会在 wrapConn 里把 UDP
+	// 接收缓冲区尝试拉到 7MB，netmark 的 4MB 基线会先把 pc 设到 4MB，
+	// 在 rmem_max < 7MB 的系统上 quic-go 的 setReadBuffer 会被 cap 在
+	// 4MB 并触发 "UDP-Buffer-Sizes" 警告。让 quic-go 自己 tune 更干净。
 
 	ln, err := quic.Listen(pc, l.tlsConfig, config.NewServerQUICConfig())
 	if err != nil {
