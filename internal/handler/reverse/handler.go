@@ -260,8 +260,17 @@ func (h *Handler) handleBoundUDP(ctx context.Context, session *yamux.Session, co
 		}
 	}
 
+	// Refresh read deadline at ~1Hz so idle cleanup still runs but we avoid
+	// a SetReadDeadline syscall per packet on the UDP hot path.
+	nextReadDeadline := time.Now().Add(1 * time.Second)
+	_ = conn.SetReadDeadline(nextReadDeadline)
+
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		now := time.Now()
+		if !now.Before(nextReadDeadline) {
+			nextReadDeadline = now.Add(1 * time.Second)
+			_ = conn.SetReadDeadline(nextReadDeadline)
+		}
 		n, src, err := conn.ReadFromUDP(pkt)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
@@ -311,8 +320,17 @@ func (h *Handler) handleBoundUDP(ctx context.Context, session *yamux.Session, co
 				defer uSess.stream.Close()
 				buf := pool.Get()
 				defer pool.Put(buf)
+				// Refresh the read deadline at ~1Hz cadence instead of every
+				// packet; effective idle timeout is still within ~1s of
+				// idleTimeout but we avoid a SetReadDeadline syscall on the
+				// UDP hot path.
+				nextRefresh := time.Now()
 				for {
-					_ = uSess.stream.SetReadDeadline(time.Now().Add(idleTimeout))
+					now := time.Now()
+					if !now.Before(nextRefresh) {
+						_ = uSess.stream.SetReadDeadline(now.Add(idleTimeout))
+						nextRefresh = now.Add(1 * time.Second)
+					}
 					n, err := uSess.ps.Read(buf)
 					if err != nil {
 						return

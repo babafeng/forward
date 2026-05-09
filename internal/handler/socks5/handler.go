@@ -370,8 +370,18 @@ func (s *udpSession) run(ctx context.Context) {
 	buf := pool.Get()
 	defer pool.Put(buf)
 
+	// Refresh read deadline at ~1Hz instead of per-packet to amortise the
+	// SetReadDeadline syscall cost while still waking up periodically for
+	// idle cleanup.
+	nextDeadline := time.Now().Add(1 * time.Second)
+	_ = s.relay.SetReadDeadline(nextDeadline)
+
 	for {
-		_ = s.relay.SetReadDeadline(time.Now().Add(1 * time.Second))
+		now := time.Now()
+		if !now.Before(nextDeadline) {
+			nextDeadline = now.Add(1 * time.Second)
+			_ = s.relay.SetReadDeadline(nextDeadline)
+		}
 		n, src, err := s.relay.ReadFromUDP(buf)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
@@ -490,8 +500,18 @@ func (s *udpSession) readUpstream(ctx context.Context, p *udpPeer, client *net.U
 	}
 	port, _ := strconv.Atoi(portStr)
 
+	// Refresh read deadline at ~1Hz so the idle check still fires, but avoid
+	// paying a SetReadDeadline syscall per packet.
+	refresh := 5 * time.Second
+	nextDeadline := time.Now().Add(refresh)
+	_ = p.conn.SetReadDeadline(nextDeadline)
+
 	for {
-		_ = p.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		now := time.Now()
+		if !now.Before(nextDeadline) {
+			nextDeadline = now.Add(refresh)
+			_ = p.conn.SetReadDeadline(nextDeadline)
+		}
 		n, err := p.conn.Read(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
