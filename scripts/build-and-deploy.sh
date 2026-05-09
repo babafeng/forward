@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-forward}"
-REMOTE_BIN="${REMOTE_BIN:-/usr/bin/forward}"
+REMOTE_BIN="${REMOTE_BIN:-/usr/local/bin/forward}"
 LOCAL_BIN="${LOCAL_BIN:-forward}"
 
 usage() {
@@ -88,7 +88,7 @@ if [[ -z "$TARGET" ]]; then
     OS="$(detect_local_os)"
     ARCH="$(detect_local_arch)"
     INSTALL_DIR="$(default_local_install_dir)"
-    
+
     BIN_NAME="$LOCAL_BIN"
     if [[ "$OS" == "msys"* || "$OS" == "mingw"* || "$OS" == "cygwin"* ]]; then
         BIN_NAME="${LOCAL_BIN}.exe"
@@ -99,7 +99,7 @@ if [[ -z "$TARGET" ]]; then
 
     echo "Installing to ${INSTALL_DIR}/${BIN_NAME}..."
     mkdir -p "$INSTALL_DIR"
-    
+
     SUDO_CMD=""
     if [[ ! -w "$INSTALL_DIR" ]] && command -v sudo >/dev/null 2>&1; then
         SUDO_CMD="sudo"
