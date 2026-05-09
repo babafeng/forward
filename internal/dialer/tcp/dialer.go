@@ -66,5 +66,12 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 		Resolver:  d.resolver,
 	}
 	netmark.ConfigureDialer(nd)
-	return nd.DialContext(ctx, "tcp", addr)
+	conn, err := nd.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := conn.(*net.TCPConn); ok {
+		netmark.TuneTCPConn(tc)
+	}
+	return conn, nil
 }

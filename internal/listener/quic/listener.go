@@ -13,6 +13,7 @@ import (
 	"forward/internal/config"
 	"forward/internal/listener"
 	"forward/internal/metadata"
+	"forward/internal/netmark"
 	"forward/internal/registry"
 	"forward/internal/structs"
 )
@@ -25,6 +26,7 @@ type Listener struct {
 	tlsConfig *tls.Config
 	logger    *logging.Logger
 
+	pc     net.PacketConn
 	ln     *quic.Listener
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -60,11 +62,19 @@ func (l *Listener) Init(_ metadata.Metadata) error {
 		return errMissingTLS
 	}
 
-	ln, err := quic.ListenAddr(l.addr, l.tlsConfig, config.NewServerQUICConfig())
+	pc, err := net.ListenPacket("udp", l.addr)
 	if err != nil {
 		return listener.NewBindError(err)
 	}
+	netmark.TuneUDPConn(pc)
+
+	ln, err := quic.Listen(pc, l.tlsConfig, config.NewServerQUICConfig())
+	if err != nil {
+		_ = pc.Close()
+		return listener.NewBindError(err)
+	}
 	l.ctx, l.cancel = context.WithCancel(context.Background())
+	l.pc = pc
 	l.ln = ln
 	return nil
 }
@@ -121,18 +131,26 @@ func (l *Listener) Addr() net.Addr {
 func (l *Listener) Close() error {
 	l.mu.Lock()
 	ln := l.ln
+	pc := l.pc
 	cancel := l.cancel
 	l.ln = nil
+	l.pc = nil
 	l.cancel = nil
 	l.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	var err error
 	if ln != nil {
 		if l.logger != nil {
 			l.logger.Info("Listener closed %s", ln.Addr().String())
 		}
-		return ln.Close()
+		err = ln.Close()
 	}
-	return nil
+	if pc != nil {
+		if cerr := pc.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	return err
 }
