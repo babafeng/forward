@@ -1,0 +1,39 @@
+{
+  "id": "FEAT-002",
+  "type": "perf",
+  "description": "Batch 1：核心热路径优化。统一所有 TLS 客户端启用 ClientSessionCache（F-002）；统一 quic.Config 工厂（F-003）；调大 yamux 窗口与超时（F-004）；让 base/io/net.Bidirectional 在两端均为 *net.TCPConn 时保留 splice 路径（F-001）；新增 linux-only socket buffer 调优 helper 并在 TCP dialer / UDP listener / QUIC listener 上应用（F-010, F-011）。所有改动必须零新依赖。",
+  "status": "pending",
+  "steps": [
+    "**F-002 TLS session cache**：在 `internal/config/tls/config.go` 顶层新增 `var defaultClientSessionCache = tls.NewLRUClientSessionCache(128)`（共享）。在 `ClientConfig(...)` 返回值里若 `tlsCfg.ClientSessionCache == nil` 则赋值 `defaultClientSessionCache`。同时修改 `internal/dialer/transportutil/tls.go.CloneTLSConfig`：若 clone 后 cache 为 nil，填充同一个共享 cache。对 `internal/dialer/quic/dialer.go`、`internal/dialer/h2/dialer.go`、`internal/dialer/h3/dialer.go`、`internal/dialer/http3/dialer.go`、`internal/dialer/tls/dialer.go` 逐一确认 clone 路径会经过 `transportutil.CloneTLSConfig` 或手动设置 cache。注意：Reality/VLESS 的 utls 栈走另一条路（xray-core），不要动。",
+    "**F-003 统一 quic.Config 工厂**：新建 `internal/config/quicopts.go`（package config），导出 `NewClientQUICConfig() *quic.Config` 与 `NewServerQUICConfig() *quic.Config`，填充 InitialStreamReceiveWindow=2MB / MaxStreamReceiveWindow=16MB / InitialConnectionReceiveWindow=4MB / MaxConnectionReceiveWindow=64MB / KeepAlivePeriod=15s（客户端）/ MaxIdleTimeout=30s / Allow0RTT=true（服务端）。修改 `internal/dialer/quic/dialer.go` 的 `Dial` 用 `NewClientQUICConfig()` 作为 base，然后合并 metadata 里的 override。修改 `internal/dialer/h3/dialer.go`、`internal/dialer/http3/dialer.go`、`internal/listener/quic/listener.go`、`internal/listener/http3/listener.go`、`internal/listener/h3/listener.go` 同理。注意 quic-go 的 API：`MaxStreamReceiveWindow`, `MaxConnectionReceiveWindow`, `InitialStreamReceiveWindow`, `InitialConnectionReceiveWindow`, `KeepAlivePeriod`, `MaxIdleTimeout`, `Allow0RTT`。",
+    "**F-004 yamux 窗口**：修改 `internal/reverse/helpers.go:NewYamuxConfig`：设置 `conf.MaxStreamWindowSize = 4 * 1024 * 1024`（4MB），`conf.ConnectionWriteTimeout = 30 * time.Second`，`conf.StreamOpenTimeout = 10 * time.Second`，保留 KeepAliveInterval=10s。",
+    "**F-001 splice 保留**：修改 `base/io/net/copy.go` 的 `pipe` 闭包。判断 `dst.(io.ReaderFrom)` 或 `src.(io.WriterTo)` 至少一方存在时，用 `io.Copy(dst, src)`（让 Go runtime 自选 splice/sendfile fast path）；否则 fallback 到 `io.CopyBuffer(dst, src, buf)`。注意：不论哪条路径，`copyBufferPool` 的 get/put 都要做，保留对 fallback 路径的重用。需要保留全部现有测试通过（包括 `TestBidirectionalFallbackWithoutCloseWrite` 的半关闭 fallback 逻辑）。",
+    "**F-010 / F-011 Linux socket buffer**：新建 `internal/netmark/sockopt_linux.go`（build tag `//go:build linux`）与 `internal/netmark/sockopt_other.go`（build tag `//go:build !linux`）。导出 `TuneTCPBuffers(c syscall.RawConn)` 与 `TuneUDPBuffers(pc net.PacketConn)`。Linux 实现：`unix.SetsockoptInt(fd, SOL_SOCKET, SO_RCVBUF, 4<<20)` + `SO_SNDBUF, 4<<20`，best-effort（失败忽略）。Other 实现：空操作。在 `internal/dialer/tcp/dialer.go.Dial` 里拨号成功后若 conn 是 `*net.TCPConn`，`sc, _ := tc.SyscallConn(); netmark.TuneTCPBuffers(sc)`。在 `internal/listener/udp/listener.go.Init` 里 `net.ListenUDP` 成功后 `netmark.TuneUDPBuffers(conn)`。在 `internal/listener/quic/listener.go.Init` 和 `internal/listener/http3/listener.go.Init` 同样做（但 quic-go 走 `ListenAddr` 内部建 UDP，我们改成先 `net.ListenPacket(\"udp\", addr)` → `TuneUDPBuffers(pc)` → `quic.Listen(pc, ...)`；`quic.Listen` 替换 `quic.ListenAddr`）。对 `ListenAndServe` 式的 `http3.Server` 较复杂，如 API 不允许预分配 PacketConn，可跳过该条；记录到 findings 字段。",
+    "**commit 拆分**（每条独立 commit，conventional commits + 中文 body）：",
+    "  c1 `perf: 复用 TLS ClientSessionCache 减少握手 RTT` (F-002)",
+    "  c2 `perf: 统一 quic.Config 工厂并调大流/连接接收窗口` (F-003)",
+    "  c3 `perf: 调大 yamux 子流窗口与写超时，提升跨国反向隧道吞吐` (F-004)",
+    "  c4 `perf: 保留 io.Copy splice 快路径（TCPConn↔TCPConn 时不强制走 CopyBuffer）` (F-001)",
+    "  c5 `perf: linux 下主动调大 TCP/UDP socket 接收缓冲区` (F-010, F-011)",
+    "**每个 commit 前执行（不强求通过，失败属环境限制）**：`go vet ./...`，并把输出记录到 feature findings。`go build ./...` 在当前沙盒因 Go toolchain 1.26.2 不可下载会失败，属已知环境受限，静态审阅保证正确性。"
+  ],
+  "acceptance_criteria": [
+    "kiro 分支新增 5 个 commit（F-002/003/004/001/010+011）",
+    "所有修改的 Go 文件语法合法，任意一段被修改的函数不引入新 import 路径",
+    "base/io/net/copy.go 中 Bidirectional 对于 `io.ReaderFrom` 可用路径走 io.Copy 零 buf，其余走 CopyBuffer + pool",
+    "新增 internal/config/quicopts.go 在客户端/服务端 dialer+listener 全面替换原 `&quic.Config{Versions: ...}` 模板",
+    "internal/reverse/helpers.go NewYamuxConfig 返回的 Config.MaxStreamWindowSize == 4MB",
+    "internal/netmark/sockopt_{linux,other}.go 通过 build tag 分离",
+    "不引入新依赖（go.mod / go.sum 不变，或仅因 `go mod tidy` 本沙盒无法跑而保持当前状态）"
+  ],
+  "verification": [
+    "git -C /projects/sandbox/forward log --oneline main..kiro 显示 Batch 1 的 5 个 perf commit",
+    "grep -n 'ClientSessionCache' base/ internal/ 至少能找到 2 处新增赋值",
+    "grep -n 'NewClientQUICConfig\\|NewServerQUICConfig' internal/ 至少 1 处定义 + 多处调用",
+    "grep -n 'MaxStreamWindowSize' internal/reverse/helpers.go 能看到 4*1024*1024",
+    "grep -n 'TuneTCPBuffers\\|TuneUDPBuffers' internal/netmark internal/dialer internal/listener 命中",
+    "cat base/io/net/copy.go | grep -n 'ReaderFrom\\|WriterTo' 显示 splice 分支判断"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
