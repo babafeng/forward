@@ -178,10 +178,11 @@ type routeUDPConn struct {
 	generation  uint64
 	closed      bool
 
-	recvCh  chan udpReadResult
-	errCh   chan error
-	closeCh chan struct{}
-	once    sync.Once
+	recvCh    chan udpReadResult
+	errCh     chan error
+	closeCh   chan struct{}
+	once      sync.Once
+	readersWG sync.WaitGroup
 }
 
 type udpReadResult struct {
@@ -248,7 +249,10 @@ func (c *routeUDPConn) Close() error {
 			err = c.conn.Close()
 		}
 		c.mu.Unlock()
-		// drain pending packets to return their buffers to the pool
+		// 等所有 readLoop goroutine 真正退出后再 drain recvCh，避免
+		// readLoop 在 close(closeCh) 和 drain 之间仍成功 push 进来的
+		// buffer 漏掉归还（sync.Pool 语义允许遗漏，但非必要就不丢）。
+		c.readersWG.Wait()
 		for {
 			select {
 			case pkt := <-c.recvCh:
@@ -273,7 +277,11 @@ func (c *routeUDPConn) switchConnLocked(addr string) error {
 	c.conn = newConn
 	c.currentAddr = addr
 
-	go c.readLoop(newConn, addr, gen)
+	c.readersWG.Add(1)
+	go func() {
+		defer c.readersWG.Done()
+		c.readLoop(newConn, addr, gen)
+	}()
 	if oldConn != nil {
 		_ = oldConn.Close()
 	}
