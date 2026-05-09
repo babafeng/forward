@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,7 +43,7 @@ func (c *Client) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	}
 
 	if c.Host != "" {
-		addr = net.JoinHostPort(c.Host, fmt.Sprintf("%d", raddr.Port))
+		addr = net.JoinHostPort(c.Host, strconv.Itoa(raddr.Port))
 	}
 
 	token, err := c.getToken(ctx, addr)

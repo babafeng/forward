@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strconv"
 	"syscall"
 	"unsafe"
 
@@ -146,7 +147,7 @@ func readFromUDP(conn *net.UDPConn, b []byte) (n int, remoteAddr *net.UDPAddr, d
 			dstAddr = &net.UDPAddr{
 				IP:   net.IP(inet6.Addr[:]),
 				Port: int(p[0])<<8 + int(p[1]),
-				Zone: fmt.Sprintf("%d", inet6.Scope_id),
+				Zone: strconv.Itoa(int(inet6.Scope_id)),
 			}
 		}
 	}
