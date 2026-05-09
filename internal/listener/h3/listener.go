@@ -1,8 +1,7 @@
 package h3
 
 import (
-	"github.com/quic-go/quic-go"
-
+	"forward/internal/config"
 	"forward/internal/listener"
 	"forward/internal/listener/phtlistener"
 	"forward/internal/metadata"
@@ -31,11 +30,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 		return err
 	}
 
-	quicCfg := &quic.Config{
-		Versions: []quic.Version{
-			quic.Version1,
-		},
-	}
+	quicCfg := config.NewServerQUICConfig()
 	if l.MD.KeepAlivePeriod > 0 {
 		quicCfg.KeepAlivePeriod = l.MD.KeepAlivePeriod
 	}
