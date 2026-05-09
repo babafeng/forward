@@ -20,6 +20,7 @@ import (
 	"forward/base/auth"
 	inet "forward/base/io/net"
 	"forward/base/logging"
+	"forward/base/pool"
 	"forward/internal/chain"
 	"forward/internal/config"
 	ictx "forward/internal/ctx"
@@ -522,7 +523,9 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 
 	clientDone := make(chan bool, 1)
 	go func() {
-		_, _ = io.Copy(upstream, body)
+		buf := pool.Get()
+		defer pool.Put(buf)
+		_, _ = io.CopyBuffer(upstream, body, buf)
 		halfClosed := false
 		if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
@@ -535,7 +538,9 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 	respWriter := newFlushWriter(w, fl)
 	go func() {
 		defer close(serverDone)
-		_, _ = io.Copy(respWriter, upstream)
+		buf := pool.Get()
+		defer pool.Put(buf)
+		_, _ = io.CopyBuffer(respWriter, upstream, buf)
 		respWriter.Flush()
 	}()
 
