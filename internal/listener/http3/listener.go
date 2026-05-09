@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"forward/base/logging"
+	"forward/internal/config"
 	ictx "forward/internal/ctx"
 	"forward/internal/listener"
 	"forward/internal/metadata"
@@ -81,11 +81,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	}
 	l.addr = udpAddr
 
-	quicCfg := &quic.Config{
-		Versions: []quic.Version{
-			quic.Version1,
-		},
-	}
+	quicCfg := config.NewServerQUICConfig()
 	if l.md.keepAlivePeriod > 0 {
 		quicCfg.KeepAlivePeriod = l.md.keepAlivePeriod
 	}

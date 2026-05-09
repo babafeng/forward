@@ -10,6 +10,7 @@ import (
 	"github.com/quic-go/quic-go"
 
 	"forward/base/logging"
+	"forward/internal/config"
 	"forward/internal/listener"
 	"forward/internal/metadata"
 	"forward/internal/registry"
@@ -59,7 +60,7 @@ func (l *Listener) Init(_ metadata.Metadata) error {
 		return errMissingTLS
 	}
 
-	ln, err := quic.ListenAddr(l.addr, l.tlsConfig, nil)
+	ln, err := quic.ListenAddr(l.addr, l.tlsConfig, config.NewServerQUICConfig())
 	if err != nil {
 		return listener.NewBindError(err)
 	}
