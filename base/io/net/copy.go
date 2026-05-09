@@ -43,9 +43,21 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 
 	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		buf := getCopyBuffer()
-		defer putCopyBuffer(buf)
-		n, e := io.CopyBuffer(dst, src, buf)
+		var n int64
+		var e error
+		// 当 dst 实现 io.ReaderFrom 或 src 实现 io.WriterTo 时，把 buf 交给
+		// stdlib：在 Linux 上 *net.TCPConn 双方会走 splice(2) 零拷贝 fast
+		// path；其它情况（如 *tls.Conn.ReadFrom）也能走优化过的内部实现。
+		// 显式传 user-space buf（CopyBuffer）反而会绕过这些 fast path。
+		if _, ok := dst.(io.ReaderFrom); ok {
+			n, e = io.Copy(dst, src)
+		} else if _, ok := src.(io.WriterTo); ok {
+			n, e = io.Copy(dst, src)
+		} else {
+			buf := getCopyBuffer()
+			n, e = io.CopyBuffer(dst, src, buf)
+			putCopyBuffer(buf)
+		}
 		if n > 0 {
 			total.Add(n)
 		}
