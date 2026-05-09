@@ -28,7 +28,7 @@
 - `internal/dialer/transportutil/`（新增辅助函数文件）
 - `internal/config/tls/config_test.go`（新增或扩展）
 - `internal/dialer/tls/dialer_test.go`（新增）
-- `README.md` 的"新增可选参数"章节（仅追加一行说明）
+- `README.md`（在「功能特性」或「使用方法」小节附近追加一段说明新增可选参数；若无合适位置则新增一个二级标题「新增可选参数」，具体章节位置与措辞由实施阶段自行确定；也可视情况降级为"必要时增补，不强制"）
 
 **预估规模**：M
 
@@ -41,22 +41,22 @@
 
 **风险**：
 - 进程内共享 cache 若 key 设计不当可能导致跨 SNI 串扰；
-- 回退开关：URL 参数 `tls_cache=false`、环境变量 `FORWARD_DISABLE_TLS_CACHE=1`；
-- 默认启用对行为有影响（TLS 1.2 会显式发送票据、TLS 1.3 会附带 PSK），需在 README 中追加一行说明。
+- 回退开关：URL 参数 `tls_cache=false`、环境变量 `FORWARD_TLS_CACHE_DISABLE=1`；
+- 默认启用对行为有影响（TLS 1.2 会显式发送票据、TLS 1.3 会附带 PSK），必要时在 README 中增补一行说明。
 
 **验收清单**：
 1. `internal/config/tls/config.go` 的 `ClientConfig` 在 `InsecureSkipVerify=false` 时注入共享 `ClientSessionCache`；`true` 时也可选择注入（默认注入，`tls_cache=false` 可关闭）。
 2. TLS / H2 / H3 / HTTP3 / QUIC 五处 dialer 均通过同一 `transportutil` 辅助函数写入 cache，代码重复不得超过 1 处。
-3. 新增 URL 查询参数 `tls_cache=false` 能在单跳关闭 cache，`FORWARD_DISABLE_TLS_CACHE=1` 能全局关闭。
+3. 新增 URL 查询参数 `tls_cache=false` 能在单跳关闭 cache，`FORWARD_TLS_CACHE_DISABLE=1` 能全局关闭。
 4. 新增或扩展的 `_test.go` 覆盖："注入 cache 后第二次握手命中 resumption"、"关闭开关后回退 full handshake" 至少两个用例。
 5. `go test ./internal/config/tls/... ./internal/dialer/tls/...` 全绿；`go vet ./...` 无新增 warning。
-6. `README.md` 的"新增可选参数"小节追加一行对 `tls_cache` 的说明。
+6. 必要时在 `README.md` 增补一段说明 `tls_cache` 参数（若现有章节合适则追加；若不存在合适位置可创建「新增可选参数」二级标题），非强制。
 
 ---
 
-## T-02 Bidirectional splice 零拷贝快路径（对应 design §1）
+## T-02 Bidirectional splice 快路径回归保护 + 测试（对应 design §1）
 
-**类别**：perf
+**类别**：chore（也可视作 perf，但本任务是防退化为主）
 
 **涉及文件**：
 - `base/io/net/copy.go`
@@ -67,22 +67,22 @@
 **依赖**：无
 
 **验证方式**：
-- `go test ./base/io/net/...`
+- `go test ./base/io/net/...` 必须全绿
 - `go test -race ./base/io/net/...`
-- Bench：在 `copy_test.go` 中新增 `BenchmarkBidirectionalTCP` / `BenchmarkBidirectionalTLS`，实施时运行 `go test -bench . -benchmem -run '^$' ./base/io/net/`，对比启用前后 `ns/op` 与 `B/op`。
-- 人工：在 Linux 上用 `strace -e splice,read,write -p $(pgrep forward)` 观察 TCP 明文转发路径是否调用 `splice`。
+- Bench：可选项，不作为强制要求。若落地"优先 `io.Copy`、fallback 到 buffered"的可选改动，实施阶段可跑 `go test -bench . -benchmem -run '^$' ./base/io/net/` 记录 `sync.Pool` 压力变化。
+- 人工：在 Linux 上用 `strace -e splice,read,write -p $(pgrep forward)` 观察 TCP 明文转发路径确实走 `splice`（属于防回归佐证，非强制步骤）。
 
 **风险**：
-- 若包装连接不正确实现 `io.ReaderFrom`，可能导致吞字节或半关闭语义异常；
-- 回退开关：环境变量 `FORWARD_DISABLE_SPLICE=1`；
-- 需保持现有 `closeWrite` / `normalizeCopyError` / `waitSecondResult` 的语义一致。
+- 测试需覆盖 wrapped conn（TLS / VLESS / Reality / PHT `clientConn` 等）以确认 buffered 路径仍工作；
+- 若采纳"优先 `io.Copy`、fallback 到 buffered"的可选改动，`closeWrite` / `normalizeCopyError` / `waitSecondResult` 的语义需要在两条路径下手工比对；
+- 回退开关：`FORWARD_COPY_FORCE_BUFFERED=1`（仅在采纳可选改动时引入，作为紧急回退）。
 
 **验收清单**：
-1. `Bidirectional` 的 `pipe` 内先检测 `dst` 是否实现 `io.ReaderFrom`、`src` 是否为 `*net.TCPConn`，命中则走 `io.Copy(dst, src)`；否则保留 `io.CopyBuffer` + 池化路径。
-2. 新增 `FORWARD_DISABLE_SPLICE` 环境变量识别（仅在包初始化时读取一次）。
-3. `copy_test.go` 覆盖两条路径：纯 TCP（走 splice 路径）与封装连接（走 buffer 路径），断言字节数与错误语义一致。
+1. 新增回归测试断言 `io.CopyBuffer(wrappedTCPConn, src, buf)` 命中 `ReaderFrom`（构造一个包裹 `*net.TCPConn` 并计数 `ReadFrom` 的 wrapper，断言计数 `>= 1`）。
+2. 新增回归测试断言 `Bidirectional` 对 wrapped conn（未实现 `ReaderFrom`，例如一个纯 `io.ReadWriter` 包装）仍走 buffered 路径，字节数与错误语义与现有实现一致。
+3. 可选：在 `pipe` 内改为优先 `io.Copy`，仅在 dst 未实现 `ReaderFrom` 时 fallback 到 `io.CopyBuffer` + 池化路径；若采纳，需同步引入 `FORWARD_COPY_FORCE_BUFFERED` 环境变量作为紧急回退。
 4. `go test ./base/io/net/...` 全绿。
-5. Bench 基线数据记录在 PR 描述中（实施阶段）。
+5. Bench 不作为强制要求，作为 optional 记录。
 
 ---
 
@@ -99,7 +99,8 @@
 - `internal/listener/h3/listener.go`
 - `internal/listener/http3/listener.go`
 - `internal/listener/phtlistener/base.go`（若已有 metadata 解析，扩展字段）
-- `internal/listener/listener.go` 的 `ParseTransportMetadata`
+- `internal/listener/transport_metadata.go` 的 `ParseTransportMetadata`
+- `internal/dialer/transport_metadata.go` 的 `ParseTransportMetadata`（dialer 侧；实施时视需要同步扩展新字段，与 listener 侧保持口径一致）
 - 对应 `_test.go` 新增 metadata 解析用例
 
 **预估规模**：M
@@ -123,7 +124,7 @@
 3. 新增四个 URL 查询参数（见 design §3）可覆盖窗口默认值，数值解析支持 `k`/`m` 后缀。
 4. `internal/listener/quic/listener.go` 的 `quic.ListenAddr` 第三参不再为 `nil`。
 5. `go test ./internal/dialer/... ./internal/listener/...` 全绿。
-6. README "新增可选参数" 章节追加一段对新 QUIC 参数的说明。
+6. 必要时在 `README.md` 增补一段对新 QUIC 参数的说明（在「功能特性」或「使用方法」小节附近追加；若无合适位置可创建「新增可选参数」二级标题），非强制。
 
 ---
 
@@ -134,9 +135,9 @@
 **涉及文件**：
 - `internal/reverse/helpers.go`
 - `internal/reverse/client/client.go`
-- `internal/reverse/` 下 server 入口（参照现有调用链）
+- `internal/handler/reverse/handler.go`（服务端 handler，也调用 `rev.NewYamuxConfig`）
 - `internal/reverse/helpers_test.go`（新增）
-- `README.md` 反向穿透段落追加一段说明
+- `README.md` 反向穿透段落附近追加一段说明（若现有位置合适则追加；若不存在合适位置可创建「新增可选参数」二级标题，非强制）
 
 **预估规模**：S
 
@@ -157,7 +158,7 @@
 2. 客户端 / 服务端入口均可通过 URL 查询参数 `yamux_window` / `yamux_open_timeout` / `yamux_write_timeout` / `yamux_keepalive_interval` 覆盖。
 3. `helpers_test.go` 覆盖默认值与覆盖值两种情况。
 4. `go test ./internal/reverse/...` 全绿。
-5. README 追加"反向穿透高延迟链路调参"说明。
+5. 必要时在 README 增补"反向穿透高延迟链路调参"说明（非强制）。
 
 ---
 
@@ -302,7 +303,7 @@
 - `base/logging/logging.go`
 - `internal/chain/route_impl.go`
 - `internal/chain/balancer.go`
-- `internal/xraymux/copy.go`
+- `internal/xraymux/route_dispatcher.go`
 - `internal/handler/tcp/handler.go`
 - `internal/handler/udp/handler.go`
 - `base/logging/logging_test.go`（新增）
@@ -347,14 +348,14 @@
 - 人工：`hping3 --udp -i u1000 -c 100000 ...` 压测，观察 p99 延迟抖动是否下降。
 
 **风险**：
-- 懒清理未触发时可能导致 map 缓慢增长；实现时加 10 分钟 TTL 周期扫描；
+- 懒清理方式为"命中时 O(1) 清理"，不引入新的 ticker，需保证热 IP 被频繁访问时清理成本仍为 O(1)；
 - 回退开关：URL 参数 `rate_limit_legacy=true`。
 
 **验收清单**：
 1. `rateLimiter` 由每秒重建整表改为令牌桶；`counts` 值语义改为 `{tokens, lastRefill}`。
-2. 新增 10 分钟 TTL 周期扫描，防止冷 IP 积累。
+2. 实现方式为：在 `allow(ip)` 命中时懒清理（O(1)，非周期扫描），冷 IP 超过 10 分钟未被访问则在下一次 `allow` 入口时顺手删除；不引入新的 ticker。
 3. URL 参数 `rate_limit_legacy=true` 可回退到原实现。
-4. 测试覆盖"突发流量耗尽令牌"、"10 分钟后冷 IP 被驱逐" 两类用例。
+4. 测试覆盖"突发流量耗尽令牌"、"10 分钟后冷 IP 在下一次 `allow` 入口被驱逐" 两类用例。
 5. `go test -race ./internal/listener/udp/...` 全绿。
 
 ---
@@ -434,4 +435,4 @@
 5. `go test -race ./base/... ./internal/...`
 6. Bench 抽样：`go test -bench . -benchmem -run '^$' ./base/io/net/ ./base/transport/pht/ ./internal/hysteria2/ ./internal/listener/udp/`
 7. e2e：`go test ./tests/...`，重点跑 `proxy_e2e_test.go`、`hysteria2_e2e_test.go`、`reverse_e2e_test.go`、`reality_e2e_test.go`、`listener_h3_pht_server_test.go`。
-8. 文档：每个任务若涉及用户可见参数，必须在 `README.md` 的"新增可选参数"章节添加一行说明，保持参数名、默认值、回退开关三项齐全。
+8. 文档：每个任务若涉及用户可见参数，必要时在 `README.md` 增补一段说明（在「功能特性」或「使用方法」小节附近追加；若无合适位置可创建「新增可选参数」二级标题）。非强制约束，措辞与位置由各 T 任务实施阶段自行确定，目标是保证参数名、默认值、回退开关三项可被用户查阅。
