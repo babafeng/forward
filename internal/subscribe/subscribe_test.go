@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+
+	"forward/base/endpoint"
 )
 
 func TestParseClashYAML(t *testing.T) {
@@ -419,6 +421,74 @@ func TestParseVlessURIShadowrocketVisionTLS(t *testing.T) {
 		t.Fatalf("scheme = %q", ep.Scheme)
 	}
 	if ep.Query.Get("security") != "tls" || ep.Query.Get("sni") != "vl-tyo-11.auua.us" {
+		t.Fatalf("endpoint query = %v", ep.Query)
+	}
+}
+
+func TestParseHy2URIShadowrocketPeerInsecure(t *testing.T) {
+	raw := `hysteria2://Hy2@SiLiCon2026!@43.130.7.3:8443?peer=bing.com&insecure=1"`
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if p.Type != "hysteria2" || p.Server != "43.130.7.3" || p.Port != 8443 {
+		t.Fatalf("proxy = %#v", p)
+	}
+	if p.Password != "Hy2@SiLiCon2026!" {
+		t.Fatalf("password = %q", p.Password)
+	}
+	if p.SNI != "bing.com" {
+		t.Fatalf("sni = %q", p.SNI)
+	}
+	if !p.Insecure {
+		t.Fatal("insecure should be true")
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Query.Get("sni") != "bing.com" || ep.Query.Get("insecure") != "1" {
+		t.Fatalf("endpoint query = %v", ep.Query)
+	}
+	if got := endpoint.UserSecret(ep.User); got != "Hy2@SiLiCon2026!" {
+		t.Fatalf("endpoint auth = %q", got)
+	}
+}
+
+func TestHy2ClashSkipCertVerifyToEndpoint(t *testing.T) {
+	yamlData := `
+proxies:
+  - name: hy2
+    type: hysteria2
+    server: 43.130.7.3
+    port: 8443
+    password: "Hy2@SiLiCon2026!"
+    sni: bing.com
+    skip-cert-verify: true
+`
+	proxies, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+	if !proxies[0].SkipCert {
+		t.Fatal("skip-cert-verify should be true")
+	}
+
+	ep, err := ProxyToEndpoint(proxies[0])
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Query.Get("insecure") != "1" {
 		t.Fatalf("endpoint query = %v", ep.Query)
 	}
 }

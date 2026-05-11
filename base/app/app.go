@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -71,8 +72,14 @@ import (
 const defaultConnectURL = "http://www.gstatic.com/generate_204"
 
 var subscribeDownload = subscribe.Download
+var shutdownLogEnabled = true
+
+func ShouldLogShutdown() bool {
+	return shutdownLogEnabled
+}
 
 func Main() int {
+	shutdownLogEnabled = true
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -88,7 +95,8 @@ func Main() int {
 	registerXrayLogHandler(logger.Level(), logger, cfg.DebugVerbose)
 
 	if err != nil {
-		if err == flag.ErrHelp {
+		if err == flag.ErrHelp || errors.Is(err, errVersionShown) {
+			shutdownLogEnabled = false
 			return 0
 		}
 		logger.Error("Parse args error: %v", err)

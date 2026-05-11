@@ -80,7 +80,7 @@ NAME=Fedora
 func TestRenderTProxyRulesUnit(t *testing.T) {
 	t.Parallel()
 
-	unit := renderTProxyRulesUnit(12345, ownerMatch{Mode: ownerMatchUID, Value: "0"})
+	unit := renderTProxyRulesUnit(12345)
 	checks := []string{
 		"Description=forward tproxy rules service",
 		"RemainAfterExit=yes",
@@ -93,8 +93,8 @@ func TestRenderTProxyRulesUnit(t *testing.T) {
 			t.Fatalf("renderTProxyRulesUnit missing %q\n%s", check, unit)
 		}
 	}
-	if !strings.Contains(unit, "--uid-owner 0") {
-		t.Fatalf("renderTProxyRulesUnit should include uid owner bypass for root\n%s", unit)
+	if strings.Contains(unit, "-m owner") || strings.Contains(unit, "--uid-owner") || strings.Contains(unit, "--gid-owner") {
+		t.Fatalf("renderTProxyRulesUnit should not include owner bypass rules:\n%s", unit)
 	}
 }
 
@@ -117,7 +117,6 @@ func TestTProxyRulesManagerSetupAndCleanup(t *testing.T) {
 		serviceName: managedTProxyRulesServiceName,
 		unitPath:    unitPath,
 		tproxyPort:  12345,
-		ownerMatch:  ownerMatch{Mode: ownerMatchGID, Value: "go-proxy"},
 		run:         runner,
 		writeFile:   os.WriteFile,
 		removeFile:  os.Remove,
@@ -131,13 +130,8 @@ func TestTProxyRulesManagerSetupAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated unit: %v", err)
 	}
-	if !strings.Contains(string(content), "--gid-owner go-proxy") {
-		t.Fatalf("generated unit missing gid owner rule:\n%s", string(content))
-	}
-	createChainIdx := strings.Index(string(content), "-N GO_MARK")
-	ownerRuleIdx := strings.Index(string(content), "--gid-owner go-proxy")
-	if createChainIdx < 0 || ownerRuleIdx < 0 || ownerRuleIdx < createChainIdx {
-		t.Fatalf("generated unit should append owner rule after creating GO_MARK chain:\n%s", string(content))
+	if strings.Contains(string(content), "-m owner") || strings.Contains(string(content), "--uid-owner") || strings.Contains(string(content), "--gid-owner") {
+		t.Fatalf("generated unit should not include owner bypass rules:\n%s", string(content))
 	}
 	if !strings.Contains(string(content), "-m mark --mark 128 -j RETURN") {
 		t.Fatalf("generated unit missing mark bypass rule:\n%s", string(content))
