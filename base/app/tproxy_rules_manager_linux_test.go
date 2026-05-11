@@ -141,6 +141,7 @@ func TestTProxyRulesManagerSetupAndCleanup(t *testing.T) {
 		"systemctl stop " + managedTProxyRulesServiceName,
 		"systemctl disable " + managedTProxyRulesServiceName,
 		"systemctl daemon-reload",
+		"systemctl reset-failed " + managedTProxyRulesServiceName,
 		"systemctl daemon-reload",
 		"systemctl reset-failed " + managedTProxyRulesServiceName,
 		"systemctl start " + managedTProxyRulesServiceName,
