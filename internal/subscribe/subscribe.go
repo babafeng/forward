@@ -28,18 +28,20 @@ type ClashConfig struct {
 // ClashProxy 表示 Clash 中的单个代理节点。
 type ClashProxy struct {
 	Name     string `yaml:"name"`
-	Type     string `yaml:"type"`     // vmess, ss, trojan, vless, hysteria2, socks5, http ...
-	Server   string `yaml:"server"`   // 服务器地址
-	Port     int    `yaml:"port"`     // 端口
-	UUID     string `yaml:"uuid"`     // VMess/VLESS UUID
-	AlterID  int    `yaml:"alterId"`  // VMess alterID
-	Cipher   string `yaml:"cipher"`   // 加密方式
-	UDP      bool   `yaml:"udp"`      // 是否支持 UDP
-	Username string `yaml:"username"` // SOCKS5/HTTP 用户名
-	Password string `yaml:"password"` // SS/Trojan/SOCKS5/HTTP 密码
-	TLS      bool   `yaml:"tls"`      // 是否启用 TLS
-	SNI      string `yaml:"sni"`      // TLS SNI
-	Network  string `yaml:"network"`  // 传输网络 (ws, grpc 等)
+	Type     string `yaml:"type"`                       // vmess, ss, trojan, vless, hysteria2, socks5, http ...
+	Server   string `yaml:"server"`                     // 服务器地址
+	Port     int    `yaml:"port"`                       // 端口
+	UUID     string `yaml:"uuid"`                       // VMess/VLESS UUID
+	AlterID  int    `yaml:"alterId"`                    // VMess alterID
+	Cipher   string `yaml:"cipher"`                     // 加密方式
+	UDP      bool   `yaml:"udp"`                        // 是否支持 UDP
+	Username string `yaml:"username"`                   // SOCKS5/HTTP 用户名
+	Password string `yaml:"password"`                   // SS/Trojan/SOCKS5/HTTP 密码
+	TLS      bool   `yaml:"tls"`                        // 是否启用 TLS
+	SNI      string `yaml:"sni"`                        // TLS SNI
+	Network  string `yaml:"network"`                    // 传输网络 (ws, grpc 等)
+	Insecure bool   `yaml:"insecure,omitempty"`         // 是否跳过 TLS 证书校验
+	SkipCert bool   `yaml:"skip-cert-verify,omitempty"` // Clash 兼容字段，是否跳过 TLS 证书校验
 
 	Plugin     string         `yaml:"plugin,omitempty"`      // Shadowsocks 插件名称
 	PluginOpts map[string]any `yaml:"plugin-opts,omitempty"` // Shadowsocks 插件参数
@@ -204,6 +206,7 @@ func parseURIList(text string) ([]ClashProxy, error) {
 	var proxies []ClashProxy
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		line = strings.Trim(line, `"'`)
 		if line == "" {
 			continue
 		}
@@ -758,29 +761,29 @@ func parseTrojanURI(uri string) (ClashProxy, error) {
 // parseHy2URI 解析 hysteria2:// 或 hy2:// URI。
 // 格式: hysteria2://password@server:port?sni=xxx#name
 func parseHy2URI(uri string) (ClashProxy, error) {
+	uri = strings.Trim(uri, `"'`)
 	name := ""
 	if idx := strings.LastIndex(uri, "#"); idx >= 0 {
 		name, _ = url.PathUnescape(uri[idx+1:])
 		uri = uri[:idx]
 	}
 
-	u, err := url.Parse(uri)
+	ep, err := endpoint.Parse(uri)
 	if err != nil {
 		return ClashProxy{}, fmt.Errorf("hy2 URI 解析失败: %w", err)
 	}
 
-	port, _ := strconv.Atoi(u.Port())
-	password := u.User.Username()
-	query := u.Query()
+	query := ep.Query
 
 	proxy := ClashProxy{
 		Name:     name,
 		Type:     "hysteria2",
-		Server:   u.Hostname(),
-		Port:     port,
-		Password: password,
+		Server:   ep.Host,
+		Port:     ep.Port,
+		Password: endpoint.UserSecret(ep.User),
 		TLS:      true,
-		SNI:      query.Get("sni"),
+		SNI:      firstNonEmpty(query.Get("sni"), query.Get("peer")),
+		Insecure: boolQueryValue(query, "insecure", "skip-cert-verify", "allowInsecure"),
 	}
 
 	if proxy.Name == "" {
@@ -838,6 +841,20 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func boolQueryValue(query url.Values, keys ...string) bool {
+	for _, key := range keys {
+		raw := strings.TrimSpace(query.Get(key))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.ParseBool(raw)
+		if err == nil {
+			return value
+		}
+	}
+	return false
 }
 
 // SaveToFile 将订阅内容保存到 ~/.forward/{basename}.yaml 文件中。
@@ -1099,6 +1116,9 @@ func hy2ToEndpoint(p ClashProxy) (endpoint.Endpoint, error) {
 	q := url.Values{}
 	if p.SNI != "" {
 		q.Set("sni", p.SNI)
+	}
+	if p.Insecure || p.SkipCert {
+		q.Set("insecure", "1")
 	}
 	rawURL := fmt.Sprintf("hysteria2://%s@%s:%d",
 		url.PathEscape(p.Password),
