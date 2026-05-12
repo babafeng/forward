@@ -50,7 +50,7 @@ type BalancerCandidate struct {
 }
 
 // NewBalancerRoute 创建一个新的负载均衡路由
-func NewBalancerRoute(nodes []*Node, testInterval time.Duration, dialTimeout time.Duration) *BalancerRoute {
+func NewBalancerRoute(nodes []*Node, testInterval time.Duration, dialTimeout time.Duration, connectURL string) *BalancerRoute {
 	candidates := make([]BalancerCandidate, 0, len(nodes))
 	for _, n := range nodes {
 		if n == nil {
@@ -58,7 +58,7 @@ func NewBalancerRoute(nodes []*Node, testInterval time.Duration, dialTimeout tim
 		}
 		candidates = append(candidates, BalancerCandidate{Node: n})
 	}
-	return NewBalancerRouteWithCandidates(candidates, testInterval, dialTimeout, "")
+	return NewBalancerRouteWithCandidates(candidates, testInterval, dialTimeout, connectURL)
 }
 
 // NewBalancerRouteWithCandidates 创建支持“候选节点 + 完整路由”的负载均衡路由。
@@ -279,6 +279,11 @@ func testNodeHTTP204(rt Route, connectURL string) (time.Duration, error) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		cancel()
+
+		if resp.StatusCode >= 400 {
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
 
 		latency := time.Since(start)
 
