@@ -56,6 +56,20 @@ func (r *composedBalancerRoute) Dial(ctx context.Context, network, address strin
 
 	r.prefix.mu.RLock()
 	nodes := append([]*Node(nil), r.prefix.sortedNodes...)
+	// 计算同延迟组
+	topGroupSize := 1
+	if len(nodes) > 0 {
+		bestLat := r.prefix.latencies[nodes[0]]
+		if bestLat < time.Hour*24 {
+			for i := 1; i < len(nodes); i++ {
+				lat := r.prefix.latencies[nodes[i]]
+				if lat >= time.Hour*24 || lat-bestLat > r.prefix.latencyTolerance {
+					break
+				}
+				topGroupSize++
+			}
+		}
+	}
 	r.prefix.mu.RUnlock()
 
 	if len(nodes) == 0 {
@@ -68,25 +82,37 @@ func (r *composedBalancerRoute) Dial(ctx context.Context, network, address strin
 	start := time.Now()
 	var lastErr error
 
-	for i, node := range nodes {
+	// 组内轮询选择起始节点
+	rrIdx := r.prefix.rrIndex.Add(1) - 1
+	startInGroup := int(rrIdx % uint64(topGroupSize))
+
+	for tried := 0; tried < len(nodes); tried++ {
+		var idx int
+		if tried < topGroupSize {
+			idx = (startInGroup + tried) % topGroupSize
+		} else {
+			idx = tried
+		}
+		node := nodes[idx]
+
 		r.prefix.mu.RLock()
 		latency := r.prefix.latencies[node]
 		r.prefix.mu.RUnlock()
 
-		if latency >= time.Hour*24 && i > 0 {
+		if latency >= time.Hour*24 && tried > 0 {
 			break
 		}
 
 		rt := r.candidateRoute(node)
 		if verbose {
-			tr.Logger.Debug("%sdial balancer try=%d node=%s addr=%s target=%s", tr.Prefix(), i+1, labelNode(node), node.Addr, address)
+			tr.Logger.Debug("%sdial balancer try=%d node=%s addr=%s target=%s", tr.Prefix(), tried+1, labelNode(node), node.Addr, address)
 		}
 
 		cc, err := rt.Dial(ctx, network, address)
 		if err != nil {
 			lastErr = err
 			if verbose {
-				tr.Logger.Debug("%sdial balancer try=%d route err node=%s: %v", tr.Prefix(), i+1, labelNode(node), err)
+				tr.Logger.Debug("%sdial balancer try=%d route err node=%s: %v", tr.Prefix(), tried+1, labelNode(node), err)
 			}
 			r.prefix.mu.Lock()
 			r.prefix.latencies[node] = time.Hour * 24

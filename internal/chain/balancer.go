@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"forward/internal/config"
@@ -31,6 +32,9 @@ type BalancerRoute struct {
 	retestCh     chan struct{} // 用于触发即时重测
 	closeOnce    sync.Once
 	allFailed    bool
+
+	rrIndex          atomic.Uint64 // 轮询计数器
+	latencyTolerance time.Duration // 同延迟组容差（默认 50ms）
 
 	// 全部节点失败时的回调（可选），由上层注册用于紧急刷新订阅。
 	onAllFailed   func()
@@ -82,15 +86,16 @@ func NewBalancerRouteWithCandidates(candidates []BalancerCandidate, testInterval
 	}
 
 	r := &BalancerRoute{
-		nodes:        nodes,
-		routes:       routes,
-		latencies:    make(map[*Node]time.Duration),
-		sortedNodes:  make([]*Node, len(nodes)),
-		testInterval: testInterval,
-		dialTimeout:  dialTimeout,
-		connectURL:   connectURL,
-		stopCh:       make(chan struct{}),
-		retestCh:     make(chan struct{}, 1),
+		nodes:            nodes,
+		routes:           routes,
+		latencies:        make(map[*Node]time.Duration),
+		sortedNodes:      make([]*Node, len(nodes)),
+		testInterval:     testInterval,
+		dialTimeout:      dialTimeout,
+		connectURL:       connectURL,
+		stopCh:           make(chan struct{}),
+		retestCh:         make(chan struct{}, 1),
+		latencyTolerance: 50 * time.Millisecond,
 	}
 	copy(r.sortedNodes, nodes)
 	// 初始化时给所有节点设置一个合理的默认延迟
@@ -300,6 +305,20 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 	nodes := r.sortedNodes
 	fallback := r.fallback
 	allFailed := r.allFailed
+	// 计算同延迟组：与最低延迟差 <= latencyTolerance 的节点
+	topGroupSize := 1
+	if len(nodes) > 0 {
+		bestLat := r.latencies[nodes[0]]
+		if bestLat < time.Hour*24 {
+			for i := 1; i < len(nodes); i++ {
+				lat := r.latencies[nodes[i]]
+				if lat >= time.Hour*24 || lat-bestLat > r.latencyTolerance {
+					break
+				}
+				topGroupSize++
+			}
+		}
+	}
 	r.mu.RUnlock()
 
 	if allFailed && fallback != nil {
@@ -326,27 +345,39 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 
 	maxTries := len(nodes)
 
-	for i := 0; i < maxTries; i++ {
-		node := nodes[i]
+	// 组内轮询选择起始节点
+	rrIdx := r.rrIndex.Add(1) - 1
+	startInGroup := int(rrIdx % uint64(topGroupSize))
+
+	for tried := 0; tried < maxTries; tried++ {
+		var idx int
+		if tried < topGroupSize {
+			// 组内轮询
+			idx = (startInGroup + tried) % topGroupSize
+		} else {
+			// 组外按延迟顺序
+			idx = tried
+		}
+		node := nodes[idx]
 
 		r.mu.RLock()
 		latency := r.latencies[node]
 		r.mu.RUnlock()
 
 		// 如果就算是最好的也已经标为不可用，那基本上全挂了
-		if latency >= time.Hour*24 && i > 0 {
+		if latency >= time.Hour*24 && tried > 0 {
 			break
 		}
 
 		if verbose {
-			tr.Logger.Debug("%sdial balancer try=%d node=%s addr=%s target=%s", tr.Prefix(), i+1, labelNode(node), node.Addr, address)
+			tr.Logger.Debug("%sdial balancer try=%d node=%s addr=%s target=%s", tr.Prefix(), tried+1, labelNode(node), node.Addr, address)
 		}
 
 		cc, err := r.dialCandidate(ctx, node, network, address)
 		if err != nil {
 			lastErr = err
 			if verbose {
-				tr.Logger.Debug("%sdial balancer try=%d route err node=%s: %v", tr.Prefix(), i+1, labelNode(node), err)
+				tr.Logger.Debug("%sdial balancer try=%d route err node=%s: %v", tr.Prefix(), tried+1, labelNode(node), err)
 			}
 			r.mu.Lock()
 			r.latencies[node] = time.Hour * 24
