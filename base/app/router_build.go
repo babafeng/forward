@@ -32,7 +32,11 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 		}
 
 		if len(hops) > 0 {
-			defaultRoute = chain.NewBalancerRouteWithCandidates(subCandidates, 2*time.Minute, cfg.DialTimeout)
+			connectURL := cfg.ConnectURL
+			if connectURL == "" {
+				connectURL = defaultConnectURL
+			}
+			defaultRoute = chain.NewBalancerRouteWithCandidates(subCandidates, 2*time.Minute, cfg.DialTimeout, connectURL)
 		} else {
 			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
 		}

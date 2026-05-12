@@ -248,7 +248,7 @@ func TestStoreRouterDoesNotPrefixBalancerOntoProxyRouteByDefault(t *testing.T) {
 			Node:  subNode,
 			Route: chain.NewRoute(subNode),
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 	defer defaultRoute.Close()
 
 	rt := NewStore(store, defaultRoute, nil)
@@ -316,7 +316,7 @@ func TestStoreRouterPrefixesBalancerOntoProxyRouteWhenExplicitlyRequested(t *tes
 			Node:  subNode,
 			Route: chain.NewRoute(subNode),
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 	defer defaultRoute.Close()
 
 	rt := NewStore(store, defaultRoute, nil)
@@ -374,7 +374,7 @@ func TestStoreRouterExplicitDirectBypassesBalancerFallback(t *testing.T) {
 			Node:  subNode,
 			Route: chain.NewRoute(subNode),
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 	defer defaultRoute.Close()
 
 	rt := NewStore(store, defaultRoute, nil)
@@ -418,7 +418,7 @@ func TestStoreRouterFallsBackToProxyWhenBalancerRetestMarksAllFailed(t *testing.
 			Node:  subNode,
 			Route: chain.NewRoute(subNode),
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 	defer defaultRoute.Close()
 
 	deadline := time.Now().Add(time.Second)

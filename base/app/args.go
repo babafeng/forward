@@ -188,6 +188,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	cfg.SubscribeURLs = subOpts.URLs
 	cfg.SubscribeFilter = subOpts.Filter
 	cfg.SubscribeUpdate = subOpts.Update
+	cfg.ConnectURL = subOpts.ConnectURL
 	return cfg, subOpts, nil
 }
 
