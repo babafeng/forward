@@ -18,7 +18,7 @@ func TestBalancerRouteWithCandidatesDialUsesCandidateRoute(t *testing.T) {
 			Node:  node,
 			Route: fake,
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 	defer br.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -68,7 +68,7 @@ func TestBalancerRouteCloseClosesCandidateRoutes(t *testing.T) {
 			Node:  node,
 			Route: fake,
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 
 	br.Close()
 
@@ -85,7 +85,7 @@ func TestBalancerRouteUpdateCandidatesClosesReplacedRoutes(t *testing.T) {
 			Node:  oldNode,
 			Route: oldRoute,
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 	defer br.Close()
 
 	newNode := NewNode("new", "127.0.0.1:2", &alwaysFailTransport{})
@@ -115,7 +115,7 @@ func TestBalancerRouteFallsBackAfterRetestConfirmsAllFailed(t *testing.T) {
 		{
 			Node: node,
 		},
-	}, time.Hour, 30*time.Millisecond)
+	}, time.Hour, 30*time.Millisecond, "")
 	defer br.Close()
 	br.SetFallbackRoute(fallback)
 
