@@ -31,14 +31,14 @@ func buildRouter(cfg config.Config) (router.Router, error) {
 			return nil, err
 		}
 
+		connectURL := cfg.ConnectURL
+		if connectURL == "" {
+			connectURL = defaultConnectURL
+		}
 		if len(hops) > 0 {
-			connectURL := cfg.ConnectURL
-			if connectURL == "" {
-				connectURL = defaultConnectURL
-			}
 			defaultRoute = chain.NewBalancerRouteWithCandidates(subCandidates, 2*time.Minute, cfg.DialTimeout, connectURL)
 		} else {
-			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout)
+			defaultRoute = chain.NewBalancerRoute(subNodes, 2*time.Minute, cfg.DialTimeout, connectURL)
 		}
 
 		// 注册紧急回调：全部节点失败时立刻重新拉取订阅并热更新 (节流 5 分钟)
