@@ -426,7 +426,7 @@ func TestParseVlessURIShadowrocketVisionTLS(t *testing.T) {
 }
 
 func TestParseHy2URIShadowrocketPeerInsecure(t *testing.T) {
-	raw := `hysteria2://Hy2@1234!@1.2.3.4:8443?peer=bing.com&insecure=1"`
+	raw := `hysteria2://Hy2@1234!@1.2.3.4:8443?peer=example.com&insecure=1"`
 
 	proxies, err := Parse([]byte(raw))
 	if err != nil {
@@ -443,7 +443,7 @@ func TestParseHy2URIShadowrocketPeerInsecure(t *testing.T) {
 	if p.Password != "Hy2@1234!" {
 		t.Fatalf("password = %q", p.Password)
 	}
-	if p.SNI != "bing.com" {
+	if p.SNI != "example.com" {
 		t.Fatalf("sni = %q", p.SNI)
 	}
 	if !p.Insecure {
@@ -454,7 +454,7 @@ func TestParseHy2URIShadowrocketPeerInsecure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProxyToEndpoint failed: %v", err)
 	}
-	if ep.Query.Get("sni") != "bing.com" || ep.Query.Get("insecure") != "1" {
+	if ep.Query.Get("sni") != "example.com" || ep.Query.Get("insecure") != "1" {
 		t.Fatalf("endpoint query = %v", ep.Query)
 	}
 	if got := endpoint.UserSecret(ep.User); got != "Hy2@1234!" {
@@ -470,7 +470,7 @@ proxies:
     server: 1.2.3.4
     port: 8443
     password: "Hy2@1234!"
-    sni: bing.com
+    sni: example.com
     skip-cert-verify: true
 `
 	proxies, err := Parse([]byte(yamlData))

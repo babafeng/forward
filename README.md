@@ -51,13 +51,6 @@ forward -L socks5://user:pass@:1080
 forward -F tls://user:pass@your.server.com:2333
 ```
 
-如果认证字符串包含 shell 或 URI 特殊字符，建议先做百分号编码，并用单引号包住整个 URL。zsh 中双引号内的 `!` 仍会触发历史展开，程序还没启动就会报 `zsh: event not found`。
-
-```bash
-# auth 原文为 Hy2@1234!
-forward -L http://:1000 -F 'hysteria2://Hy2%401234%21@1.2.3.4:8443?peer=bing.com&insecure=1'
-```
-
 ## 证书（Cert）
 
 你可以为 tls 类别服务设置证书。

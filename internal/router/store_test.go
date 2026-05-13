@@ -225,7 +225,7 @@ func TestStoreRouterProxyBuilderRefreshesOnStoreUpdate(t *testing.T) {
 func TestStoreRouterDoesNotPrefixBalancerOntoProxyRouteByDefault(t *testing.T) {
 	store, err := route.NewStore(&route.Config{
 		Proxies: map[string]endpoint.Endpoint{
-			"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
+				"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
 		},
 		Rules: []route.Rule{
 			{
@@ -253,7 +253,7 @@ func TestStoreRouterDoesNotPrefixBalancerOntoProxyRouteByDefault(t *testing.T) {
 
 	rt := NewStore(store, defaultRoute, nil)
 	rt.SetProxyBuilder(func(name string) (chain.Route, error) {
-		node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
+			node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
 		return chain.NewRoute(node), nil
 	})
 
@@ -265,7 +265,7 @@ func TestStoreRouterDoesNotPrefixBalancerOntoProxyRouteByDefault(t *testing.T) {
 	})
 	traceCtx := ictx.ContextWithTrace(context.Background(), &ictx.Trace{
 		Src:    "192.168.1.224:51666",
-		Local:  "1.2.3.4:80",
+			Local:  "1.2.3.4:80",
 		Logger: logger,
 	})
 
@@ -292,7 +292,7 @@ func TestStoreRouterDoesNotPrefixBalancerOntoProxyRouteByDefault(t *testing.T) {
 func TestStoreRouterPrefixesBalancerOntoProxyRouteWhenExplicitlyRequested(t *testing.T) {
 	store, err := route.NewStore(&route.Config{
 		Proxies: map[string]endpoint.Endpoint{
-			"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
+				"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
 		},
 		Rules: []route.Rule{
 			{
@@ -321,7 +321,7 @@ func TestStoreRouterPrefixesBalancerOntoProxyRouteWhenExplicitlyRequested(t *tes
 
 	rt := NewStore(store, defaultRoute, nil)
 	rt.SetProxyBuilder(func(name string) (chain.Route, error) {
-		node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
+			node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
 		return chain.NewRoute(node), nil
 	})
 
@@ -333,7 +333,7 @@ func TestStoreRouterPrefixesBalancerOntoProxyRouteWhenExplicitlyRequested(t *tes
 	})
 	traceCtx := ictx.ContextWithTrace(context.Background(), &ictx.Trace{
 		Src:    "192.168.1.224:51666",
-		Local:  "1.2.3.4:80",
+			Local:  "1.2.3.4:80",
 		Logger: logger,
 	})
 
@@ -394,7 +394,7 @@ func TestStoreRouterExplicitDirectBypassesBalancerFallback(t *testing.T) {
 func TestStoreRouterFallsBackToProxyWhenBalancerRetestMarksAllFailed(t *testing.T) {
 	store, err := route.NewStore(&route.Config{
 		Proxies: map[string]endpoint.Endpoint{
-			"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
+				"PROXY_HK_01": mustParseEndpoint(t, "socks5://1.2.3.4:443"),
 		},
 		Rules: []route.Rule{
 			{
@@ -431,7 +431,7 @@ func TestStoreRouterFallsBackToProxyWhenBalancerRetestMarksAllFailed(t *testing.
 
 	rt := NewStore(store, defaultRoute, nil)
 	rt.SetProxyBuilder(func(name string) (chain.Route, error) {
-		node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
+			node := chain.NewNode(name, "1.2.3.4:443", &successTransport{})
 		return chain.NewRoute(node), nil
 	})
 
@@ -443,7 +443,7 @@ func TestStoreRouterFallsBackToProxyWhenBalancerRetestMarksAllFailed(t *testing.
 	})
 	traceCtx := ictx.ContextWithTrace(context.Background(), &ictx.Trace{
 		Src:    "192.168.1.224:33612",
-		Local:  "1.2.3.4:443",
+			Local:  "1.2.3.4:443",
 		Logger: logger,
 	})
 
