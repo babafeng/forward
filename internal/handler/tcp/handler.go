@@ -78,9 +78,13 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn, _ ...corehandler.Ha
 	bytes, dur, err := inet.Bidirectional(ctx, conn, up)
 	if err != nil && ctx.Err() == nil {
 		h.options.Logger.Error("TCP transfer error: %v", err)
-		h.options.Logger.Debug("TCP closed %s -> %s -> %s transferred %d bytes in %s err=%v", remote, local, target, bytes, dur, err)
+		if h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("TCP closed %s -> %s -> %s transferred %d bytes in %s err=%v", remote, local, target, bytes, dur, err)
+		}
 		return err
 	}
-	h.options.Logger.Debug("TCP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
+	if h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("TCP closed %s -> %s -> %s transferred %d bytes in %s", remote, local, target, bytes, dur)
+	}
 	return err
 }

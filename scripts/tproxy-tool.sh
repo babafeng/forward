@@ -39,7 +39,7 @@ Options:
 Examples:
   scripts/tproxy-tool.sh --install 192.168.1.1
   scripts/tproxy-tool.sh --install 192.168.1.1 --bypass-client 192.168.1.100
-  scripts/tproxy-tool.sh --install 192.168.1.1 --bypass-remote jp.babafeng.icu
+  scripts/tproxy-tool.sh --install 192.168.1.1 --bypass-remote example.com
   scripts/tproxy-tool.sh --uninstall 192.168.1.1
   scripts/tproxy-tool.sh --list 192.168.1.1
 EOF

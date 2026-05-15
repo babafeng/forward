@@ -36,7 +36,7 @@ func TestDefaultRouteInfoLogUsesDirectFormat(t *testing.T) {
 	})
 	ctx := ictx.ContextWithTrace(context.Background(), &ictx.Trace{
 		Src:    "192.168.1.224:57108",
-		Local:  "223.86.122.186:443",
+		Local:  "1.2.3.4:443",
 		Logger: logger,
 	})
 
@@ -52,7 +52,7 @@ func TestDefaultRouteInfoLogUsesDirectFormat(t *testing.T) {
 	if !strings.Contains(logs, "192.168.1.224:57108 -> TCP "+ln.Addr().String()+" --> DIRECT") {
 		t.Fatalf("direct info log missing expected format, got: %s", logs)
 	}
-	if strings.Contains(logs, "223.86.122.186:443 -> TCP") {
+	if strings.Contains(logs, "1.2.3.4:443 -> TCP") {
 		t.Fatalf("direct info log should not include local address, got: %s", logs)
 	}
 }

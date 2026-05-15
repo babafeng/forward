@@ -8,7 +8,9 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	"forward/internal/config"
 	"forward/internal/dialer"
+	"forward/internal/dialer/transportutil"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 	"forward/internal/structs"
@@ -65,7 +67,7 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 	tlsCfg := cloneTLSConfig(d.tlsConfig)
 	ensureNextProtos(tlsCfg, []string{"h3"})
 
-	qconn, err := quic.DialAddr(ctx, addr, tlsCfg, nil)
+	qconn, err := quic.DialAddr(ctx, addr, tlsCfg, config.NewClientQUICConfig())
 	if err != nil {
 		if cancel != nil {
 			cancel()
@@ -93,10 +95,7 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 }
 
 func cloneTLSConfig(cfg *tls.Config) *tls.Config {
-	if cfg == nil {
-		return &tls.Config{}
-	}
-	return cfg.Clone()
+	return transportutil.CloneTLSConfig(cfg)
 }
 
 func ensureNextProtos(cfg *tls.Config, protos []string) {

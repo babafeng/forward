@@ -133,7 +133,7 @@ func TestParseWithUserPass(t *testing.T) {
 }
 
 func TestParseVmessBase64Endpoint(t *testing.T) {
-	raw := "vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMTc4LjE1Ny42MS4xMjQ6MTI1Mjk?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0"
+	raw := "vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMS4yLjMuNDoxMjUyOQ?remarks=JMS-846412@example.com:12529&alterId=0"
 	ep, err := endpoint.Parse(raw)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -141,8 +141,8 @@ func TestParseVmessBase64Endpoint(t *testing.T) {
 	if ep.Scheme != "vmess" {
 		t.Errorf("Scheme = %v, want vmess", ep.Scheme)
 	}
-	if ep.Host != "178.157.61.124" {
-		t.Errorf("Host = %v, want 178.157.61.124", ep.Host)
+	if ep.Host != "1.2.3.4" {
+		t.Errorf("Host = %v, want 1.2.3.4", ep.Host)
 	}
 	if ep.Port != 12529 {
 		t.Errorf("Port = %v, want 12529", ep.Port)
@@ -160,7 +160,7 @@ func TestParseVmessBase64Endpoint(t *testing.T) {
 	if ep.Query.Get("alterId") != "0" {
 		t.Errorf("alterId = %v, want 0", ep.Query.Get("alterId"))
 	}
-	if ep.Query.Get("remarks") != "JMS-846412@c60s4.portablesubmarines.com:12529" {
+	if ep.Query.Get("remarks") != "JMS-846412@example.com:12529" {
 		t.Errorf("remarks = %v", ep.Query.Get("remarks"))
 	}
 }
@@ -239,9 +239,9 @@ func TestParseBase64AuthorityForAllSchemes(t *testing.T) {
 		{
 			name:     "vmess_security_uuid",
 			scheme:   "vmess",
-			decoded:  "auto:ce59fbec-05d1-47fc-ac1f-72ec219a7530@178.157.61.124:12529",
+			decoded:  "auto:ce59fbec-05d1-47fc-ac1f-72ec219a7530@1.2.3.4:12529",
 			query:    "alterId=0",
-			wantHost: "178.157.61.124",
+			wantHost: "1.2.3.4",
 			wantPort: 12529,
 			wantUser: "auto",
 			wantPass: "ce59fbec-05d1-47fc-ac1f-72ec219a7530",

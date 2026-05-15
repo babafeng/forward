@@ -12,7 +12,9 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"forward/internal/config"
 	"forward/internal/dialer"
+	"forward/internal/dialer/transportutil"
 	"forward/internal/metadata"
 	"forward/internal/registry"
 )
@@ -68,11 +70,7 @@ func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) 
 		}
 		ensureNextProtos(tlsCfg, []string{"h3"})
 
-		quicCfg := &quic.Config{
-			Versions: []quic.Version{
-				quic.Version1,
-			},
-		}
+		quicCfg := config.NewClientQUICConfig()
 		if d.md.keepAlivePeriod > 0 {
 			quicCfg.KeepAlivePeriod = d.md.keepAlivePeriod
 		}
@@ -152,10 +150,7 @@ func hostFromAddr(addr string) string {
 }
 
 func cloneTLSConfig(cfg *tls.Config) *tls.Config {
-	if cfg == nil {
-		return &tls.Config{}
-	}
-	return cfg.Clone()
+	return transportutil.CloneTLSConfig(cfg)
 }
 
 func ensureNextProtos(cfg *tls.Config, protos []string) {

@@ -3,11 +3,14 @@ package chain
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"forward/internal/config"
@@ -24,10 +27,14 @@ type BalancerRoute struct {
 	sortedNodes  []*Node // 根据延迟排序的节点
 	testInterval time.Duration
 	dialTimeout  time.Duration
+	connectURL   string
 	stopCh       chan struct{}
 	retestCh     chan struct{} // 用于触发即时重测
 	closeOnce    sync.Once
 	allFailed    bool
+
+	rrIndex          atomic.Uint64 // 轮询计数器
+	latencyTolerance time.Duration // 同延迟组容差（默认 50ms）
 
 	// 全部节点失败时的回调（可选），由上层注册用于紧急刷新订阅。
 	onAllFailed   func()
@@ -43,7 +50,7 @@ type BalancerCandidate struct {
 }
 
 // NewBalancerRoute 创建一个新的负载均衡路由
-func NewBalancerRoute(nodes []*Node, testInterval time.Duration, dialTimeout time.Duration) *BalancerRoute {
+func NewBalancerRoute(nodes []*Node, testInterval time.Duration, dialTimeout time.Duration, connectURL string) *BalancerRoute {
 	candidates := make([]BalancerCandidate, 0, len(nodes))
 	for _, n := range nodes {
 		if n == nil {
@@ -51,16 +58,19 @@ func NewBalancerRoute(nodes []*Node, testInterval time.Duration, dialTimeout tim
 		}
 		candidates = append(candidates, BalancerCandidate{Node: n})
 	}
-	return NewBalancerRouteWithCandidates(candidates, testInterval, dialTimeout)
+	return NewBalancerRouteWithCandidates(candidates, testInterval, dialTimeout, connectURL)
 }
 
 // NewBalancerRouteWithCandidates 创建支持“候选节点 + 完整路由”的负载均衡路由。
-func NewBalancerRouteWithCandidates(candidates []BalancerCandidate, testInterval time.Duration, dialTimeout time.Duration) *BalancerRoute {
+func NewBalancerRouteWithCandidates(candidates []BalancerCandidate, testInterval time.Duration, dialTimeout time.Duration, connectURL string) *BalancerRoute {
 	if testInterval <= 0 {
 		testInterval = 2 * time.Minute
 	}
 	if dialTimeout <= 0 {
 		dialTimeout = config.DefaultDialTimeout
+	}
+	if connectURL == "" {
+		connectURL = "http://www.gstatic.com/generate_204"
 	}
 
 	nodes := make([]*Node, 0, len(candidates))
@@ -76,14 +86,16 @@ func NewBalancerRouteWithCandidates(candidates []BalancerCandidate, testInterval
 	}
 
 	r := &BalancerRoute{
-		nodes:        nodes,
-		routes:       routes,
-		latencies:    make(map[*Node]time.Duration),
-		sortedNodes:  make([]*Node, len(nodes)),
-		testInterval: testInterval,
-		dialTimeout:  dialTimeout,
-		stopCh:       make(chan struct{}),
-		retestCh:     make(chan struct{}, 1),
+		nodes:            nodes,
+		routes:           routes,
+		latencies:        make(map[*Node]time.Duration),
+		sortedNodes:      make([]*Node, len(nodes)),
+		testInterval:     testInterval,
+		dialTimeout:      dialTimeout,
+		connectURL:       connectURL,
+		stopCh:           make(chan struct{}),
+		retestCh:         make(chan struct{}, 1),
+		latencyTolerance: 50 * time.Millisecond,
 	}
 	copy(r.sortedNodes, nodes)
 	// 初始化时给所有节点设置一个合理的默认延迟
@@ -136,10 +148,15 @@ func (r *BalancerRoute) backgroundTest() {
 }
 
 func (r *BalancerRoute) testAll() {
-	// Snapshot nodes under read lock to avoid data race with UpdateCandidates.
+	// Snapshot nodes and routes under read lock to avoid data race with UpdateCandidates.
 	r.mu.RLock()
 	nodes := make([]*Node, len(r.nodes))
 	copy(nodes, r.nodes)
+	routes := make(map[*Node]Route, len(r.routes))
+	for k, v := range r.routes {
+		routes[k] = v
+	}
+	connectURL := r.connectURL
 	r.mu.RUnlock()
 
 	if len(nodes) == 0 {
@@ -156,23 +173,36 @@ func (r *BalancerRoute) testAll() {
 		wg.Add(1)
 		go func(node *Node) {
 			defer wg.Done()
-			start := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), r.dialTimeout)
-			defer cancel()
 
-			conn, err := node.Transport().Dial(ctx, node.Addr)
-			if err != nil {
-				results <- result{node: node, latency: time.Hour * 24}
-				return
-			}
-			conn, err = node.Transport().Handshake(ctx, conn)
-			if err != nil {
+			rt := routes[node]
+			if rt != nil {
+				// 全链路 HTTP 204 探测（含 warmup 轮消除冷启动高延迟）
+				latency, err := testNodeHTTP204(rt, connectURL)
+				if err != nil {
+					results <- result{node: node, latency: time.Hour * 24}
+					return
+				}
+				results <- result{node: node, latency: latency}
+			} else {
+				// 无完整路由，回退到 Dial+Handshake 方式
+				start := time.Now()
+				ctx, cancel := context.WithTimeout(context.Background(), r.dialTimeout)
+				defer cancel()
+
+				conn, err := node.Transport().Dial(ctx, node.Addr)
+				if err != nil {
+					results <- result{node: node, latency: time.Hour * 24}
+					return
+				}
+				conn, err = node.Transport().Handshake(ctx, conn)
+				if err != nil {
+					conn.Close()
+					results <- result{node: node, latency: time.Hour * 24}
+					return
+				}
 				conn.Close()
-				results <- result{node: node, latency: time.Hour * 24}
-				return
+				results <- result{node: node, latency: time.Since(start)}
 			}
-			conn.Close()
-			results <- result{node: node, latency: time.Since(start)}
 		}(n)
 	}
 
@@ -204,11 +234,96 @@ func (r *BalancerRoute) testAll() {
 	r.allFailed = len(r.nodes) > 0 && len(available) == 0
 }
 
+// testNodeHTTP204 通过完整路由进行 HTTP 204 全链路探测。
+// 使用 warmup（1轮预热）+ measure（2轮测量）取最优延迟，消除冷启动高延迟。
+func testNodeHTTP204(rt Route, connectURL string) (time.Duration, error) {
+	const (
+		warmupRounds  = 1
+		measureRounds = 2
+		totalRounds   = warmupRounds + measureRounds
+		roundTimeout  = 10 * time.Second
+	)
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return rt.Dial(ctx, "tcp", addr)
+		},
+		MaxIdleConns:        1,
+		MaxIdleConnsPerHost: 1,
+	}
+	defer transport.CloseIdleConnections()
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   roundTimeout,
+	}
+
+	var bestLatency time.Duration
+	var lastErr error
+	for round := 0; round < totalRounds; round++ {
+		ctx, cancel := context.WithTimeout(context.Background(), roundTimeout)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, connectURL, nil)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+
+		start := time.Now()
+		resp, err := client.Do(req)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		cancel()
+
+		if resp.StatusCode >= 400 {
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+
+		latency := time.Since(start)
+
+		// 前 warmupRounds 轮为预热，不计入结果
+		if round < warmupRounds {
+			continue
+		}
+		if bestLatency == 0 || latency < bestLatency {
+			bestLatency = latency
+		}
+	}
+
+	if bestLatency == 0 {
+		if lastErr != nil {
+			return 0, lastErr
+		}
+		return 0, fmt.Errorf("no measured latency")
+	}
+	return bestLatency, nil
+}
+
 func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.Conn, error) {
 	r.mu.RLock()
 	nodes := r.sortedNodes
 	fallback := r.fallback
 	allFailed := r.allFailed
+	// 计算同延迟组：与最低延迟差 <= latencyTolerance 的节点
+	topGroupSize := 1
+	if len(nodes) > 0 {
+		bestLat := r.latencies[nodes[0]]
+		if bestLat < time.Hour*24 {
+			for i := 1; i < len(nodes); i++ {
+				lat := r.latencies[nodes[i]]
+				if lat >= time.Hour*24 || lat-bestLat > r.latencyTolerance {
+					break
+				}
+				topGroupSize++
+			}
+		}
+	}
 	r.mu.RUnlock()
 
 	if allFailed && fallback != nil {
@@ -235,27 +350,39 @@ func (r *BalancerRoute) Dial(ctx context.Context, network, address string) (net.
 
 	maxTries := len(nodes)
 
-	for i := 0; i < maxTries; i++ {
-		node := nodes[i]
+	// 组内轮询选择起始节点
+	rrIdx := r.rrIndex.Add(1) - 1
+	startInGroup := int(rrIdx % uint64(topGroupSize))
+
+	for tried := 0; tried < maxTries; tried++ {
+		var idx int
+		if tried < topGroupSize {
+			// 组内轮询
+			idx = (startInGroup + tried) % topGroupSize
+		} else {
+			// 组外按延迟顺序
+			idx = tried
+		}
+		node := nodes[idx]
 
 		r.mu.RLock()
 		latency := r.latencies[node]
 		r.mu.RUnlock()
 
 		// 如果就算是最好的也已经标为不可用，那基本上全挂了
-		if latency >= time.Hour*24 && i > 0 {
+		if latency >= time.Hour*24 && tried > 0 {
 			break
 		}
 
 		if verbose {
-			tr.Logger.Debug("%sdial balancer try=%d node=%s addr=%s target=%s", tr.Prefix(), i+1, labelNode(node), node.Addr, address)
+			tr.Logger.Debug("%sdial balancer try=%d node=%s addr=%s target=%s", tr.Prefix(), tried+1, labelNode(node), node.Addr, address)
 		}
 
 		cc, err := r.dialCandidate(ctx, node, network, address)
 		if err != nil {
 			lastErr = err
 			if verbose {
-				tr.Logger.Debug("%sdial balancer try=%d route err node=%s: %v", tr.Prefix(), i+1, labelNode(node), err)
+				tr.Logger.Debug("%sdial balancer try=%d route err node=%s: %v", tr.Prefix(), tried+1, labelNode(node), err)
 			}
 			r.mu.Lock()
 			r.latencies[node] = time.Hour * 24

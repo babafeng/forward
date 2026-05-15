@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "切到 kiro 分支并建立审计产物。切出新分支 kiro（基于 main HEAD 68aa0a9），把审计报告 000-audit.md 和任务 state 提交到仓库，给后续 perf commit 打地基。不改任何业务代码。",
+  "status": "in_progress",
+  "steps": [
+    "确认当前仓库在 main 分支、clean：`git -C /projects/sandbox/forward status -sb`。",
+    "从 main 创建并切到 kiro 分支：`git -C /projects/sandbox/forward checkout -B kiro main`。",
+    "把 `.agents/tasks/task-net-perf-audit/` 目录下所有文件一次性提交（git add 指定路径，不要 `-A`）：包含 context.json、000-audit.md、features/*.json、task.json（task.json 将在最后完整写入后再提交，这一步先只 add 当前已写好的 context.json、000-audit.md、FEAT-*.json）。",
+    "Commit message（中文 body）：`chore: add forward 网络性能审计报告与任务计划`，body 简述'基于静态代码审查，识别 splice/TLS session/quic.Config/yamux window/UDP 分配热点等 20+ 项，计划在 kiro 分支上按批次落地，不引入新依赖'。",
+    "验证：`git -C /projects/sandbox/forward log --oneline -1 kiro` 能看到新 commit；`git -C /projects/sandbox/forward status -sb` 干净。"
+  ],
+  "acceptance_criteria": [
+    "kiro 分支存在且 HEAD 比 main 多 1 个 commit",
+    "新 commit 只触达 .agents/tasks/task-net-perf-audit/ 下的文件",
+    "git status 干净"
+  ],
+  "verification": [
+    "git -C /projects/sandbox/forward branch --show-current 返回 kiro",
+    "git -C /projects/sandbox/forward log --oneline main..kiro 显示 1 条 commit",
+    "git -C /projects/sandbox/forward show --stat HEAD | head -20 显示只改 .agents/ 目录"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

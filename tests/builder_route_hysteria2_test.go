@@ -46,6 +46,12 @@ func TestBuildHysteria2DialerMetadataAuthDecode(t *testing.T) {
 	if got := md.GetString("auth"); got != "abc:def" {
 		t.Fatalf("auth decode = %q, want %q", got, "abc:def")
 	}
+
+	ep = mustParseEndpoint(t, "hysteria2://Hy2%401234%21@1.2.3.4:8443?peer=example.com&insecure=1")
+	md = builder.BuildHysteria2DialerMetadata(ep, false)
+	if got := md.GetString("auth"); got != "Hy2@1234!" {
+		t.Fatalf("auth decode = %q, want %q", got, "Hy2@1234!")
+	}
 }
 
 func TestResolveTypesHysteria2(t *testing.T) {

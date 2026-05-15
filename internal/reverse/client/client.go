@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -73,10 +74,12 @@ func (c *Client) Run(ctx context.Context) error {
 				}
 			}
 			c.log.Error("Reverse client error: %v", err)
+			timer := time.NewTimer(backoff)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
-			case <-time.After(backoff):
+			case <-timer.C:
 			}
 			if backoff < maxBackoff {
 				backoff *= 2
@@ -111,7 +114,7 @@ func (c *Client) connectOnce(ctx context.Context, network, bindHost string, bind
 	}
 	defer session.Close()
 
-	c.log.Info("Reverse client tunnel ready: remote %s exposes %s (%s)", c.forward.Address(), net.JoinHostPort(bindHost, fmt.Sprintf("%d", bindPort)), network)
+	c.log.Info("Reverse client tunnel ready: remote %s exposes %s (%s)", c.forward.Address(), net.JoinHostPort(bindHost, strconv.Itoa(bindPort)), network)
 
 	done := make(chan struct{})
 	go func() {

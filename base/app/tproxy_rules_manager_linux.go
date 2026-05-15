@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,35 +30,6 @@ const (
 	linuxDistroDebian  linuxDistroKind = "debian"
 )
 
-type ownerMatchMode string
-
-const (
-	ownerMatchUID ownerMatchMode = "uid"
-	ownerMatchGID ownerMatchMode = "gid"
-)
-
-type ownerMatch struct {
-	Mode  ownerMatchMode
-	Value string
-}
-
-func (o ownerMatch) IPTablesArg() string {
-	switch o.Mode {
-	case ownerMatchGID:
-		return "--gid-owner " + o.Value
-	default:
-		return "--uid-owner " + o.Value
-	}
-}
-
-func (o ownerMatch) String() string {
-	return string(o.Mode) + ":" + o.Value
-}
-
-func (o ownerMatch) Enabled() bool {
-	return (o.Mode == ownerMatchUID || o.Mode == ownerMatchGID) && strings.TrimSpace(o.Value) != ""
-}
-
 type osReleaseInfo struct {
 	ID     string
 	IDLike []string
@@ -77,7 +47,6 @@ type tproxyRulesManager struct {
 	serviceName string
 	unitPath    string
 	tproxyPort  int
-	ownerMatch  ownerMatch
 	run         commandRunner
 	writeFile   fileWriter
 	removeFile  fileRemover
@@ -102,17 +71,11 @@ func setupManagedTProxyRulesPlatform(cfg config.Config) (func(), error) {
 		}
 		return disableNetmark, nil
 	case linuxDistroDebian:
-		owner, err := resolveOwnerMatch()
-		if err != nil {
-			disableNetmark()
-			return nil, err
-		}
 		mgr := tproxyRulesManager{
 			logger:      cfg.Logger,
 			serviceName: managedTProxyRulesServiceName,
 			unitPath:    managedTProxyRulesUnitPath,
 			tproxyPort:  cfg.TProxy.Port,
-			ownerMatch:  owner,
 			run:         runSystemCommand,
 			writeFile:   os.WriteFile,
 			removeFile:  os.Remove,
@@ -122,7 +85,7 @@ func setupManagedTProxyRulesPlatform(cfg config.Config) (func(), error) {
 			return nil, err
 		}
 		if cfg.Logger != nil {
-			cfg.Logger.Info("Managed tproxy rules enabled via %s (distro=%s, owner=%s)", managedTProxyRulesServiceName, distroLabel(info), owner.String())
+			cfg.Logger.Info("Managed tproxy rules enabled via %s (distro=%s)", managedTProxyRulesServiceName, distroLabel(info))
 		}
 		return func() {
 			defer disableNetmark()
@@ -143,7 +106,7 @@ func (m tproxyRulesManager) Setup() error {
 		return fmt.Errorf("managed tproxy rules requires a positive tproxy port")
 	}
 	if m.logger != nil {
-		m.logger.Info("Registering %s for transparent proxy rules (port=%d, owner=%s)", m.serviceName, m.tproxyPort, m.ownerMatch.String())
+		m.logger.Info("Registering %s for transparent proxy rules (port=%d)", m.serviceName, m.tproxyPort)
 	}
 	if err := m.resetExistingUnit(); err != nil {
 		return err
@@ -154,7 +117,7 @@ func (m tproxyRulesManager) Setup() error {
 	if m.logger != nil {
 		m.logger.Info("Writing systemd unit %s", m.unitPath)
 	}
-	if err := m.writeFile(m.unitPath, []byte(renderTProxyRulesUnit(m.tproxyPort, m.ownerMatch)), 0o644); err != nil {
+	if err := m.writeFile(m.unitPath, []byte(renderTProxyRulesUnit(m.tproxyPort)), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit %s: %w", m.unitPath, err)
 	}
 	if err := m.systemctl("daemon-reload"); err != nil {
@@ -230,7 +193,7 @@ func (m tproxyRulesManager) systemctl(args ...string) error {
 	return m.run("systemctl", args...)
 }
 
-func renderTProxyRulesUnit(port int, owner ownerMatch) string {
+func renderTProxyRulesUnit(port int) string {
 	var b strings.Builder
 	b.WriteString("[Unit]\n")
 	b.WriteString("Description=forward tproxy rules service\n")
@@ -239,14 +202,14 @@ func renderTProxyRulesUnit(port int, owner ownerMatch) string {
 	b.WriteString("[Service]\n")
 	b.WriteString("Type=oneshot\n")
 	b.WriteString("RemainAfterExit=yes\n")
-	writeUnitExecs(&b, "ExecStart", port, owner)
-	writeUnitExecs(&b, "ExecStop", port, owner)
+	writeUnitExecs(&b, "ExecStart", port)
+	writeUnitExecs(&b, "ExecStop", port)
 	b.WriteString("\n[Install]\n")
 	b.WriteString("WantedBy=multi-user.target\n")
 	return b.String()
 }
 
-func writeUnitExecs(b *strings.Builder, key string, port int, owner ownerMatch) {
+func writeUnitExecs(b *strings.Builder, key string, port int) {
 	quotedPort := strconv.Itoa(port)
 	lines := []string{
 		"/bin/sh -c 'iptables -t mangle -D OUTPUT -j GO_MARK 2>/dev/null || true'",
@@ -277,9 +240,6 @@ func writeUnitExecs(b *strings.Builder, key string, port int, owner ownerMatch) 
 			"/sbin/iptables -t mangle -A GO_TPROXY -m mark --mark 1 -p udp -j TPROXY --on-port "+quotedPort+" --tproxy-mark 1",
 			"/sbin/iptables -t mangle -A PREROUTING -j GO_TPROXY",
 		)
-		if owner.Enabled() {
-			lines = insertAfterGO_MARKCreate(lines, "/sbin/iptables -t mangle -A GO_MARK -m owner "+owner.IPTablesArg()+" -j RETURN")
-		}
 	}
 	for _, line := range lines {
 		b.WriteString(key)
@@ -287,15 +247,6 @@ func writeUnitExecs(b *strings.Builder, key string, port int, owner ownerMatch) 
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-}
-
-func insertAfterGO_MARKCreate(lines []string, line string) []string {
-	for i, existing := range lines {
-		if strings.Contains(existing, "-N GO_MARK") {
-			return append(lines[:i+1], append([]string{line}, lines[i+1:]...)...)
-		}
-	}
-	return append(lines, line)
 }
 
 func detectLinuxDistro(readFile func(string) ([]byte, error), stat func(string) (os.FileInfo, error)) (linuxDistroKind, osReleaseInfo, error) {
@@ -370,15 +321,6 @@ func distroLabel(info osReleaseInfo) string {
 		return info.ID
 	}
 	return "linux"
-}
-
-func resolveOwnerMatch() (ownerMatch, error) {
-	if grp, err := user.LookupGroupId(strconv.Itoa(os.Getegid())); err == nil && grp != nil {
-		if strings.EqualFold(strings.TrimSpace(grp.Name), "go-proxy") {
-			return ownerMatch{Mode: ownerMatchGID, Value: "go-proxy"}, nil
-		}
-	}
-	return ownerMatch{Mode: ownerMatchUID, Value: strconv.Itoa(os.Geteuid())}, nil
 }
 
 func runSystemCommand(name string, args ...string) error {

@@ -517,13 +517,14 @@ func (s *Server) handlePull(w http.ResponseWriter, r *http.Request) {
 	b := pool.GetWithSize(s.options.readBufferSize)
 	defer pool.Put(b)
 
+	bw := bufio.NewWriterSize(w, 16*1024)
+
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(s.options.readTimeout))
 		n, err := conn.Read(b)
 		if n > 0 {
-			bw := bufio.NewWriter(w)
 			bw.WriteString(base64.StdEncoding.EncodeToString(b[:n]))
-			bw.WriteString("\n")
+			bw.WriteByte('\n')
 			if err := bw.Flush(); err != nil {
 				return
 			}

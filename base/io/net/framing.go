@@ -43,12 +43,12 @@ func (ps *PacketStream) Write(p []byte) (n int, err error) {
 }
 
 func (ps *PacketStream) Read(p []byte) (n int, err error) {
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(ps.Conn, header); err != nil {
+	var header [2]byte
+	if _, err := io.ReadFull(ps.Conn, header[:]); err != nil {
 		return 0, err
 	}
 
-	length := int(binary.BigEndian.Uint16(header))
+	length := int(binary.BigEndian.Uint16(header[:]))
 	if length > len(p) {
 		return 0, io.ErrShortBuffer
 	}

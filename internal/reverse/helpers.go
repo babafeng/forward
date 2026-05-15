@@ -13,6 +13,13 @@ import (
 func NewYamuxConfig(logger *logging.Logger) *yamux.Config {
 	conf := yamux.DefaultConfig()
 	conf.KeepAliveInterval = 10 * time.Second
+	// 高 BDP 反向隧道调优：默认 MaxStreamWindowSize=256KB 在 100ms RTT
+	// 下单流吞吐上限 ~20 Mbps，跨国反向隧道严重欠跑；拉到 4MB 可到 ~320 Mbps。
+	conf.MaxStreamWindowSize = 4 * 1024 * 1024
+	// 慢链路瞬时卡顿下默认 10s 写超时容易直接断连；放到 30s 更稳。
+	conf.ConnectionWriteTimeout = 30 * time.Second
+	// 避免 OpenStream 在慢链路上永久阻塞。
+	conf.StreamOpenTimeout = 10 * time.Second
 	if logger != nil {
 		conf.LogOutput = nil
 		conf.Logger = &yamuxLogger{logger: logger}

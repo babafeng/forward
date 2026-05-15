@@ -237,7 +237,6 @@ func (c *Connector) sendRequest(ctx context.Context, conn net.Conn, cmd byte, ho
 	return nil
 }
 
-
 func splitHostPort(addr string) (string, int, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -471,11 +470,13 @@ func (c *UDPConn) Read(p []byte) (int, error) {
 }
 
 func (c *UDPConn) Write(p []byte) (int, error) {
-	buf := make([]byte, 0, len(c.prefix)+len(p))
-	buf = append(buf, c.prefix...)
-	buf = append(buf, p...)
+	total := len(c.prefix) + len(p)
+	buf := pool.GetWithSize(total)
+	copy(buf, c.prefix)
+	copy(buf[len(c.prefix):], p)
 
-	_, err := c.udp.WriteToUDP(buf, c.relay)
+	_, err := c.udp.WriteToUDP(buf[:total], c.relay)
+	pool.Put(buf)
 	if err != nil {
 		return 0, err
 	}

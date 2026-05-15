@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -17,6 +18,8 @@ import (
 	cini "forward/internal/config/ini"
 	cjson "forward/internal/config/json"
 )
+
+var errVersionShown = errors.New("version shown")
 
 func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	fs := flag.NewFlagSet("forward-internal", flag.ContinueOnError)
@@ -50,7 +53,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 
 	fmt.Printf("forward %s %s %s %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	if *isVersion {
-		return config.Config{}, subscribeOptions{}, nil
+		return config.Config{}, subscribeOptions{}, errVersionShown
 	}
 
 	visited := make(map[string]bool)
@@ -185,6 +188,7 @@ func parseArgs(args []string) (config.Config, subscribeOptions, error) {
 	cfg.SubscribeURLs = subOpts.URLs
 	cfg.SubscribeFilter = subOpts.Filter
 	cfg.SubscribeUpdate = subOpts.Update
+	cfg.ConnectURL = subOpts.ConnectURL
 	return cfg, subOpts, nil
 }
 

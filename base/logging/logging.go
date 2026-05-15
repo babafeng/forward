@@ -102,6 +102,21 @@ func (l *Logger) SetLevel(level Level) {
 	l.level.Store(int32(level))
 }
 
+// IsLevelEnabled 在给定消息级别会被打印时返回 true。热路径可先调用它
+// 作为 guard 避免昂贵的 fmt.Sprintf / 参数求值。
+func (l *Logger) IsLevelEnabled(level Level) bool {
+	lvl := Level(l.level.Load())
+	if lvl == LevelOff {
+		return false
+	}
+	return level >= lvl
+}
+
+// IsDebug 是 IsLevelEnabled(LevelDebug) 的简写。
+func (l *Logger) IsDebug() bool {
+	return l.IsLevelEnabled(LevelDebug)
+}
+
 func (l *Logger) Debug(format string, args ...any) {
 	l.printf(LevelDebug, false, format, args...)
 }

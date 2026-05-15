@@ -66,7 +66,7 @@ func TestBuildVlessConnectorMetadataMux(t *testing.T) {
 }
 
 func TestBuildVlessConnectorMetadataShadowrocketUserInfo(t *testing.T) {
-	ep, err := endpoint.Parse("vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@108.187.15.24:443?tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13")
+	ep, err := endpoint.Parse("vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13")
 	if err != nil {
 		t.Fatalf("parse endpoint: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestBuildVlessConnectorMetadataShadowrocketUserInfo(t *testing.T) {
 }
 
 func TestBuildRouteAcceptsShadowrocketVlessUserInfo(t *testing.T) {
-	ep, err := endpoint.Parse("vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@108.187.15.24:443?tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13")
+	ep, err := endpoint.Parse("vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13")
 	if err != nil {
 		t.Fatalf("parse endpoint: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestBuildRouteAcceptsShadowrocketVlessUserInfo(t *testing.T) {
 }
 
 func TestBuildRouteAcceptsVlessVisionTLS(t *testing.T) {
-	ep, err := endpoint.Parse("vless+tls://b1fb1a1c-1f12-470b-9dfb-087f3323f1fb@01-rl-hkg.c-one.us:11889?security=tls&sni=vl-tyo-11.auua.us&flow=xtls-rprx-vision")
+	ep, err := endpoint.Parse("vless+tls://b1fb1a1c-1f12-470b-9dfb-087f3323f1fb@example.com:11889?security=tls&sni=example.com&flow=xtls-rprx-vision")
 	if err != nil {
 		t.Fatalf("parse endpoint: %v", err)
 	}

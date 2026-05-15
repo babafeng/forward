@@ -43,9 +43,24 @@ func Bidirectional(ctx context.Context, in, out net.Conn) (bytes int64, dur time
 
 	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		buf := getCopyBuffer()
-		defer putCopyBuffer(buf)
-		n, e := io.CopyBuffer(dst, src, buf)
+		var n int64
+		var e error
+		// 只有当 dst 或 src 恰好是 *net.TCPConn 时才把 buf 交给 stdlib：此时
+		// 在 Linux 上 (*TCPConn).readFrom 会触发 splice(2) / sendfile(2) 零
+		// 拷贝 fast path。其它类型即便实现了 io.ReaderFrom / io.WriterTo
+		// （例如项目内部的 *ssPacketConn / *vmessConn），底层也只是
+		// user-space pump，和我们走 pool + CopyBuffer 效果一样甚至更差
+		// （它们未必复用 buffer）。注：Go 1.26 的 *tls.Conn 并不实现 io.
+		// ReaderFrom，不会命中这里的快路径。
+		if _, ok := dst.(*net.TCPConn); ok {
+			n, e = io.Copy(dst, src)
+		} else if _, ok := src.(*net.TCPConn); ok {
+			n, e = io.Copy(dst, src)
+		} else {
+			buf := getCopyBuffer()
+			n, e = io.CopyBuffer(dst, src, buf)
+			putCopyBuffer(buf)
+		}
 		if n > 0 {
 			total.Add(n)
 		}

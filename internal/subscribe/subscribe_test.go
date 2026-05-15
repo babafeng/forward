@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+
+	"forward/base/endpoint"
 )
 
 func TestParseClashYAML(t *testing.T) {
@@ -199,8 +201,8 @@ func TestParseVmessURI(t *testing.T) {
 
 func TestParseVmessEndpointURIList(t *testing.T) {
 	uriList := `
-vmess://auto:ce59fbec-05d1-47fc-ac1f-72ec219a7530@178.157.61.31:12529?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0
-vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMTc4LjE1Ny42MS4zMToxMjUyOQ?remarks=JMS-846412@c60s4.portablesubmarines.com:12529&alterId=0
+vmess://auto:ce59fbec-05d1-47fc-ac1f-72ec219a7530@1.2.3.4:12529?remarks=JMS-846412@example.com:12529&alterId=0
+vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMS4yLjMuNDoxMjUyOQ?remarks=JMS-846412@example.com:12529&alterId=0
 `
 
 	proxies, err := Parse([]byte(uriList))
@@ -214,10 +216,10 @@ vmess://YXV0bzpjZTU5ZmJlYy0wNWQxLTQ3ZmMtYWMxZi03MmVjMjE5YTc1MzBAMTc4LjE1Ny42MS4z
 		if proxy.Type != "vmess" {
 			t.Fatalf("节点 %d 类型 = %q，期望 vmess", i, proxy.Type)
 		}
-		if proxy.Name != "JMS-846412@c60s4.portablesubmarines.com:12529" {
+		if proxy.Name != "JMS-846412@example.com:12529" {
 			t.Errorf("节点 %d 名称 = %q", i, proxy.Name)
 		}
-		if proxy.Server != "178.157.61.31" {
+		if proxy.Server != "1.2.3.4" {
 			t.Errorf("节点 %d 服务器 = %q", i, proxy.Server)
 		}
 		if proxy.Port != 12529 {
@@ -290,7 +292,7 @@ hy2://hypass@hy2.test.com:443?sni=hy2.test.com#Test%20HY2
 }
 
 func TestParseVlessURIShadowrocketReality(t *testing.T) {
-	raw := "vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@108.187.15.24:443?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
+	raw := "vless://none:0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
 
 	proxies, err := Parse([]byte(raw))
 	if err != nil {
@@ -336,7 +338,7 @@ func TestParseVlessURIShadowrocketReality(t *testing.T) {
 }
 
 func TestParseVlessURIShadowrocketBase64AuthorityReality(t *testing.T) {
-	raw := "vless://bm9uZTowZTQ2N2Y1Zi0wYTVjLTQ0ZjgtODJhNS0wN2Y4MDNkMTYxZThAMTA4LjE4Ny4xNS4yNDo0NDM?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
+	raw := "vless://bm9uZTowZTQ2N2Y1Zi0wYTVjLTQ0ZjgtODJhNS0wN2Y4MDNkMTYxZThAMS4yLjMuNDo0NDM?remarks=JP-LL&tls=1&peer=swscan.apple.com&xtls=2&pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&sid=d003cb13"
 
 	proxies, err := Parse([]byte(raw))
 	if err != nil {
@@ -347,7 +349,7 @@ func TestParseVlessURIShadowrocketBase64AuthorityReality(t *testing.T) {
 	}
 
 	p := proxies[0]
-	if p.Server != "108.187.15.24" || p.Port != 443 {
+	if p.Server != "1.2.3.4" || p.Port != 443 {
 		t.Fatalf("server = %s:%d", p.Server, p.Port)
 	}
 	if p.UUID != "0e467f5f-0a5c-44f8-82a5-07f803d161e8" {
@@ -364,7 +366,7 @@ func TestParseVlessURIShadowrocketBase64AuthorityReality(t *testing.T) {
 }
 
 func TestParseVlessURIHTMLEscapedReality(t *testing.T) {
-	raw := "vless://0e467f5f-0a5c-44f8-82a5-07f803d161e8@108.187.15.24:443?encryption=none&amp;flow=xtls-rprx-vision&amp;fp=chrome&amp;pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&amp;security=reality&amp;sid=d003cb13&amp;sni=swscan.apple.com&amp;type=tcp&amp;mux=true&amp;mux_max_streams=64&amp;mux_idle=120s#VLESS-Reality"
+	raw := "vless://0e467f5f-0a5c-44f8-82a5-07f803d161e8@1.2.3.4:443?encryption=none&amp;flow=xtls-rprx-vision&amp;fp=chrome&amp;pbk=A0ADElLyacApk2_prdYRh_lsOhG7dMeEVLc_NVFRGA8&amp;security=reality&amp;sid=d003cb13&amp;sni=swscan.apple.com&amp;type=tcp&amp;mux=true&amp;mux_max_streams=64&amp;mux_idle=120s#VLESS-Reality"
 
 	proxy, err := parseVlessURI(raw)
 	if err != nil {
@@ -393,7 +395,7 @@ func TestParseVlessURIHTMLEscapedReality(t *testing.T) {
 }
 
 func TestParseVlessURIShadowrocketVisionTLS(t *testing.T) {
-	raw := "vless://none:b1fb1a1c-1f12-470b-9dfb-087f3323f1fb@01-rl-hkg.c-one.us:11889?remarks=%E6%97%A5%E6%9C%AC-TYO-01-VL&tls=1&peer=vl-tyo-11.auua.us&xtls=2"
+	raw := "vless://none:b1fb1a1c-1f12-470b-9dfb-087f3323f1fb@example.com:11889?remarks=%E6%97%A5%E6%9C%AC-TYO-01-VL&tls=1&peer=example.com&xtls=2"
 
 	proxies, err := Parse([]byte(raw))
 	if err != nil {
@@ -418,7 +420,75 @@ func TestParseVlessURIShadowrocketVisionTLS(t *testing.T) {
 	if ep.Scheme != "vless+tls" {
 		t.Fatalf("scheme = %q", ep.Scheme)
 	}
-	if ep.Query.Get("security") != "tls" || ep.Query.Get("sni") != "vl-tyo-11.auua.us" {
+	if ep.Query.Get("security") != "tls" || ep.Query.Get("sni") != "example.com" {
+		t.Fatalf("endpoint query = %v", ep.Query)
+	}
+}
+
+func TestParseHy2URIShadowrocketPeerInsecure(t *testing.T) {
+	raw := `hysteria2://Hy2@1234!@1.2.3.4:8443?peer=example.com&insecure=1"`
+
+	proxies, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+
+	p := proxies[0]
+	if p.Type != "hysteria2" || p.Server != "1.2.3.4" || p.Port != 8443 {
+		t.Fatalf("proxy = %#v", p)
+	}
+	if p.Password != "Hy2@1234!" {
+		t.Fatalf("password = %q", p.Password)
+	}
+	if p.SNI != "example.com" {
+		t.Fatalf("sni = %q", p.SNI)
+	}
+	if !p.Insecure {
+		t.Fatal("insecure should be true")
+	}
+
+	ep, err := ProxyToEndpoint(p)
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Query.Get("sni") != "example.com" || ep.Query.Get("insecure") != "1" {
+		t.Fatalf("endpoint query = %v", ep.Query)
+	}
+	if got := endpoint.UserSecret(ep.User); got != "Hy2@1234!" {
+		t.Fatalf("endpoint auth = %q", got)
+	}
+}
+
+func TestHy2ClashSkipCertVerifyToEndpoint(t *testing.T) {
+	yamlData := `
+proxies:
+  - name: hy2
+    type: hysteria2
+    server: 1.2.3.4
+    port: 8443
+    password: "Hy2@1234!"
+    sni: example.com
+    skip-cert-verify: true
+`
+	proxies, err := Parse([]byte(yamlData))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("len = %d, want 1", len(proxies))
+	}
+	if !proxies[0].SkipCert {
+		t.Fatal("skip-cert-verify should be true")
+	}
+
+	ep, err := ProxyToEndpoint(proxies[0])
+	if err != nil {
+		t.Fatalf("ProxyToEndpoint failed: %v", err)
+	}
+	if ep.Query.Get("insecure") != "1" {
 		t.Fatalf("endpoint query = %v", ep.Query)
 	}
 }

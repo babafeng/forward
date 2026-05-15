@@ -9,6 +9,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"forward/internal/config"
 	"forward/internal/dialer"
 	"forward/internal/dialer/phtdialer"
 	"forward/internal/dialer/transportutil"
@@ -39,11 +40,7 @@ func (d *Dialer) Init(md metadata.Metadata) error {
 
 func (d *Dialer) Dial(ctx context.Context, addr string, _ ...dialer.DialOption) (net.Conn, error) {
 	return d.Base.Dial(ctx, addr, func(host string) http.RoundTripper {
-		quicCfg := &quic.Config{
-			Versions: []quic.Version{
-				quic.Version1,
-			},
-		}
+		quicCfg := config.NewClientQUICConfig()
 		if d.MD.KeepAlivePeriod > 0 {
 			quicCfg.KeepAlivePeriod = d.MD.KeepAlivePeriod
 		}

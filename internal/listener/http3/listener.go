@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"forward/base/logging"
+	"forward/internal/config"
 	ictx "forward/internal/ctx"
 	"forward/internal/listener"
 	"forward/internal/metadata"
@@ -35,6 +35,7 @@ type listenerMetadata struct {
 
 type Listener struct {
 	addr    net.Addr
+	pc      net.PacketConn
 	server  *http3.Server
 	logger  *logging.Logger
 	md      listenerMetadata
@@ -81,11 +82,17 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	}
 	l.addr = udpAddr
 
-	quicCfg := &quic.Config{
-		Versions: []quic.Version{
-			quic.Version1,
-		},
+	pc, err := net.ListenPacket(network, addr)
+	if err != nil {
+		return listener.NewBindError(err)
 	}
+	// 不在此处调 netmark.TuneUDPConn：quic-go 自己会把 UDP 接收缓冲区
+	// 尝试拉到 7MB，netmark 的 4MB 基线反而会在 rmem_max 较紧的系统上
+	// 触发 quic-go 的 "UDP-Buffer-Sizes" 警告。详见 QUIC listener 同
+	// 位置注释。
+	l.pc = pc
+
+	quicCfg := config.NewServerQUICConfig()
 	if l.md.keepAlivePeriod > 0 {
 		quicCfg.KeepAlivePeriod = l.md.keepAlivePeriod
 	}
@@ -113,8 +120,11 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	l.cqueue = make(chan net.Conn, l.md.backlog)
 	l.errChan = make(chan error, 1)
 
+	// 捕获到局部变量：Close 会把 l.server 清为 nil（对称 l.pc = nil 的
+	// 幂等习惯），此时 goroutine 仍持有有效引用跑 Serve。
+	server := l.server
 	go func() {
-		if err := l.server.ListenAndServe(); err != nil && l.logger != nil {
+		if err := server.Serve(pc); err != nil && l.logger != nil {
 			l.logger.Error("HTTP3 listener error: %v", err)
 		}
 		l.errChan <- http.ErrServerClosed
@@ -146,7 +156,18 @@ func (l *Listener) Close() error {
 	if l.server == nil {
 		return nil
 	}
-	return l.server.Close()
+	err := l.server.Close()
+	if l.pc != nil {
+		if cerr := l.pc.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+		l.pc = nil
+	}
+	// 与 internal/listener/quic/listener.go 的 l.ln = nil 对齐：
+	// 二次 Close 通过顶部 `l.server == nil` 早退，不依赖
+	// http3.Server.Close 的幂等实现。
+	l.server = nil
+	return err
 }
 
 func (l *Listener) handleFunc(w http.ResponseWriter, r *http.Request) {

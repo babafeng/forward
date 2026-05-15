@@ -128,6 +128,7 @@ type Config struct {
 	SubscribeURLs   []string
 	SubscribeFilter string
 	SubscribeUpdate int
+	ConnectURL      string
 }
 
 type DNSConfig struct {

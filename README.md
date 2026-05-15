@@ -57,7 +57,7 @@ forward -F tls://user:pass@your.server.com:2333
 
 ```bash
 # 支持 tls / https / http2 / http3 / h2 / h3 / dtls
-forward -L "tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key"
+forward -L 'tls://user:pass@your.server.com:2333?cert=/path/to/cert.cer&key=/path/to/private.key'
 
 # HTTP/3 监听（标准 HTTP/3）
 forward -L http3://:443 --debug
@@ -69,7 +69,7 @@ forward -L socks5+h3://:443 --debug
 forward -L http://:1080 -F tls://your.server.com:2333 --debug --debug-verbose
 
 # 客户端：如果是自签证书，设置 ca 选项
-forward -L http://:1080 -F "tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer&sni=your.server.com"
+forward -L http://:1080 -F 'tls://user:pass@your.server.com:2333?ca=/path/to/rootca.cer&sni=your.server.com'
 ```
 
 ## 使用方法（Usage）
@@ -100,7 +100,7 @@ forward -L vless+reality://:443
 forward -L reality://:443
 forward -L vmess://auto:11111111-1111-1111-1111-111111111111@:10086?alterId=0
 forward -L ss://aes-256-gcm:your-password@:8388
-forward -L "hysteria2://your-auth@:443?cert=/path/to/fullchain.pem&key=/path/to/privkey.pem&obfs=salamander&obfs-password=your-obfs-password"
+forward -L 'hysteria2://your-auth@:443?cert=/path/to/fullchain.pem&key=/path/to/privkey.pem&obfs=salamander&obfs-password=your-obfs-password'
 
 # 可选参数：uuid / dest / sni / sid / key
 forward -L vless+reality://uuid@:443?dest=swscan.apple.com:443&sni=swscan.apple.com&sid=12345678&key=private.key
@@ -128,7 +128,7 @@ forward -L http://127.0.0.1:8080 -F http://S2:8080 -F http://S1:8080
 forward -L http://:8080 -F http://S3:8080 -F http://S2:8080 -F http://S1:8080
 
 # 使用 Hysteria2 节点作为上游
-forward -L http://:1080 -F "hysteria2://uuid@remote:443?peer=sni&insecure=1"
+forward -L http://:1080 -F 'hysteria2://uuid@remote:443?peer=sni&insecure=1'
 ```
 
 **支持的协议组合：**
@@ -207,6 +207,7 @@ PHT 客户端写入批处理默认不再额外等待 `2ms` 时间窗（改为立
 `-S/--subscribe` 支持重复传入，也支持在单个参数里用逗号分隔多个订阅链接。
 订阅响应支持：Clash YAML、base64 编码 YAML、base64 编码 URI 列表、纯文本 URI 列表。
 目前可直接构建为运行中上游的节点协议：vmess、vless、hysteria2、ss 等；其余协议即使被解析到，也会在构建路由时被自动忽略。
+纯文本 Hysteria2 URI 支持 `sni`/`peer` 与 `insecure` 参数；Clash YAML 中的 `skip-cert-verify` 会转为内部 `insecure` 连接选项。
 
 过滤表达式语法（单个 `--filter` 参数）：
 * `|` 表示 OR，如 `美国|US`

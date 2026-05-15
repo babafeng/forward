@@ -15,6 +15,7 @@ import (
 	hyobfs "github.com/apernet/hysteria/extras/v2/obfs"
 
 	"forward/base/logging"
+	"forward/base/pool"
 	"forward/internal/chain"
 	"forward/internal/config"
 	ctls "forward/internal/config/tls"
@@ -177,10 +178,11 @@ type routeUDPConn struct {
 	generation  uint64
 	closed      bool
 
-	recvCh  chan udpReadResult
-	errCh   chan error
-	closeCh chan struct{}
-	once    sync.Once
+	recvCh    chan udpReadResult
+	errCh     chan error
+	closeCh   chan struct{}
+	once      sync.Once
+	readersWG sync.WaitGroup
 }
 
 type udpReadResult struct {
@@ -205,6 +207,7 @@ func (c *routeUDPConn) ReadFrom(b []byte) (int, string, error) {
 	select {
 	case pkt := <-c.recvCh:
 		n := copy(b, pkt.data)
+		pool.Put(pkt.data)
 		return n, pkt.addr, nil
 	case err := <-c.errCh:
 		return 0, "", err
@@ -246,6 +249,18 @@ func (c *routeUDPConn) Close() error {
 			err = c.conn.Close()
 		}
 		c.mu.Unlock()
+		// 等所有 readLoop goroutine 真正退出后再 drain recvCh，避免
+		// readLoop 在 close(closeCh) 和 drain 之间仍成功 push 进来的
+		// buffer 漏掉归还（sync.Pool 语义允许遗漏，但非必要就不丢）。
+		c.readersWG.Wait()
+		for {
+			select {
+			case pkt := <-c.recvCh:
+				pool.Put(pkt.data)
+			default:
+				return
+			}
+		}
 	})
 	return err
 }
@@ -262,7 +277,11 @@ func (c *routeUDPConn) switchConnLocked(addr string) error {
 	c.conn = newConn
 	c.currentAddr = addr
 
-	go c.readLoop(newConn, addr, gen)
+	c.readersWG.Add(1)
+	go func() {
+		defer c.readersWG.Done()
+		c.readLoop(newConn, addr, gen)
+	}()
 	if oldConn != nil {
 		_ = oldConn.Close()
 	}
@@ -270,9 +289,10 @@ func (c *routeUDPConn) switchConnLocked(addr string) error {
 }
 
 func (c *routeUDPConn) readLoop(conn net.Conn, addr string, generation uint64) {
-	buf := make([]byte, 64*1024)
+	readBuf := pool.Get()
+	defer pool.Put(readBuf)
 	for {
-		n, err := conn.Read(buf)
+		n, err := conn.Read(readBuf)
 		if err != nil {
 			if c.isCurrentGeneration(generation) {
 				select {
@@ -287,10 +307,12 @@ func (c *routeUDPConn) readLoop(conn net.Conn, addr string, generation uint64) {
 			return
 		}
 
-		data := append([]byte(nil), buf[:n]...)
+		out := pool.Get()
+		nn := copy(out, readBuf[:n])
 		select {
-		case c.recvCh <- udpReadResult{data: data, addr: addr}:
+		case c.recvCh <- udpReadResult{data: out[:nn], addr: addr}:
 		case <-c.closeCh:
+			pool.Put(out)
 			return
 		}
 	}
@@ -314,8 +336,6 @@ func normalizeUDPAddr(addr string) string {
 	h = strings.Trim(strings.ToLower(h), "[]")
 	return net.JoinHostPort(h, p)
 }
-
-
 
 type serverEventLogger struct {
 	logger *logging.Logger

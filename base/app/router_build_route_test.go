@@ -12,7 +12,7 @@ import (
 )
 
 func TestBuildRouterNamedProxyUsesProxyNameInSummary(t *testing.T) {
-	ep, err := endpoint.Parse("socks5://95.40.82.122:443")
+	ep, err := endpoint.Parse("socks5://1.2.3.4:443")
 	if err != nil {
 		t.Fatalf("parse proxy endpoint: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestBuildRouterNamedProxyUsesProxyNameInSummary(t *testing.T) {
 		t.Fatalf("route resolve error: %v", err)
 	}
 
-	if got := chain.RouteSummary(rt); got != "PROXY_HK_01(95.40.82.122:443)" {
-		t.Fatalf("RouteSummary = %q, want %q", got, "PROXY_HK_01(95.40.82.122:443)")
+	if got := chain.RouteSummary(rt); got != "PROXY_HK_01(1.2.3.4:443)" {
+		t.Fatalf("RouteSummary = %q, want %q", got, "PROXY_HK_01(1.2.3.4:443)")
 	}
 }
