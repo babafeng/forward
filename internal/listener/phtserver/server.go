@@ -49,6 +49,8 @@ type serverOptions struct {
 	readBufferSize    int
 	readTimeout       time.Duration
 	readHeaderTimeout time.Duration
+	cleanupInterval   time.Duration
+	sessionTimeout    time.Duration
 	maxStreams        uint32
 	idleTimeout       time.Duration
 	readIdleTimeout   time.Duration
@@ -109,6 +111,18 @@ func ReadHeaderTimeoutServerOption(timeout time.Duration) ServerOption {
 	}
 }
 
+func CleanupTickIntervalServerOption(interval time.Duration) ServerOption {
+	return func(opts *serverOptions) {
+		opts.cleanupInterval = interval
+	}
+}
+
+func SessionIdleTimeoutServerOption(timeout time.Duration) ServerOption {
+	return func(opts *serverOptions) {
+		opts.sessionTimeout = timeout
+	}
+}
+
 func MaxStreamsServerOption(n uint32) ServerOption {
 	return func(opts *serverOptions) {
 		opts.maxStreams = n
@@ -147,11 +161,13 @@ func SecretServerOption(secret string) ServerOption {
 
 type Server struct {
 	addr        net.Addr
+	addrMu      sync.RWMutex
 	httpServer  *http.Server
 	http3Server *http3.Server
 	cqueue      chan net.Conn
 	conns       sync.Map
 	closed      chan struct{}
+	closeOnce   sync.Once
 
 	options serverOptions
 }
@@ -216,6 +232,8 @@ func newOptions(opts ...ServerOption) serverOptions {
 		readBufferSize:    DefaultReadBufferSize,
 		readTimeout:       DefaultReadTimeout,
 		readHeaderTimeout: DefaultReadHeaderTimeout,
+		cleanupInterval:   CleanupTickInterval,
+		sessionTimeout:    SessionIdleTimeout,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -233,6 +251,12 @@ func newOptions(opts ...ServerOption) serverOptions {
 	}
 	if options.readHeaderTimeout <= 0 {
 		options.readHeaderTimeout = DefaultReadHeaderTimeout
+	}
+	if options.cleanupInterval <= 0 {
+		options.cleanupInterval = 30 * time.Second
+	}
+	if options.sessionTimeout <= 0 {
+		options.sessionTimeout = 60 * time.Second
 	}
 	return options
 }
@@ -255,7 +279,7 @@ func (s *Server) ListenAndServe() error {
 		if err != nil {
 			return err
 		}
-		s.addr = addr
+		s.setAddr(addr)
 		go s.cleanupLoop()
 		return s.http3Server.ListenAndServe()
 	}
@@ -274,7 +298,7 @@ func (s *Server) ListenAndServe() error {
 		return err
 	}
 
-	s.addr = ln.Addr()
+	s.setAddr(ln.Addr())
 	if s.options.tlsEnabled {
 		s.httpServer.TLSConfig = s.options.tlsConfig
 		h2srv := &http2.Server{
@@ -294,22 +318,15 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) cleanupLoop() {
-	interval := CleanupTickInterval
-	if interval <= 0 {
-		interval = 30 * time.Second
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(s.options.cleanupInterval)
 	defer ticker.Stop()
+	timeout := int64(s.options.sessionTimeout)
 	for {
 		select {
 		case <-s.closed:
 			return
 		case <-ticker.C:
 			now := time.Now().UnixNano()
-			timeout := int64(SessionIdleTimeout)
-			if timeout <= 0 {
-				timeout = int64(60 * time.Second)
-			}
 			s.conns.Range(func(key, value any) bool {
 				sess, ok := value.(*phtSession)
 				if !ok {
@@ -336,32 +353,42 @@ func (s *Server) Accept() (net.Conn, error) {
 }
 
 func (s *Server) Close() error {
-	select {
-	case <-s.closed:
-		return http.ErrServerClosed
-	default:
+	closedNow := false
+	s.closeOnce.Do(func() {
 		close(s.closed)
-
-		s.conns.Range(func(key, value any) bool {
-			if sess, ok := value.(*phtSession); ok {
-				sess.conn.Close()
-			}
-			s.conns.Delete(key)
-			return true
-		})
-
-		if s.http3Server != nil {
-			return s.http3Server.Close()
-		}
-		if s.httpServer != nil {
-			return s.httpServer.Close()
-		}
-		return nil
+		closedNow = true
+	})
+	if !closedNow {
+		return http.ErrServerClosed
 	}
+
+	s.conns.Range(func(key, value any) bool {
+		if sess, ok := value.(*phtSession); ok {
+			sess.conn.Close()
+		}
+		s.conns.Delete(key)
+		return true
+	})
+
+	if s.http3Server != nil {
+		return s.http3Server.Close()
+	}
+	if s.httpServer != nil {
+		return s.httpServer.Close()
+	}
+	return nil
 }
 
 func (s *Server) Addr() net.Addr {
+	s.addrMu.RLock()
+	defer s.addrMu.RUnlock()
 	return s.addr
+}
+
+func (s *Server) setAddr(addr net.Addr) {
+	s.addrMu.Lock()
+	s.addr = addr
+	s.addrMu.Unlock()
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -383,7 +410,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	cid := newToken()
 	c1, c2 := net.Pipe()
-	c := pht.NewServerConn(c1, s.addr, raddr)
+	c := pht.NewServerConn(c1, s.Addr(), raddr)
 
 	select {
 	case s.cqueue <- c:

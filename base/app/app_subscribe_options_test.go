@@ -36,6 +36,13 @@ func TestApplySubscribeOptionsOverridesConfigWhenCLISet(t *testing.T) {
 		SubscribeURLs:   []string{"https://sub.example.com/a"},
 		SubscribeFilter: "香港",
 		SubscribeUpdate: 15,
+		Nodes: []config.NodeConfig{{
+			Name:            "node-a",
+			SubscribeURL:    "https://node.example.com/a",
+			SubscribeURLs:   []string{"https://node.example.com/a"},
+			SubscribeFilter: "香港",
+			SubscribeUpdate: 60,
+		}},
 	}
 
 	applySubscribeOptions(&cfg, subscribeOptions{
@@ -58,5 +65,17 @@ func TestApplySubscribeOptionsOverridesConfigWhenCLISet(t *testing.T) {
 	}
 	if cfg.SubscribeUpdate != 0 {
 		t.Fatalf("SubscribeUpdate = %d, want %d", cfg.SubscribeUpdate, 0)
+	}
+	if got := cfg.Nodes[0].SubscribeURL; got != "https://sub.example.com/b" {
+		t.Fatalf("node SubscribeURL = %q, want %q", got, "https://sub.example.com/b")
+	}
+	if !reflect.DeepEqual(cfg.Nodes[0].SubscribeURLs, []string{"https://sub.example.com/b", "https://sub.example.com/c"}) {
+		t.Fatalf("node SubscribeURLs = %v, want %v", cfg.Nodes[0].SubscribeURLs, []string{"https://sub.example.com/b", "https://sub.example.com/c"})
+	}
+	if cfg.Nodes[0].SubscribeFilter != "日本" {
+		t.Fatalf("node SubscribeFilter = %q, want %q", cfg.Nodes[0].SubscribeFilter, "日本")
+	}
+	if cfg.Nodes[0].SubscribeUpdate != 0 {
+		t.Fatalf("node SubscribeUpdate = %d, want %d", cfg.Nodes[0].SubscribeUpdate, 0)
 	}
 }

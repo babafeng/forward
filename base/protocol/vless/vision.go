@@ -78,13 +78,45 @@ func xtlsBuffers(conn any) (*bytes.Reader, *bytes.Buffer, error) {
 		return nil, nil, fmt.Errorf("xtls rawInput field type mismatch: expected bytes.Buffer, got %v", rawInputField.Type)
 	}
 
-	p := unsafe.Pointer(val.Pointer())
-	input := (*bytes.Reader)(unsafe.Pointer(uintptr(p) + inputField.Offset))
-	rawInput := (*bytes.Buffer)(unsafe.Pointer(uintptr(p) + rawInputField.Offset))
+	inputPtr, err := xtlsFieldPointer(val, inputField)
+	if err != nil {
+		return nil, nil, err
+	}
+	rawInputPtr, err := xtlsFieldPointer(val, rawInputField)
+	if err != nil {
+		return nil, nil, err
+	}
+	input := (*bytes.Reader)(inputPtr)
+	rawInput := (*bytes.Buffer)(rawInputPtr)
 
 	if input == nil || rawInput == nil {
 		return nil, nil, fmt.Errorf("xtls input buffers not initialized")
 	}
 
 	return input, rawInput, nil
+}
+
+func xtlsFieldPointer(root reflect.Value, field reflect.StructField) (unsafe.Pointer, error) {
+	ptr := root.UnsafePointer()
+	typ := root.Type().Elem()
+	for i, idx := range field.Index {
+		if typ.Kind() != reflect.Struct || idx < 0 || idx >= typ.NumField() {
+			return nil, fmt.Errorf("invalid xtls field path for %s", field.Name)
+		}
+		sf := typ.Field(idx)
+		ptr = unsafe.Add(ptr, sf.Offset)
+		if i == len(field.Index)-1 {
+			return ptr, nil
+		}
+		if sf.Type.Kind() == reflect.Ptr {
+			ptr = *(*unsafe.Pointer)(ptr)
+			if ptr == nil {
+				return nil, fmt.Errorf("nil embedded xtls field %s", sf.Name)
+			}
+			typ = sf.Type.Elem()
+			continue
+		}
+		typ = sf.Type
+	}
+	return nil, fmt.Errorf("invalid xtls field path for %s", field.Name)
 }

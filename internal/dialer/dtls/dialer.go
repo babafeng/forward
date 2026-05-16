@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pion/dtls/v2"
+	"github.com/pion/dtls/v3"
+	dtlsnet "github.com/pion/dtls/v3/pkg/net"
 
 	dtlsutil "forward/base/transport/dtls"
 	"forward/internal/dialer"
@@ -58,6 +59,9 @@ func (d *Dialer) Dial(ctx context.Context, addr string, opts ...dialer.DialOptio
 }
 
 func (d *Dialer) Handshake(ctx context.Context, conn net.Conn, _ ...dialer.HandshakeOption) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	tlsCfg := d.options.TLSConfig
 	if tlsCfg == nil {
 		tlsCfg = &tls.Config{InsecureSkipVerify: true}
@@ -79,8 +83,12 @@ func (d *Dialer) Handshake(ctx context.Context, conn net.Conn, _ ...dialer.Hands
 		MTU:                  d.md.mtu,
 	}
 
-	c, err := dtls.ClientWithContext(ctx, conn, cfg)
+	c, err := dtls.Client(dtlsnet.PacketConnFromConn(conn), conn.RemoteAddr(), cfg)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.HandshakeContext(ctx); err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 	return dtlsutil.Conn(c, d.md.bufferSize), nil

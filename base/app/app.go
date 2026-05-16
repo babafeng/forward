@@ -175,12 +175,22 @@ func applySubscribeOptions(cfg *config.Config, opts subscribeOptions) {
 	if opts.URLsSet {
 		cfg.SubscribeURL = primarySubscribeURL(opts.URLs)
 		cfg.SubscribeURLs = append([]string(nil), opts.URLs...)
+		for i := range cfg.Nodes {
+			cfg.Nodes[i].SubscribeURL = cfg.SubscribeURL
+			cfg.Nodes[i].SubscribeURLs = append([]string(nil), cfg.SubscribeURLs...)
+		}
 	}
 	if opts.FilterSet {
 		cfg.SubscribeFilter = opts.Filter
+		for i := range cfg.Nodes {
+			cfg.Nodes[i].SubscribeFilter = opts.Filter
+		}
 	}
 	if opts.UpdateSet {
 		cfg.SubscribeUpdate = opts.Update
+		for i := range cfg.Nodes {
+			cfg.Nodes[i].SubscribeUpdate = opts.Update
+		}
 	}
 }
 

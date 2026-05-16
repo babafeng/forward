@@ -51,7 +51,8 @@ type Listener struct {
 
 	limiter *rateLimiter
 
-	mu sync.Mutex
+	mu        sync.Mutex
+	closeOnce sync.Once
 }
 
 type rateLimiter struct {
@@ -153,6 +154,7 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	l.closed = make(chan struct{})
 	l.errCh = make(chan error, 1)
 	l.pool = udpsession.NewPool[udpConnKey, *udpsession.Conn](l.md.ttl, l.logger, "UDP listener")
+	l.closeOnce = sync.Once{}
 	if l.md.rateLimit > 0 {
 		l.limiter = newRateLimiter(l.md.rateLimit)
 	}
@@ -163,12 +165,21 @@ func (l *Listener) Init(md metadata.Metadata) error {
 }
 
 func (l *Listener) Accept() (net.Conn, error) {
-	select {
-	case c := <-l.cqueue:
-		return c, nil
-	case <-l.closed:
+	l.mu.Lock()
+	cqueue := l.cqueue
+	closed := l.closed
+	errCh := l.errCh
+	l.mu.Unlock()
+	if cqueue == nil || closed == nil || errCh == nil {
 		return nil, listener.ErrClosed
-	case err := <-l.errCh:
+	}
+
+	select {
+	case c := <-cqueue:
+		return c, nil
+	case <-closed:
+		return nil, listener.ErrClosed
+	case err := <-errCh:
 		if err == nil {
 			err = net.ErrClosed
 		}
@@ -193,18 +204,20 @@ func (l *Listener) Close() error {
 	conn := l.conn
 	pool := l.pool
 	closed := l.closed
+	limiter := l.limiter
 	l.conn = nil
 	l.pool = nil
 	l.closed = nil
+	l.cqueue = nil
+	l.errCh = nil
+	l.limiter = nil
 	l.mu.Unlock()
 
-	if closed != nil {
-		select {
-		case <-closed:
-		default:
+	l.closeOnce.Do(func() {
+		if closed != nil {
 			close(closed)
 		}
-	}
+	})
 	if pool != nil {
 		pool.Close()
 	}
@@ -212,27 +225,39 @@ func (l *Listener) Close() error {
 		if l.logger != nil {
 			l.logger.Info("Listener closed %s", conn.LocalAddr().String())
 		}
-		if l.limiter != nil {
-			l.limiter.close()
+		if limiter != nil {
+			limiter.close()
 		}
 		return conn.Close()
 	}
-	if l.limiter != nil {
-		l.limiter.close()
+	if limiter != nil {
+		limiter.close()
 	}
 	return nil
 }
 
 func (l *Listener) listenLoop() {
+	l.mu.Lock()
+	conn := l.conn
+	cqueue := l.cqueue
+	sessionPool := l.pool
+	closed := l.closed
+	laddr := l.laddr
+	limiter := l.limiter
+	l.mu.Unlock()
+	if conn == nil || cqueue == nil || sessionPool == nil || closed == nil {
+		return
+	}
+
 	for {
 		select {
-		case <-l.closed:
+		case <-closed:
 			return
 		default:
 		}
 
 		buf := pool.GetWithSize(l.md.readBufferSize)
-		n, raddr, err := l.conn.ReadFrom(buf)
+		n, raddr, err := conn.ReadFrom(buf)
 		if err != nil {
 			l.notifyErr(err)
 			pool.Put(buf)
@@ -251,15 +276,15 @@ func (l *Listener) listenLoop() {
 		}
 
 		// Rate limit check
-		if l.limiter != nil {
+		if limiter != nil {
 			ip, ok := netipAddr(udpAddr)
-			if !ok || !l.limiter.allow(ip) {
+			if !ok || !limiter.allow(ip) {
 				pool.Put(buf)
 				continue
 			}
 		}
 
-		c := l.getConn(udpAddr)
+		c := l.getConn(conn, cqueue, sessionPool, laddr, udpAddr)
 		if c == nil {
 			pool.Put(buf)
 			continue
@@ -274,8 +299,11 @@ func (l *Listener) listenLoop() {
 	}
 }
 
-func (l *Listener) getConn(raddr *net.UDPAddr) *udpsession.Conn {
+func (l *Listener) getConn(conn net.PacketConn, cqueue chan net.Conn, sessionPool *udpsession.Pool[udpConnKey, *udpsession.Conn], laddr net.Addr, raddr *net.UDPAddr) *udpsession.Conn {
 	if raddr == nil {
+		return nil
+	}
+	if conn == nil || cqueue == nil || sessionPool == nil || laddr == nil {
 		return nil
 	}
 	remote, ok := netipAddrPort(raddr)
@@ -283,14 +311,14 @@ func (l *Listener) getConn(raddr *net.UDPAddr) *udpsession.Conn {
 		return nil
 	}
 	key := udpConnKey{remote: remote}
-	if c, ok := l.pool.Get(key); ok && !c.IsClosed() {
+	if c, ok := sessionPool.Get(key); ok && !c.IsClosed() {
 		return c
 	}
 
-	c := udpsession.NewConn(l.conn, l.Addr(), raddr, l.md.readQueueSize, l.md.keepalive)
+	c := udpsession.NewConn(conn, laddr, raddr, l.md.readQueueSize, l.md.keepalive)
 	select {
-	case l.cqueue <- c:
-		l.pool.Set(key, c)
+	case cqueue <- c:
+		sessionPool.Set(key, c)
 		return c
 	default:
 		c.Close()
@@ -305,11 +333,17 @@ func (l *Listener) notifyErr(err error) {
 	if err == nil {
 		return
 	}
+	l.mu.Lock()
+	errCh := l.errCh
+	l.mu.Unlock()
+	if errCh == nil {
+		return
+	}
 	select {
-	case l.errCh <- err:
+	case errCh <- err:
 	default:
 	}
-	close(l.errCh)
+	close(errCh)
 }
 
 func (l *Listener) parseMetadata(md metadata.Metadata) {

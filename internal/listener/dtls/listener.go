@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pion/dtls/v2"
+	"github.com/pion/dtls/v3"
 
 	"forward/base/logging"
 	dtlsutil "forward/base/transport/dtls"
@@ -79,13 +79,10 @@ func (l *Listener) Init(md metadata.Metadata) error {
 	cfg := &dtls.Config{
 		Certificates:         tlsCfg.Certificates,
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-		ConnectContextMaker: func() (context.Context, func()) {
-			return context.WithTimeout(context.Background(), l.md.handshakeTimout)
-		},
-		ClientCAs:      tlsCfg.ClientCAs,
-		ClientAuth:     dtls.ClientAuthType(tlsCfg.ClientAuth),
-		FlightInterval: l.md.flightInterval,
-		MTU:            l.md.mtu,
+		ClientCAs:            tlsCfg.ClientCAs,
+		ClientAuth:           dtls.ClientAuthType(tlsCfg.ClientAuth),
+		FlightInterval:       l.md.flightInterval,
+		MTU:                  l.md.mtu,
 	}
 
 	ln, err := dtls.Listen(network, laddr, cfg)
@@ -105,6 +102,17 @@ func (l *Listener) Accept() (net.Conn, error) {
 	conn, err := l.ln.Accept()
 	if err != nil {
 		return nil, listener.NewAcceptError(err)
+	}
+	if h, ok := conn.(interface {
+		HandshakeContext(context.Context) error
+	}); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), l.md.handshakeTimout)
+		err = h.HandshakeContext(ctx)
+		cancel()
+		if err != nil {
+			_ = conn.Close()
+			return nil, listener.NewAcceptError(err)
+		}
 	}
 	conn = dtlsutil.Conn(conn, l.md.bufferSize)
 	return conn, nil

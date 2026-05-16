@@ -521,9 +521,10 @@ func (h *Handler) streamWithBody(ctx context.Context, w stdhttp.ResponseWriter, 
 	doneCh := make(chan struct{})
 	ctxDone := ctx.Done()
 	if ctxDone != nil {
+		ctxDoneCh := ctxDone
 		go func() {
 			select {
-			case <-ctxDone:
+			case <-ctxDoneCh:
 				closer()
 			case <-doneCh:
 			}
