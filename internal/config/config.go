@@ -1,0 +1,179 @@
+package config
+
+import (
+	"strings"
+	"time"
+
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
+)
+
+const (
+	DefaultRealitySNI        = "swscan.apple.com"
+	DefaultDialTimeout       = 10 * time.Second
+	DefaultDialKeepAlive     = 30 * time.Second
+	DefaultUDPIdleTimeout    = 2 * time.Minute
+	DefaultReadDeadline      = 1 * time.Second
+	DefaultReadHeaderTimeout = 10 * time.Second
+
+	DefaultBufferSize = 128 * 1024 // 128KB
+	DefaultCopyBuffer = 64 * 1024  // 64KB
+	DefaultUDPBuffer  = 64 * 1024  // 64KB
+
+	DefaultMaxHeaderBytes = 1 << 20
+
+	DefaultInitialBackoff   = 2 * time.Second
+	DefaultMaxBackoff       = 30 * time.Second
+	DefaultHandshakeTimeout = 5 * time.Second
+	DefaultIdleTimeout      = 2 * time.Minute
+	DefaultMaxConnections   = 4096
+	DefaultMaxUDPSessions   = 1024
+
+	// DefaultSubscribeUpdate 订阅自动刷新间隔（分钟）。
+	DefaultSubscribeUpdate = 60
+
+	// HTTP upstream transport pooling defaults.
+	DefaultHTTPMaxIdleConns        = 2048
+	DefaultHTTPMaxIdleConnsPerHost = 512
+	DefaultHTTPMaxConnsPerHost     = 1024
+
+	CamouflageRealm     = `Authorization Required`
+	CamouflagePageTitle = "403 Forbidden"
+	CamouflagePageBody  = `<html>
+<head><title>%s</title></head>
+<body>
+<center><h1>%s</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>`
+)
+
+type RunMode int
+
+const (
+	ModeUnknown RunMode = iota
+	ModeProxyServer
+	ModeReverseClient
+	ModeReverseServer
+	ModePortForward
+)
+
+func (m RunMode) String() string {
+	switch m {
+	case ModeProxyServer:
+		return "proxy_server"
+	case ModeReverseClient:
+		return "reverse_client"
+	case ModeReverseServer:
+		return "reverse_server"
+	case ModePortForward:
+		return "port_forward"
+	default:
+		return "unknown"
+	}
+}
+
+type NodeConfig struct {
+	Name         string
+	Listen       endpoint.Endpoint
+	Listeners    []endpoint.Endpoint
+	Forward      *endpoint.Endpoint
+	ForwardChain []endpoint.Endpoint
+	Insecure     bool
+
+	SubscribeURL    string
+	SubscribeURLs   []string
+	SubscribeFilter string
+	SubscribeUpdate int
+}
+
+type Config struct {
+	NodeName  string
+	Listen    endpoint.Endpoint
+	Listeners []endpoint.Endpoint
+	LogLevel  logging.Level
+	// DebugVerbose enables high-volume per-hop/per-request debug traces.
+	// Keep this off by default to avoid noisy debug output.
+	DebugVerbose bool
+
+	Forward      *endpoint.Endpoint
+	ForwardChain []endpoint.Endpoint
+	Nodes        []NodeConfig
+
+	Route      *route.Config
+	RouteStore *route.Store
+	RoutePath  string
+
+	Logger *logging.Logger
+
+	MaxUDPSessions    int
+	UDPIdleTimeout    time.Duration
+	DialTimeout       time.Duration
+	DialKeepAlive     time.Duration
+	ReadHeaderTimeout time.Duration
+	MaxHeaderBytes    int
+
+	HandshakeTimeout time.Duration
+	IdleTimeout      time.Duration
+	DNSParameters    DNSConfig
+
+	Mode RunMode
+
+	Insecure bool
+
+	TProxy *TProxyConfig
+
+	SubscribeURL    string
+	SubscribeURLs   []string
+	SubscribeFilter string
+	SubscribeUpdate int
+	ConnectURL      string
+}
+
+type DNSConfig struct {
+	Servers []string
+	Timeout time.Duration
+}
+
+type TProxyConfig struct {
+	Port         int
+	Network      []string
+	Sniffing     bool
+	DestOverride []string
+}
+
+func (c *Config) IsMode(m RunMode) bool {
+	return c.Mode == m
+}
+
+func NormalizeSubscribeURLs(primary string, urls []string) []string {
+	seen := make(map[string]struct{})
+	normalized := make([]string, 0, len(urls)+1)
+
+	appendURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if _, ok := seen[raw]; ok {
+			return
+		}
+		seen[raw] = struct{}{}
+		normalized = append(normalized, raw)
+	}
+
+	appendURL(primary)
+	for _, raw := range urls {
+		appendURL(raw)
+	}
+	return normalized
+}
+
+func (n NodeConfig) EffectiveSubscribeURLs() []string {
+	return NormalizeSubscribeURLs(n.SubscribeURL, n.SubscribeURLs)
+}
+
+func (c Config) EffectiveSubscribeURLs() []string {
+	return NormalizeSubscribeURLs(c.SubscribeURL, c.SubscribeURLs)
+}

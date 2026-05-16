@@ -1,0 +1,7 @@
+{
+  "task_id": "task-net-perf-audit",
+  "task_description": "对 babafeng/forward 做资深 Go 网络工程深度审计，以提升网络性能为目标，在 kiro 分支上不引入新依赖地落地可合并的 perf 改动。包括 TLS session cache、quic.Config 调优、yamux 窗口、splice 保留、Linux socket buffer、UDP/ PHT 热路径分配收敛、日志 guard 等。",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}

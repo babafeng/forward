@@ -1,0 +1,222 @@
+// Package vmess 提供 VMess 协议入站 Handler
+package vmess
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"time"
+
+	"github.com/xtls/xray-core/common/buf"
+	xmux "github.com/xtls/xray-core/common/mux"
+	xnet "github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/common/protocol"
+	xvmess "github.com/xtls/xray-core/proxy/vmess"
+	"github.com/xtls/xray-core/proxy/vmess/encoding"
+	"github.com/xtls/xray-core/transport"
+
+	pvmess "forward/base/protocol/vmess"
+	"forward/internal/chain"
+	"forward/internal/handler"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
+	"forward/internal/xraymux"
+)
+
+func init() {
+	registry.HandlerRegistry().Register("vmess", NewHandler)
+}
+
+// Handler VMess 协议入站处理器
+type Handler struct {
+	options        handler.Options
+	validator      *xvmess.TimedUserValidator
+	sessionHistory *encoding.SessionHistory
+}
+
+// NewHandler 创建新的 VMess Handler
+func NewHandler(opts ...handler.Option) handler.Handler {
+	options := handler.Options{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	h := &Handler{
+		options: options,
+	}
+
+	if h.options.Router == nil {
+		h.options.Router = router.NewStatic(chain.NewRoute())
+	}
+
+	return h
+}
+
+func (h *Handler) Init(md metadata.Metadata) error {
+	if md == nil {
+		return fmt.Errorf("vmess handler requires metadata")
+	}
+
+	// 获取 UUID
+	uuid := md.GetString(metadata.KeyUUID)
+	if uuid == "" {
+		return fmt.Errorf("vmess uuid is required")
+	}
+
+	// 获取 alterID
+	alterID := md.GetInt(metadata.KeyAlterID)
+
+	// 获取加密类型
+	security := pvmess.ParseSecurityType(md.GetString(metadata.KeySecurity))
+
+	// 创建用户验证器
+	validator, err := pvmess.CreateValidator(pvmess.UserConfig{
+		UUID:     uuid,
+		AlterID:  alterID,
+		Security: security,
+	})
+	if err != nil {
+		return fmt.Errorf("create vmess validator failed: %w", err)
+	}
+
+	h.validator = validator
+	h.sessionHistory = encoding.NewSessionHistory()
+	return nil
+}
+
+// SetValidator 设置外部验证器（可选）
+func (h *Handler) SetValidator(v interface{}) {
+	if validator, ok := v.(*xvmess.TimedUserValidator); ok {
+		h.validator = validator
+	}
+}
+
+// Validator 返回验证器
+func (h *Handler) Validator() interface{} {
+	return h.validator
+}
+
+func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.HandleOption) error {
+	defer conn.Close()
+
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("VMess Handler received connection from %s", conn.RemoteAddr())
+	}
+
+	if h.validator == nil {
+		return fmt.Errorf("vmess validator not initialized")
+	}
+
+	// 创建服务端会话
+	session := encoding.NewServerSession(h.validator, h.sessionHistory)
+
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("VMess decoding request header from %s", conn.RemoteAddr())
+	}
+
+	// 读取请求头 (isDrain=false 表示不丢弃无效数据)
+	request, err := session.DecodeRequestHeader(conn, false)
+	if err != nil {
+		h.options.Logger.Error("VMess decode request failed from %s: %v", conn.RemoteAddr(), err)
+		return err
+	}
+
+	// 清除读取超时
+	_ = conn.SetReadDeadline(time.Time{})
+
+	network := "tcp"
+	if request.Command == protocol.RequestCommandUDP {
+		network = "udp"
+	}
+	targetAddr := net.JoinHostPort(request.Address.String(), request.Port.String())
+
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("VMess connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	}
+
+	// 创建请求体读取器
+	bodyReader, err := session.DecodeRequestBody(request, conn)
+	if err != nil {
+		if h.options.Logger != nil && h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("VMess decode request body failed: %v", err)
+		}
+		return err
+	}
+
+	// 创建响应头
+	responseHeader := &protocol.ResponseHeader{
+		Option: request.Option,
+	}
+
+	// 写入响应头 (无返回错误)
+	session.EncodeResponseHeader(responseHeader, conn)
+
+	// 创建响应体写入器
+	bodyWriter, err := session.EncodeResponseBody(request, conn)
+	if err != nil {
+		if h.options.Logger != nil && h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("VMess encode response body failed: %v", err)
+		}
+		return err
+	}
+
+	if request.Command == protocol.RequestCommandMux {
+		if err := h.handleMuxSession(ctx, bodyReader, bodyWriter); err != nil {
+			h.options.Logger.Debug("VMess mux session error: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	// 获取路由
+	route, err := h.options.Router.Route(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("VMess route error: %v", err)
+		return err
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+
+	// 建立上游连接
+	targetConn, err := route.Dial(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
+		return err
+	}
+	defer targetConn.Close()
+
+	// 双向转发
+	if err := xraymux.Bidirectional(ctx, conn, targetConn, bodyReader, bodyWriter, buf.NewReader(targetConn), buf.NewWriter(targetConn)); err != nil && ctx.Err() == nil {
+		h.options.Logger.Debug("VMess transfer error: %v", err)
+		return err
+	}
+
+	h.options.Logger.Debug("VMess closed %s -> %s", conn.RemoteAddr(), targetAddr)
+	return nil
+}
+
+func (h *Handler) handleMuxSession(ctx context.Context, bodyReader buf.Reader, bodyWriter buf.Writer) error {
+	dispatcher := xraymux.NewRouteDispatcher(h.options.Router, h.options.Logger)
+	worker, err := xmux.NewServerWorker(ctx, dispatcher, &transport.Link{
+		Reader: bodyReader,
+		Writer: bodyWriter,
+	})
+	if err != nil {
+		return fmt.Errorf("create mux worker: %w", err)
+	}
+	defer worker.Close()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-worker.WaitClosed():
+		return nil
+	}
+}
+
+// end of file
+
+// Compile-time check
+var _ xnet.Address

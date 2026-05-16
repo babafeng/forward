@@ -1,0 +1,218 @@
+// Package vless 提供 VLESS 协议入站 Handler
+package vless
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"time"
+
+	"github.com/xtls/xray-core/common/buf"
+	xmux "github.com/xtls/xray-core/common/mux"
+	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/proxy"
+	xvless "github.com/xtls/xray-core/proxy/vless"
+	"github.com/xtls/xray-core/proxy/vless/encoding"
+	"github.com/xtls/xray-core/transport"
+
+	pvless "forward/base/protocol/vless"
+	"forward/internal/chain"
+	"forward/internal/handler"
+	"forward/internal/metadata"
+	"forward/internal/registry"
+	"forward/internal/router"
+	"forward/internal/xraymux"
+)
+
+func init() {
+	registry.HandlerRegistry().Register("vless", NewHandler)
+}
+
+type Handler struct {
+	options   handler.Options
+	validator xvless.Validator
+}
+
+// NewHandler 创建新的 VLESS Handler
+func NewHandler(opts ...handler.Option) handler.Handler {
+	options := handler.Options{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	h := &Handler{
+		options: options,
+	}
+
+	if h.options.Router == nil {
+		h.options.Router = router.NewStatic(chain.NewRoute())
+	}
+
+	return h
+}
+
+func (h *Handler) Init(md metadata.Metadata) error {
+	// Validator 需要在外部设置（通过 Listener 配置）
+	return nil
+}
+
+// SetValidator 设置用户验证器
+func (h *Handler) SetValidator(v interface{}) {
+	if validator, ok := v.(xvless.Validator); ok {
+		h.validator = validator
+	}
+}
+
+func (h *Handler) Handle(ctx context.Context, conn net.Conn, opts ...handler.HandleOption) error {
+	defer conn.Close()
+
+	reader, userSentID, request, requestAddons, err := h.readRequest(conn)
+	if err != nil {
+		if h.options.Logger != nil && h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("Read VLESS request failed: %v", err)
+		}
+		return err
+	}
+
+	// 清除读取超时
+	_ = conn.SetReadDeadline(time.Time{})
+
+	network := "tcp"
+	if request.Command == protocol.RequestCommandUDP {
+		network = "udp"
+	}
+	targetAddr := net.JoinHostPort(request.Address.String(), request.Port.String())
+
+	if h.options.Logger != nil && h.options.Logger.IsDebug() {
+		h.options.Logger.Debug("VLESS connect %s -> %s", conn.RemoteAddr(), targetAddr)
+	}
+
+	// 检查 Vision 流
+	if requestAddons.Flow == xvless.XRV {
+		if h.options.Logger != nil && h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("VLESS Vision flow detected from %s", conn.RemoteAddr())
+		}
+		if request.Command == protocol.RequestCommandUDP {
+			if h.options.Logger != nil && h.options.Logger.IsDebug() {
+				h.options.Logger.Debug("VLESS Vision flow rejected for UDP from %s", conn.RemoteAddr())
+			}
+			return fmt.Errorf("vision flow does not support udp")
+		}
+	}
+
+	// 设置流量状态
+	trafficState := proxy.NewTrafficState(userSentID)
+	clientReader := encoding.DecodeBodyAddons(reader, request, requestAddons)
+
+	// 处理 Vision 流
+	if requestAddons.Flow == xvless.XRV {
+		input, rawInput, err := pvless.VisionInputBuffers(conn)
+		if err != nil {
+			h.options.Logger.Error("VLESS Vision setup failed: %v", err)
+			return err
+		}
+		clientReader = proxy.NewVisionReader(clientReader, trafficState, true, ctx, conn, input, rawInput, nil)
+	}
+
+	// 发送响应头
+	bufferWriter := buf.NewBufferedWriter(buf.NewWriter(conn))
+	if err := encoding.EncodeResponseHeader(bufferWriter, request, &encoding.Addons{}); err != nil {
+		if h.options.Logger != nil && h.options.Logger.IsDebug() {
+			h.options.Logger.Debug("Write VLESS response failed: %v", err)
+		}
+		return err
+	}
+	if err := bufferWriter.SetBuffered(false); err != nil {
+		h.options.Logger.Debug("Flush VLESS response failed: %v", err)
+		return err
+	}
+
+	clientWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons, trafficState, false, ctx, conn, nil)
+
+	if request.Command == protocol.RequestCommandMux {
+		if err := h.handleMuxSession(ctx, conn, clientReader, clientWriter); err != nil {
+			h.options.Logger.Error("VLESS mux session error: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	// 获取路由
+	route, err := h.options.Router.Route(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("VLESS route error: %v", err)
+		return err
+	}
+	if route == nil {
+		route = chain.NewRoute()
+	}
+
+	// 建立上游连接
+	targetConn, err := route.Dial(ctx, network, targetAddr)
+	if err != nil {
+		h.options.Logger.Error("Dial target %s failed: %v", targetAddr, err)
+		return err
+	}
+	defer targetConn.Close()
+
+	targetReader := buf.NewReader(targetConn)
+	targetWriter := buf.NewWriter(targetConn)
+
+	// 双向转发
+	if err := xraymux.Bidirectional(ctx, conn, targetConn, clientReader, clientWriter, targetReader, targetWriter); err != nil && ctx.Err() == nil {
+		if requestAddons.Flow == xvless.XRV {
+			h.options.Logger.Error("VLESS Vision error: %v", err)
+		} else {
+			h.options.Logger.Error("VLESS transfer error: %v", err)
+		}
+		return err
+	}
+
+	h.options.Logger.Debug("VLESS closed %s -> %s", conn.RemoteAddr(), targetAddr)
+	return nil
+}
+
+func (h *Handler) handleMuxSession(ctx context.Context, conn net.Conn, clientReader buf.Reader, clientWriter buf.Writer) error {
+	dispatcher := xraymux.NewRouteDispatcher(h.options.Router, h.options.Logger)
+	worker, err := xmux.NewServerWorker(ctx, dispatcher, &transport.Link{
+		Reader: clientReader,
+		Writer: clientWriter,
+	})
+	if err != nil {
+		return fmt.Errorf("create mux worker: %w", err)
+	}
+	defer worker.Close()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-worker.WaitClosed():
+		return nil
+	}
+}
+
+func (h *Handler) readRequest(conn net.Conn) (*buf.BufferedReader, []byte, *protocol.RequestHeader, *encoding.Addons, error) {
+	if h.validator == nil {
+		return nil, nil, nil, nil, fmt.Errorf("vless validator not initialized")
+	}
+
+	first := buf.FromBytes(make([]byte, buf.Size))
+	first.Clear()
+	if _, err := first.ReadFrom(conn); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	reader := &buf.BufferedReader{
+		Reader: buf.NewReader(conn),
+		Buffer: buf.MultiBuffer{first},
+	}
+
+	userSentID, request, requestAddons, _, err := encoding.DecodeRequestHeader(false, first, reader, h.validator)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	return reader, userSentID, request, requestAddons, nil
+}
+
+// end of file

@@ -1,0 +1,345 @@
+package ini
+
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"net"
+	"net/netip"
+	"os"
+	"strconv"
+	"strings"
+
+	"forward/base/endpoint"
+	"forward/base/logging"
+	"forward/base/route"
+	"forward/internal/config"
+)
+
+func ParseFile(path string) (config.Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("read config file: %w", err)
+	}
+	return Parse(data)
+}
+
+func Parse(data []byte) (config.Config, error) {
+	var (
+		section   string
+		lineNo    int
+		general   = map[string]string{}
+		proxies   = map[string]string{}
+		tproxy    = map[string]string{}
+		ruleLines []string
+	)
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
+			continue
+		}
+		switch section {
+		case "general", "proxy", "tproxy":
+			key, val, ok := strings.Cut(line, "=")
+			if !ok {
+				return config.Config{}, fmt.Errorf("line %d: invalid key=value", lineNo)
+			}
+			key = strings.ToLower(strings.TrimSpace(key))
+			val = strings.TrimSpace(val)
+			if section == "general" {
+				general[key] = val
+			} else if section == "proxy" {
+				if key != "" {
+					proxies[key] = val
+				}
+			} else {
+				if key != "" {
+					tproxy[key] = val
+				}
+			}
+		case "rule":
+			ruleLines = append(ruleLines, line)
+		default:
+			return config.Config{}, fmt.Errorf("line %d: unknown section %q", lineNo, section)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return config.Config{}, err
+	}
+
+	listenRaw := strings.TrimSpace(general["listen"])
+	if listenRaw == "" {
+		return config.Config{}, fmt.Errorf("general.listen is required")
+	}
+	listeners, err := parseEndpointList(listenRaw)
+	if err != nil {
+		return config.Config{}, err
+	}
+
+	logLevel := "info"
+	debugEnabled := strings.EqualFold(strings.TrimSpace(general["debug"]), "true")
+	debugVerbose := strings.EqualFold(strings.TrimSpace(general["debug-verbose"]), "true")
+	if debugEnabled || debugVerbose {
+		logLevel = "debug"
+	}
+	llevel, err := logging.ParseLevel(logLevel)
+	if err != nil {
+		return config.Config{}, err
+	}
+
+	subURL := strings.TrimSpace(general["subscribe"])
+	legacySubURLs := config.SplitCSVValues([]string{subURL})
+	subURL = config.PrimaryValue(legacySubURLs)
+	extraSubURLs := config.SplitCSVValues([]string{general["subscribes"]})
+	if len(legacySubURLs) > 1 {
+		extraSubURLs = append(legacySubURLs[1:], extraSubURLs...)
+	}
+	subURL, subURLs := config.ResolvePrimarySubscribe(
+		subURL,
+		strings.TrimSpace(general["subscirbe"]),
+		extraSubURLs,
+	)
+	subUpdate, _ := strconv.Atoi(strings.TrimSpace(general["update"]))
+	cfg := config.Config{
+		Listeners:       listeners,
+		Listen:          listeners[0],
+		Logger:          logging.New(logging.Options{Level: llevel}),
+		LogLevel:        llevel,
+		DebugVerbose:    debugVerbose,
+		SubscribeURL:    subURL,
+		SubscribeURLs:   subURLs,
+		SubscribeFilter: strings.TrimSpace(general["filter"]),
+		SubscribeUpdate: subUpdate,
+	}
+
+	if tpRaw := strings.TrimSpace(general["tproxy"]); tpRaw != "" {
+		tpCfg, tpEndpoint, err := parseTProxyConfig(tpRaw, tproxy)
+		if err != nil {
+			return config.Config{}, err
+		}
+		if tpEndpoint.Scheme != "" {
+			cfg.TProxy = &tpCfg
+			listeners = append(listeners, tpEndpoint)
+			cfg.Listeners = append(cfg.Listeners, tpEndpoint)
+			cfg.Listen = cfg.Listeners[0]
+		}
+	}
+
+	rcfg := &route.Config{
+		Proxies:    map[string]endpoint.Endpoint{},
+		SkipProxy:  parsePrefixList(general["skip-proxy"]),
+		DNSServers: parseCommaList(general["dns-server"]),
+		MMDBPath:   strings.TrimSpace(general["mmdb-path"]),
+		MMDBLink:   strings.TrimSpace(general["mmdb-link"]),
+	}
+	for name, raw := range proxies {
+		normalized := route.NormalizeProxyName(name)
+		if raw == "" {
+			return config.Config{}, fmt.Errorf("proxy %s is empty", name)
+		}
+		ep, err := endpoint.Parse(raw)
+		if err != nil {
+			return config.Config{}, fmt.Errorf("proxy %s parse error: %w", name, err)
+		}
+		rcfg.Proxies[normalized] = ep
+	}
+
+	for _, raw := range ruleLines {
+		rule, err := parseRuleLine(raw)
+		if err != nil {
+			return config.Config{}, err
+		}
+		rcfg.Rules = append(rcfg.Rules, rule)
+	}
+
+	cfg.Route = rcfg
+	cfg.Nodes = []config.NodeConfig{{
+		Name:          "default",
+		Listeners:     listeners,
+		SubscribeURL:  subURL,
+		SubscribeURLs: subURLs,
+	}}
+
+	config.ApplyDefaults(&cfg)
+	return cfg, nil
+}
+
+func parseTProxyConfig(raw string, cfg map[string]string) (config.TProxyConfig, endpoint.Endpoint, error) {
+	addr := strings.TrimSpace(raw)
+	if addr == "" {
+		return config.TProxyConfig{}, endpoint.Endpoint{}, nil
+	}
+
+	if !strings.Contains(addr, "://") {
+		if !strings.Contains(addr, ":") {
+			addr = net.JoinHostPort("0.0.0.0", addr)
+		}
+		addr = "tproxy://" + addr
+	}
+
+	tp := config.TProxyConfig{
+		Sniffing:     true,
+		Network:      []string{"tcp", "udp"},
+		DestOverride: []string{"http", "tls", "quic"},
+	}
+
+	if v := strings.TrimSpace(cfg["network"]); v != "" {
+		tp.Network = parseCommaList(v)
+	}
+	if v := strings.TrimSpace(cfg["sniffing"]); v != "" {
+		tp.Sniffing = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(cfg["dest-override"]); v != "" {
+		tp.DestOverride = parseCommaList(v)
+	}
+
+	ep, err := endpoint.Parse(addr)
+	if err != nil {
+		return config.TProxyConfig{}, endpoint.Endpoint{}, fmt.Errorf("tproxy parse error: %w", err)
+	}
+	tp.Port = ep.Port
+	return tp, ep, nil
+}
+
+func parseEndpointList(raw string) ([]endpoint.Endpoint, error) {
+	parts := config.SplitCSVValues([]string{raw})
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("listen is empty")
+	}
+	list, idx, err := config.ParseEndpoints(parts)
+	if err != nil {
+		return nil, fmt.Errorf("parse listen %s: %w", parts[idx], err)
+	}
+	return list, nil
+}
+
+func parseRuleLine(line string) (route.Rule, error) {
+	parts := strings.Split(line, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	if len(parts) < 2 {
+		return route.Rule{}, fmt.Errorf("invalid rule: %s", line)
+	}
+
+	ruleType := route.RuleType(strings.ToUpper(parts[0]))
+	value := ""
+	var actionParts []string
+
+	if ruleType == route.RuleFinal {
+		actionParts = parts[1:]
+	} else {
+		if len(parts) < 3 {
+			return route.Rule{}, fmt.Errorf("invalid rule: %s", line)
+		}
+		value = parts[1]
+		actionParts = parts[2:]
+	}
+
+	act, err := parseAction(actionParts)
+	if err != nil {
+		return route.Rule{}, err
+	}
+
+	return route.Rule{
+		Type:   ruleType,
+		Value:  value,
+		Action: act,
+	}, nil
+}
+
+func parseAction(rawParts []string) (route.Action, error) {
+	parts := make([]string, 0, len(rawParts))
+	for _, raw := range rawParts {
+		part := strings.ToUpper(strings.TrimSpace(raw))
+		if part == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return route.Action{}, fmt.Errorf("rule action is empty")
+	}
+
+	useSubscribe := false
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "SUBSCRIBE" {
+			useSubscribe = true
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	if len(filtered) == 0 {
+		return route.Action{}, fmt.Errorf("rule action is empty")
+	}
+
+	switch filtered[0] {
+	case "DIRECT":
+		if useSubscribe || len(filtered) > 1 {
+			return route.Action{}, fmt.Errorf("DIRECT action cannot be chained")
+		}
+		return route.Action{Type: route.ActionDirect}, nil
+	case "REJECT":
+		if useSubscribe || len(filtered) > 1 {
+			return route.Action{}, fmt.Errorf("REJECT action cannot be chained")
+		}
+		return route.Action{Type: route.ActionReject}, nil
+	default:
+		// Rule chain syntax is target-first, accelerator-last.
+		// Reverse for execution order to align with `-F a -F b` semantics (a accelerates b).
+		proxyChain := make([]string, 0, len(filtered))
+		for i := len(filtered) - 1; i >= 0; i-- {
+			proxyChain = append(proxyChain, route.NormalizeProxyName(filtered[i]))
+		}
+		act := route.Action{
+			Type:         route.ActionProxy,
+			Proxy:        proxyChain[0],
+			ProxyChain:   proxyChain,
+			UseSubscribe: useSubscribe,
+		}
+		return act, nil
+	}
+}
+
+func parseCommaList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func parsePrefixList(raw string) []netip.Prefix {
+	parts := parseCommaList(raw)
+	out := make([]netip.Prefix, 0, len(parts))
+	for _, p := range parts {
+		if prefix, err := netip.ParsePrefix(p); err == nil {
+			out = append(out, prefix)
+			continue
+		}
+		if addr, err := netip.ParseAddr(p); err == nil {
+			bits := 32
+			if addr.Is6() {
+				bits = 128
+			}
+			out = append(out, netip.PrefixFrom(addr, bits))
+		}
+	}
+	return out
+}
